@@ -1,7 +1,7 @@
 # SSH Kit
 
-[![Visual Studio Marketplace Version](https://img.shields.io/visual-studio-marketplace/v/vscode-ssh-kit.ssh-kit?label=Marketplace)](https://marketplace.visualstudio.com/items?itemName=vscode-ssh-kit.ssh-kit)
-[![Visual Studio Marketplace Installs](https://img.shields.io/visual-studio-marketplace/i/vscode-ssh-kit.ssh-kit)](https://marketplace.visualstudio.com/items?itemName=vscode-ssh-kit.ssh-kit)
+[![VS Code Marketplace](https://img.shields.io/visual-studio-marketplace/v/vscode-ssh-kit.ssh-kit?label=Marketplace)](https://marketplace.visualstudio.com/items?itemName=vscode-ssh-kit.ssh-kit)
+[![Installs](https://img.shields.io/visual-studio-marketplace/i/vscode-ssh-kit.ssh-kit?label=Installs)](https://marketplace.visualstudio.com/items?itemName=vscode-ssh-kit.ssh-kit)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 A VS Code extension providing a host management panel with grouping, key management, and quick-connect shortcuts for [Remote-SSH](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-ssh). Data stays compatible with `~/.ssh/config` via import/export.
