@@ -6,7 +6,7 @@
 
 SSH 主机分组管理面板，作为 [Remote-SSH](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-ssh) 的配置管理前端。提供分组、标签、密钥面板与一键连接，数据与 `~/.ssh/config` 双向互通。
 
-<p align="center"><a href="README.md">English</a></p>
+[![en](https://img.shields.io/badge/README-English-blue)](README.md)
 
 ---
 

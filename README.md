@@ -6,7 +6,7 @@
 
 A VS Code extension providing a host management panel with grouping, key management, and quick-connect shortcuts for [Remote-SSH](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-ssh). Data stays compatible with `~/.ssh/config` via import/export.
 
-<p align="center"><a href="README.zh-CN.md">中文文档</a></p>
+[![zh-CN](https://img.shields.io/badge/README-中文-red)](README.zh-CN.md)
 
 ---
 

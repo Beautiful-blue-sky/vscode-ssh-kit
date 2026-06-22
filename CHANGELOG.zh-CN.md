@@ -1,6 +1,6 @@
 # 更新日志
 
-<p align="center"><a href="CHANGELOG.md">English</a></p>
+[![en](https://img.shields.io/badge/CHANGELOG-English-blue)](CHANGELOG.md)
 
 ## 0.0.1 — 未发布
 

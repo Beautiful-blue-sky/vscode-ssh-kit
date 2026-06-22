@@ -1,6 +1,6 @@
 # Changelog
 
-<p align="center"><a href="CHANGELOG.zh-CN.md">中文</a></p>
+[![zh-CN](https://img.shields.io/badge/CHANGELOG-中文-red)](CHANGELOG.zh-CN.md)
 
 ## 0.0.1 — Unreleased
 
