@@ -1,0 +1,370 @@
+{
+  "name": "ssh-kit",
+  "displayName": "SSH Kit",
+  "description": "SSH 主机分组管理与快捷连接，Remote-SSH 的配置管理前端",
+  "version": "0.0.1",
+  "publisher": "vscode-ssh-kit",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Beautiful-blue-sky/vscode-ssh-kit"
+  },
+  "keywords": [
+    "ssh",
+    "remote",
+    "remote-ssh",
+    "server",
+    "devops",
+    "ssh-config",
+    "key-management"
+  ],
+  "engines": {
+    "vscode": "^1.100.0"
+  },
+  "categories": [
+    "Other",
+    "Programming Languages",
+    "Formatters"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "sshKit",
+          "title": "SSH Kit",
+          "icon": "$(server)"
+        }
+      ]
+    },
+    "views": {
+      "sshKit": [
+        {
+          "id": "sshKit.hosts",
+          "name": "主机",
+          "icon": "$(server)"
+        },
+        {
+          "id": "sshKit.keys",
+          "name": "密钥",
+          "icon": "$(key)"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "sshKit.addHost",
+        "title": "添加主机",
+        "icon": "$(add)"
+      },
+      {
+        "command": "sshKit.addGroup",
+        "title": "添加分组",
+        "icon": "$(new-folder)"
+      },
+      {
+        "command": "sshKit.refresh",
+        "title": "刷新",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "sshKit.connectHostInCurrentWindow",
+        "title": "在当前窗口连接",
+        "icon": "$(window)"
+      },
+      {
+        "command": "sshKit.connectHostInNewWindow",
+        "title": "在新窗口连接",
+        "icon": "$(empty-window)"
+      },
+      {
+        "command": "sshKit.connectInExternalTerminal",
+        "title": "在外部终端连接",
+        "icon": "$(terminal)"
+      },
+      {
+        "command": "sshKit.editHost",
+        "title": "编辑主机",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "sshKit.deleteHost",
+        "title": "删除主机",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "sshKit.renameGroup",
+        "title": "重命名分组",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "sshKit.deleteGroup",
+        "title": "删除分组",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "sshKit.copyHostName",
+        "title": "复制 HostName",
+        "icon": "$(copy)"
+      },
+      {
+        "command": "sshKit.testConnection",
+        "title": "测试连通性",
+        "icon": "$(pulse)"
+      },
+      {
+        "command": "sshKit.importConfig",
+        "title": "从 SSH Config 导入",
+        "icon": "$(arrow-down)"
+      },
+      {
+        "command": "sshKit.exportConfig",
+        "title": "写入到 SSH Config",
+        "icon": "$(arrow-up)"
+      },
+      {
+        "command": "sshKit.searchHosts",
+        "title": "搜索主机"
+      },
+      {
+        "command": "sshKit.openSshConfig",
+        "title": "打开 SSH Config 文件",
+        "icon": "$(go-to-file)"
+      },
+      {
+        "command": "sshKit.listKeys",
+        "title": "查看密钥列表",
+        "icon": "$(key)"
+      },
+      {
+        "command": "sshKit.generateKey",
+        "title": "生成 SSH 密钥",
+        "icon": "$(new-file)"
+      },
+      {
+        "command": "sshKit.deduplicateHosts",
+        "title": "清理重复主机",
+        "icon": "$(clear-all)"
+      },
+      {
+        "command": "sshKit.batchDeleteHosts",
+        "title": "批量删除主机",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "sshKit.backupData",
+        "title": "备份数据",
+        "icon": "$(save)"
+      },
+      {
+        "command": "sshKit.restoreData",
+        "title": "恢复数据",
+        "icon": "$(folder-opened)"
+      },
+      {
+        "command": "sshKit.copyKeyPublic",
+        "title": "复制公钥",
+        "icon": "$(copy)"
+      },
+      {
+        "command": "sshKit.deleteKey",
+        "title": "删除密钥",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "sshKit.renameKey",
+        "title": "重命名密钥",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "sshKit.showKeyDetail",
+        "title": "查看密钥详情",
+        "icon": "$(info)"
+      },
+      {
+        "command": "sshKit.openKeyFile",
+        "title": "打开密钥文件",
+        "icon": "$(go-to-file)"
+      },
+      {
+        "command": "sshKit.openPrivateKey",
+        "title": "查看私钥",
+        "icon": "$(lock)"
+      }
+    ],
+    "viewsWelcome": [
+      {
+        "view": "sshKit.hosts",
+        "contents": "还没有 SSH 主机。\n\n[添加主机](command:sshKit.addHost)  |  [从 SSH Config 导入](command:sshKit.importConfig)\n[打开 SSH Config 文件](command:sshKit.openSshConfig)"
+      },
+      {
+        "view": "sshKit.keys",
+        "contents": "没有找到 SSH 密钥。\n\n[生成 SSH 密钥](command:sshKit.generateKey)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "sshKit.addGroup",
+          "when": "view == sshKit.hosts",
+          "group": "navigation@1"
+        },
+        {
+          "command": "sshKit.addHost",
+          "when": "view == sshKit.hosts",
+          "group": "navigation@2"
+        },
+        {
+          "command": "sshKit.importConfig",
+          "when": "view == sshKit.hosts",
+          "group": "navigation@3"
+        },
+        {
+          "command": "sshKit.exportConfig",
+          "when": "view == sshKit.hosts",
+          "group": "navigation@4"
+        },
+        {
+          "command": "sshKit.openSshConfig",
+          "when": "view == sshKit.hosts",
+          "group": "navigation@5"
+        },
+        {
+          "command": "sshKit.refresh",
+          "when": "view == sshKit.hosts",
+          "group": "navigation@6"
+        },
+        {
+          "command": "sshKit.deduplicateHosts",
+          "when": "view == sshKit.hosts",
+          "group": "2_io@1"
+        },
+        {
+          "command": "sshKit.batchDeleteHosts",
+          "when": "view == sshKit.hosts",
+          "group": "2_io@2"
+        },
+        {
+          "command": "sshKit.backupData",
+          "when": "view == sshKit.hosts",
+          "group": "2_io@3"
+        },
+        {
+          "command": "sshKit.restoreData",
+          "when": "view == sshKit.hosts",
+          "group": "2_io@4"
+        },
+        {
+          "command": "sshKit.generateKey",
+          "when": "view == sshKit.keys",
+          "group": "navigation"
+        },
+        {
+          "command": "sshKit.refresh",
+          "when": "view == sshKit.keys",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "sshKit.connectHostInCurrentWindow",
+          "when": "view == sshKit.hosts && viewItem == host",
+          "group": "inline@1"
+        },
+        {
+          "command": "sshKit.connectHostInNewWindow",
+          "when": "view == sshKit.hosts && viewItem == host",
+          "group": "inline@2"
+        },
+        {
+          "command": "sshKit.connectInExternalTerminal",
+          "when": "view == sshKit.hosts && viewItem == host",
+          "group": "inline@3"
+        },
+        {
+          "command": "sshKit.editHost",
+          "when": "view == sshKit.hosts && viewItem == host",
+          "group": "1_modify"
+        },
+        {
+          "command": "sshKit.deleteHost",
+          "when": "view == sshKit.hosts && viewItem == host",
+          "group": "1_modify"
+        },
+        {
+          "command": "sshKit.copyHostName",
+          "when": "view == sshKit.hosts && viewItem == host",
+          "group": "2_info"
+        },
+        {
+          "command": "sshKit.testConnection",
+          "when": "view == sshKit.hosts && viewItem == host",
+          "group": "2_info"
+        },
+        {
+          "command": "sshKit.connectInExternalTerminal",
+          "when": "view == sshKit.hosts && viewItem == host",
+          "group": "2_info"
+        },
+        {
+          "command": "sshKit.renameGroup",
+          "when": "view == sshKit.hosts && viewItem == group",
+          "group": "1_modify"
+        },
+        {
+          "command": "sshKit.deleteGroup",
+          "when": "view == sshKit.hosts && viewItem == group",
+          "group": "1_modify"
+        },
+        {
+          "command": "sshKit.copyKeyPublic",
+          "when": "view == sshKit.keys && viewItem == key",
+          "group": "inline"
+        },
+        {
+          "command": "sshKit.renameKey",
+          "when": "view == sshKit.keys && viewItem == key",
+          "group": "1_modify"
+        },
+        {
+          "command": "sshKit.deleteKey",
+          "when": "view == sshKit.keys && viewItem == key",
+          "group": "1_modify"
+        },
+        {
+          "command": "sshKit.openPrivateKey",
+          "when": "view == sshKit.keys && viewItem == key",
+          "group": "2_info"
+        },
+        {
+          "command": "sshKit.showKeyDetail",
+          "when": "view == sshKit.keys && viewItem == key",
+          "group": "2_info"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run package",
+    "compile": "npm run check-types && node esbuild.js",
+    "watch": "npm-run-all -p watch:*",
+    "watch:esbuild": "node esbuild.js --watch",
+    "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
+    "package": "npm run check-types && node esbuild.js --production",
+    "check-types": "tsc --noEmit",
+    "lint": "eslint src"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.13.0",
+    "@stylistic/eslint-plugin": "^2.9.0",
+    "@types/node": "^22",
+    "@types/vscode": "^1.100.0",
+    "@typescript-eslint/eslint-plugin": "^8.61.1",
+    "@typescript-eslint/parser": "^8.61.1",
+    "esbuild": "^0.25.0",
+    "eslint": "^9.13.0",
+    "npm-run-all": "^4.1.5",
+    "typescript": "^5.9.2",
+    "typescript-eslint": "^8.39.0"
+  }
+}

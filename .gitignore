@@ -1,0 +1,9 @@
+# 公开项目 .gitignore
+node_modules/
+out/
+dist/
+*.vsix
+.DS_Store
+Thumbs.db
+.vscode-test/
+*.log

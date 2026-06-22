@@ -1,0 +1,92 @@
+// SSH Kit —— 密钥 TreeView
+import * as vscode from "vscode";
+import { listKeys, populateFingerprints, KeyInfo } from "../keys/keyManager";
+
+/** 详情子节点 */
+class KeyDetailItem extends vscode.TreeItem {
+  constructor(label: string, value: string, icon: string, command?: vscode.Command) {
+    super(label, vscode.TreeItemCollapsibleState.None);
+    this.description = value;
+    this.iconPath = new vscode.ThemeIcon(icon);
+    this.command = command;
+  }
+}
+
+/** 密钥树节点 — 单击展开查看详情，内联按钮复制公钥 */
+export class KeyItem extends vscode.TreeItem {
+  constructor(public readonly key: KeyInfo) {
+    super(key.name, vscode.TreeItemCollapsibleState.Collapsed);
+
+    this.iconPath = key.publicKeyPath
+      ? new vscode.ThemeIcon("key")
+      : new vscode.ThemeIcon("warning");
+
+    this.description = key.publicKeyPath ? "" : "缺公钥";
+
+    this.contextValue = "key";
+    this.tooltip = "点击展开查看详情";
+  }
+}
+
+/** 密钥树 DataProvider */
+export class KeyTreeDataProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
+  private _onDidChangeTreeData = new vscode.EventEmitter<vscode.TreeItem | undefined | void>();
+  readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
+
+  refresh(): void {
+    this._onDidChangeTreeData.fire();
+  }
+
+  getTreeItem(element: vscode.TreeItem): vscode.TreeItem {
+    return element;
+  }
+
+  async getChildren(element?: vscode.TreeItem): Promise<vscode.TreeItem[]> {
+    if (!element) {
+      const keys = listKeys();
+      populateFingerprints(keys);
+      return keys.map((k) => new KeyItem(k));
+    }
+
+    if (element instanceof KeyItem) {
+      const k = element.key;
+      const children: KeyDetailItem[] = [];
+
+      // 类型
+      children.push(new KeyDetailItem("类型", k.type, "symbol-keyword"));
+
+      // 指纹
+      if (k.fingerprint) {
+        children.push(new KeyDetailItem("指纹", k.fingerprint, "fingerprint"));
+      }
+
+      // 私钥 — 单击打开
+      children.push(new KeyDetailItem(
+        "私钥", k.privateKeyPath, "lock",
+        {
+          command: "sshKit.openPrivateKey",
+          title: "打开私钥",
+          arguments: [element],
+        }
+      ));
+
+      // 公钥 — 单击打开
+      if (k.publicKeyPath) {
+        children.push(new KeyDetailItem(
+          "公钥", k.publicKeyPath, "key",
+          {
+            command: "sshKit.openKeyFile",
+            title: "打开公钥",
+            arguments: [element],
+          }
+        ));
+      } else {
+        children.push(new KeyDetailItem("公钥", "⚠ 缺少公钥文件", "warning"));
+      }
+
+      return children;
+    }
+
+    return [];
+  }
+}
