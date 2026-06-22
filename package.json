@@ -1,7 +1,7 @@
 {
   "name": "ssh-kit",
-  "displayName": "SSH Kit",
-  "description": "SSH 主机分组管理与快捷连接，Remote-SSH 的配置管理前端",
+  "displayName": "%displayName%",
+  "description": "%description%",
   "version": "0.0.1",
   "publisher": "vscode-ssh-kit",
   "license": "MIT",
@@ -32,7 +32,7 @@
       "activitybar": [
         {
           "id": "sshKit",
-          "title": "SSH Kit",
+          "title": "%viewsContainers.title%",
           "icon": "$(server)"
         }
       ]
@@ -41,12 +41,12 @@
       "sshKit": [
         {
           "id": "sshKit.hosts",
-          "name": "主机",
+          "name": "%views.hosts%",
           "icon": "$(server)"
         },
         {
           "id": "sshKit.keys",
-          "name": "密钥",
+          "name": "%views.keys%",
           "icon": "$(key)"
         }
       ]
@@ -54,152 +54,152 @@
     "commands": [
       {
         "command": "sshKit.addHost",
-        "title": "添加主机",
+        "title": "%commands.addHost%",
         "icon": "$(add)"
       },
       {
         "command": "sshKit.addGroup",
-        "title": "添加分组",
+        "title": "%commands.addGroup%",
         "icon": "$(new-folder)"
       },
       {
         "command": "sshKit.refresh",
-        "title": "刷新",
+        "title": "%commands.refresh%",
         "icon": "$(refresh)"
       },
       {
         "command": "sshKit.connectHostInCurrentWindow",
-        "title": "在当前窗口连接",
+        "title": "%commands.connectHostInCurrentWindow%",
         "icon": "$(window)"
       },
       {
         "command": "sshKit.connectHostInNewWindow",
-        "title": "在新窗口连接",
+        "title": "%commands.connectHostInNewWindow%",
         "icon": "$(empty-window)"
       },
       {
         "command": "sshKit.connectInExternalTerminal",
-        "title": "在外部终端连接",
+        "title": "%commands.connectInExternalTerminal%",
         "icon": "$(terminal)"
       },
       {
         "command": "sshKit.editHost",
-        "title": "编辑主机",
+        "title": "%commands.editHost%",
         "icon": "$(edit)"
       },
       {
         "command": "sshKit.deleteHost",
-        "title": "删除主机",
+        "title": "%commands.deleteHost%",
         "icon": "$(trash)"
       },
       {
         "command": "sshKit.renameGroup",
-        "title": "重命名分组",
+        "title": "%commands.renameGroup%",
         "icon": "$(edit)"
       },
       {
         "command": "sshKit.deleteGroup",
-        "title": "删除分组",
+        "title": "%commands.deleteGroup%",
         "icon": "$(trash)"
       },
       {
         "command": "sshKit.copyHostName",
-        "title": "复制 HostName",
+        "title": "%commands.copyHostName%",
         "icon": "$(copy)"
       },
       {
         "command": "sshKit.testConnection",
-        "title": "测试连通性",
+        "title": "%commands.testConnection%",
         "icon": "$(pulse)"
       },
       {
         "command": "sshKit.importConfig",
-        "title": "从 SSH Config 导入",
+        "title": "%commands.importConfig%",
         "icon": "$(arrow-down)"
       },
       {
         "command": "sshKit.exportConfig",
-        "title": "写入到 SSH Config",
+        "title": "%commands.exportConfig%",
         "icon": "$(arrow-up)"
       },
       {
         "command": "sshKit.searchHosts",
-        "title": "搜索主机"
+        "title": "%commands.searchHosts%"
       },
       {
         "command": "sshKit.openSshConfig",
-        "title": "打开 SSH Config 文件",
+        "title": "%commands.openSshConfig%",
         "icon": "$(go-to-file)"
       },
       {
         "command": "sshKit.listKeys",
-        "title": "查看密钥列表",
+        "title": "%commands.listKeys%",
         "icon": "$(key)"
       },
       {
         "command": "sshKit.generateKey",
-        "title": "生成 SSH 密钥",
+        "title": "%commands.generateKey%",
         "icon": "$(new-file)"
       },
       {
         "command": "sshKit.deduplicateHosts",
-        "title": "清理重复主机",
+        "title": "%commands.deduplicateHosts%",
         "icon": "$(clear-all)"
       },
       {
         "command": "sshKit.batchDeleteHosts",
-        "title": "批量删除主机",
+        "title": "%commands.batchDeleteHosts%",
         "icon": "$(trash)"
       },
       {
         "command": "sshKit.backupData",
-        "title": "备份数据",
+        "title": "%commands.backupData%",
         "icon": "$(save)"
       },
       {
         "command": "sshKit.restoreData",
-        "title": "恢复数据",
+        "title": "%commands.restoreData%",
         "icon": "$(folder-opened)"
       },
       {
         "command": "sshKit.copyKeyPublic",
-        "title": "复制公钥",
+        "title": "%commands.copyKeyPublic%",
         "icon": "$(copy)"
       },
       {
         "command": "sshKit.deleteKey",
-        "title": "删除密钥",
+        "title": "%commands.deleteKey%",
         "icon": "$(trash)"
       },
       {
         "command": "sshKit.renameKey",
-        "title": "重命名密钥",
+        "title": "%commands.renameKey%",
         "icon": "$(edit)"
       },
       {
         "command": "sshKit.showKeyDetail",
-        "title": "查看密钥详情",
+        "title": "%commands.showKeyDetail%",
         "icon": "$(info)"
       },
       {
         "command": "sshKit.openKeyFile",
-        "title": "打开密钥文件",
+        "title": "%commands.openKeyFile%",
         "icon": "$(go-to-file)"
       },
       {
         "command": "sshKit.openPrivateKey",
-        "title": "查看私钥",
+        "title": "%commands.openPrivateKey%",
         "icon": "$(lock)"
       }
     ],
     "viewsWelcome": [
       {
         "view": "sshKit.hosts",
-        "contents": "还没有 SSH 主机。\n\n[添加主机](command:sshKit.addHost)  |  [从 SSH Config 导入](command:sshKit.importConfig)\n[打开 SSH Config 文件](command:sshKit.openSshConfig)"
+        "contents": "%viewsWelcome.hosts%"
       },
       {
         "view": "sshKit.keys",
-        "contents": "没有找到 SSH 密钥。\n\n[生成 SSH 密钥](command:sshKit.generateKey)"
+        "contents": "%viewsWelcome.keys%"
       }
     ],
     "menus": {

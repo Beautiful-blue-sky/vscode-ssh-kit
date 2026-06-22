@@ -4,24 +4,26 @@
 [![Visual Studio Marketplace Installs](https://img.shields.io/visual-studio-marketplace/i/vscode-ssh-kit.ssh-kit)](https://marketplace.visualstudio.com/items?itemName=vscode-ssh-kit.ssh-kit)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-SSH 主机分组管理面板，作为 [Remote-SSH](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-ssh) 的配置管理前端。提供分组、标签、密钥面板与一键连接，数据与 `~/.ssh/config` 双向互通。
+A VS Code extension providing a host management panel with grouping, key management, and quick-connect shortcuts for [Remote-SSH](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-ssh). Data stays compatible with `~/.ssh/config` via import/export.
+
+> [中文文档](README.zh-CN.md)
 
 ---
 
-## 功能
+## Features
 
-- 分组管理 SSH 主机，支持拖拽排序与移动
-- 一键连接 Remote-SSH（当前窗口 / 新窗口）或外部终端
-- 自动扫描 `~/.ssh/` 私钥，展示类型与指纹
-- 生成 ed25519 / RSA / ECDSA 密钥对
-- 从 `~/.ssh/config` 导入，合并导出（支持 `Include` 指令递归）
-- 连通性测试（`ssh -o ConnectTimeout=5 -o BatchMode=yes`）
-- 按名称、地址、标签搜索主机
-- 数据 + 密钥打包备份与恢复
+- Group SSH hosts into folders with drag-and-drop
+- Connect via Remote-SSH (current or new window) or external terminal
+- Scan `~/.ssh/` for private keys, display type and fingerprint
+- Generate ed25519, RSA, or ECDSA key pairs
+- Import from and export to `~/.ssh/config` (supports `Include` directives)
+- Test connectivity via `ssh -o ConnectTimeout=5 -o BatchMode=yes`
+- Search hosts by name, address, or tag
+- Backup and restore host data with key files
 
-## 快速开始
+## Getting Started
 
-### 从源码构建
+### Build from Source
 
 ```bash
 git clone https://github.com/Beautiful-blue-sky/vscode-ssh-kit.git
@@ -30,53 +32,53 @@ pnpm install
 pnpm run compile
 ```
 
-在 VS Code 中打开项目，按 `F5` 启动扩展开发主机。
+Press `F5` in VS Code to launch the Extension Development Host.
 
-## 使用
+## Usage
 
-安装后活动栏出现 **SSH Kit** 视图容器，包含两个面板。
+The extension adds an **SSH Kit** view container to the Activity Bar with two panels.
 
-### 主机
+### Hosts
 
-| 操作 | 方式 |
+| Action | How |
 |---|---|
-| 添加主机 | 标题栏 `+` 或右键 |
-| 连接 | 主机右侧内联按钮（当前窗口 / 新窗口 / 外部终端） |
-| 编辑 / 删除 | 右键主机 |
-| 连通性测试 | 右键 → 测试连通性 |
-| 搜索 | 命令面板 `SSH Kit: 搜索主机` |
-| 导入 / 导出 | 标题栏按钮 |
+| Add a host | Click `+` in the view title or right-click |
+| Connect | Inline buttons on each host entry (current window, new window, external terminal) |
+| Edit / delete | Right-click a host |
+| Test connectivity | Right-click → *Test Connection* |
+| Search | Command Palette → `SSH Kit: Search Hosts` |
+| Import / export | View title buttons |
 
-### 密钥
+### Keys
 
-密钥面板列出 `~/.ssh/` 下的私钥文件。展开可查看类型、指纹与文件路径，单击路径打开文件，右侧按钮一键复制公钥。
+The Keys panel lists private keys found in `~/.ssh/`. Expand a key entry to inspect its type, fingerprint, and file paths. Click a file path to open it in the editor. Use the inline copy button to copy the public key.
 
-## 命令
+## Commands
 
-以下命令均可从命令面板（`Ctrl+Shift+P`）访问：
+Available from the Command Palette (`Ctrl+Shift+P`):
 
-| 命令 | 说明 |
+| Command | Description |
 |---|---|
-| `SSH Kit: 添加主机` | 交互式输入主机信息 |
-| `SSH Kit: 搜索主机` | 模糊搜索并连接 |
-| `SSH Kit: 从 SSH Config 导入` | 解析 `~/.ssh/config` 导入主机 |
-| `SSH Kit: 写入到 SSH Config` | 将管理的主机合并写入 `~/.ssh/config` |
-| `SSH Kit: 生成 SSH 密钥` | 生成新的密钥对 |
-| `SSH Kit: 备份数据` | 导出主机数据与密钥文件 |
-| `SSH Kit: 恢复数据` | 从备份文件恢复 |
+| `SSH Kit: Add Host` | Prompt for host details |
+| `SSH Kit: Search Hosts` | Fuzzy-search and connect |
+| `SSH Kit: Import from SSH Config` | Parse `~/.ssh/config` into managed hosts |
+| `SSH Kit: Export to SSH Config` | Merge managed hosts into `~/.ssh/config` |
+| `SSH Kit: Generate SSH Key` | Generate a new key pair |
+| `SSH Kit: Backup Data` | Export host data and keys to a JSON file |
+| `SSH Kit: Restore Data` | Restore from a previously created backup |
 
-## 开发
+## Development
 
 ```bash
-pnpm install       # 安装依赖
-pnpm run compile   # 类型检查（tsc --noEmit）+ 构建（esbuild）
-pnpm run watch     # 监听模式
+pnpm install       # Install dependencies
+pnpm run compile   # Type-check (tsc --noEmit) and bundle (esbuild)
+pnpm run watch     # Watch mode
 pnpm run lint      # ESLint
-pnpm run package   # 打包 .vsix
+pnpm run package   # Package .vsix for distribution
 ```
 
-基于 TypeScript + esbuild 构建，零运行时依赖。主机数据通过 VS Code `globalState` 本地持久化，使用「备份数据 / 恢复数据」可在不同机器间迁移。
+Built with TypeScript and esbuild. Zero runtime dependencies. Host data is persisted in VS Code `globalState`. Use **Backup Data** / **Restore Data** to migrate between machines.
 
-## 许可
+## License
 
 [MIT](LICENSE)
