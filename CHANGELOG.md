@@ -1,6 +1,6 @@
 # Changelog
 
-> [中文](CHANGELOG.zh-CN.md)
+<p align="center"><a href="CHANGELOG.zh-CN.md">中文</a></p>
 
 ## 0.0.1 — Unreleased
 

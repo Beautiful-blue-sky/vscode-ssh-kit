@@ -1,6 +1,6 @@
 # 更新日志
 
-> [English](CHANGELOG.md)
+<p align="center"><a href="CHANGELOG.md">English</a></p>
 
 ## 0.0.1 — 未发布
 
