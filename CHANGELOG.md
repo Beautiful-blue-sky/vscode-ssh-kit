@@ -1,5 +1,7 @@
 # Changelog
 
+> [中文](CHANGELOG.zh-CN.md)
+
 ## 0.0.1 — Unreleased
 
 ### Added
