@@ -1,8 +1,8 @@
 # SSH Kit
 
-[![Visual Studio Marketplace Version](https://img.shields.io/visual-studio-marketplace/v/vscode-ssh-kit.ssh-kit?label=Marketplace)](https://marketplace.visualstudio.com/items?itemName=vscode-ssh-kit.ssh-kit)
-[![Visual Studio Marketplace Installs](https://img.shields.io/visual-studio-marketplace/i/vscode-ssh-kit.ssh-kit)](https://marketplace.visualstudio.com/items?itemName=vscode-ssh-kit.ssh-kit)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Visual Studio Marketplace Version](https://img.shields.io/visual-studio-marketplace/v/vscode-ssh-kit.ssh-kit?label=市场)](https://marketplace.visualstudio.com/items?itemName=vscode-ssh-kit.ssh-kit)
+[![Visual Studio Marketplace Installs](https://img.shields.io/visual-studio-marketplace/i/vscode-ssh-kit.ssh-kit?label=安装量)](https://marketplace.visualstudio.com/items?itemName=vscode-ssh-kit.ssh-kit)
+[![许可: MIT](https://img.shields.io/badge/许可-MIT-blue.svg)](LICENSE)
 
 SSH 主机分组管理面板，作为 [Remote-SSH](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-ssh) 的配置管理前端。提供分组、标签、密钥面板与一键连接，数据与 `~/.ssh/config` 双向互通。
 
