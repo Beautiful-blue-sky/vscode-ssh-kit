@@ -17,6 +17,15 @@ interface HostSection {
   props: Record<string, string>;     // Directive → value map
 }
 
+/** Raw Host block with source text offsets, used to preserve user config text */
+interface HostBlock {
+  aliases: string[];
+  text: string;
+  start: number;
+  end: number;
+  managed: boolean;
+}
+
 // ─── Parser ───────────────────────────────────────────────────────────────
 
 /**
@@ -124,17 +133,21 @@ function readConfigWithIncludes(
   if (visited.has(resolved)) {return "";} // Prevent circular references
   visited.add(resolved);
 
-  let content = fs.readFileSync(resolved, "utf-8");
-  const includeRegex = /^\s*Include\s+(.+)$/gm;
+  const content = fs.readFileSync(resolved, "utf-8");
+  const includeRegex = /^\s*Include\s+(.+)$/i;
 
-  let match: RegExpExecArray | null;
-  while ((match = includeRegex.exec(content)) !== null) {
-    const includePattern = match[1].trim();
-    const includedContent = resolveIncludeFiles(includePattern, resolved, visited);
-    content = content.replace(match[0], includedContent);
-  }
+  return content
+    .split(/\r?\n/)
+    .map((line) => {
+      const match = line.match(includeRegex);
+      if (!match) {return line;}
 
-  return content;
+      const includePatterns = splitIncludePatterns(match[1].trim());
+      return includePatterns
+        .map((includePattern) => resolveIncludeFiles(includePattern, resolved, visited))
+        .join("\n");
+    })
+    .join("\n");
 }
 
 /** Resolve Include pattern to matching files and recursively read them */
@@ -161,9 +174,7 @@ function resolveIncludeFiles(
 
   if (!fs.existsSync(dir)) {return "";}
 
-  const regex = new RegExp(
-    "^" + filename.replace(/\*/g, ".*").replace(/\?/g, ".") + "$"
-  );
+  const regex = globPatternToRegex(filename);
 
   const files = fs
     .readdirSync(dir)
@@ -175,6 +186,28 @@ function resolveIncludeFiles(
   return files
     .map((f: string) => readConfigWithIncludes(f, visited))
     .join("\n");
+}
+
+/** Split an Include directive into path patterns (quotes preserve spaces). */
+function splitIncludePatterns(value: string): string[] {
+  const patterns: string[] = [];
+  const tokenRegex = /"([^"]+)"|'([^']+)'|(\S+)/g;
+  let match: RegExpExecArray | null;
+
+  while ((match = tokenRegex.exec(value)) !== null) {
+    patterns.push(match[1] ?? match[2] ?? match[3]);
+  }
+
+  return patterns;
+}
+
+/** Convert a simple SSH Include glob pattern to a regex. */
+function globPatternToRegex(pattern: string): RegExp {
+  const escaped = pattern
+    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+    .replace(/\*/g, ".*")
+    .replace(/\?/g, ".");
+  return new RegExp(`^${escaped}$`);
 }
 
 // ─── Export ───────────────────────────────────────────────────────────────
@@ -218,8 +251,14 @@ const MANAGED_MARKER = "# SSH Kit managed";
 /** Export statistics */
 export interface ExportStats {
   added: number;        // New hosts (not present in config)
-  synced: number;       // Already managed (present in config with SSH Kit marker)
+  synced: number;       // Existing matching hosts that will be updated
   preserved: number;    // Non-Kit sections left untouched
+  conflicts: string[];  // Existing unmanaged Host aliases that need confirmation
+}
+
+/** Export behavior options */
+export interface ExportOptions {
+  overwriteUnmanaged?: boolean; // Allow taking over same-name Host blocks without the marker
 }
 
 /**
@@ -232,18 +271,19 @@ export function analyzeExport(
 ): ExportStats | null {
   const resolvedPath = configPath ?? defaultConfigPath();
   const kitNames = new Set(hosts.map((h) => h.name));
+  const syncedNames = new Set<string>();
+  const conflictNames = new Set<string>();
   let preserved = 0;
-  let synced = 0;
 
   if (fs.existsSync(resolvedPath)) {
     const existing = fs.readFileSync(resolvedPath, "utf-8");
-    const sections = parseSections(existing);
-    for (const section of sections) {
-      const key = section.aliases[0];
-      if (kitNames.has(key)) {
-        const block = formatHostSectionFromSections(section);
-        if (block.includes(MANAGED_MARKER)) {
-          synced++;
+    const blocks = findHostBlocks(existing);
+    for (const block of blocks) {
+      const matchedAliases = block.aliases.filter((alias) => kitNames.has(alias));
+      if (matchedAliases.length > 0) {
+        const targetSet = block.managed ? syncedNames : conflictNames;
+        for (const alias of matchedAliases) {
+          targetSet.add(alias);
         }
       } else {
         preserved++;
@@ -251,22 +291,28 @@ export function analyzeExport(
     }
   }
 
-  const added = hosts.length - synced;
-  return { added, synced, preserved };
+  const added = hosts.filter((h) => !syncedNames.has(h.name) && !conflictNames.has(h.name)).length;
+  return {
+    added,
+    synced: syncedNames.size,
+    preserved,
+    conflicts: [...conflictNames].sort(),
+  };
 }
 
 /**
  * Merge hosts into the SSH config file.
  * Safety strategy:
  * 1. Back up original as config.bak.YYYYMMDD-HHmmss
- * 2. Preserve non-Kit Host sections untouched
- * 3. Only update or append SSH Kit-managed hosts
+ * 2. Preserve unrelated raw config text untouched
+ * 3. Update matching Host blocks and append new SSH Kit hosts
  * 4. Append the managed marker line at the end of each section
  * @returns path of the written file
  */
 export function exportToSSHConfig(
   hosts: SSHHost[],
-  configPath?: string
+  configPath?: string,
+  options: ExportOptions = {}
 ): string {
   if (hosts.length === 0) {
     throw new Error("没有可导出的主机。");
@@ -286,39 +332,44 @@ export function exportToSSHConfig(
     fs.copyFileSync(resolvedPath, bakPath);
   }
 
+  const existing = fs.existsSync(resolvedPath)
+    ? fs.readFileSync(resolvedPath, "utf-8")
+    : "";
+  const existingBlocks = findHostBlocks(existing);
   const kitNames = new Set(hosts.map((h) => h.name));
-  const parts: string[] = [];
+  const conflicts = findUnmanagedConflicts(existingBlocks, kitNames);
+  if (conflicts.length > 0 && !options.overwriteUnmanaged) {
+    throw new Error(
+      `发现同名但非 SSH Kit 托管的 Host：${conflicts.join(", ")}。请确认接管后再写入。`
+    );
+  }
+  let preservedText = "";
 
-  // 保留非 SSH Kit 托管的已有段落
+  // Preserve existing text outside matching Host blocks. This keeps comments,
+  // Include directives, Match sections, and unrelated Host blocks intact.
   if (fs.existsSync(resolvedPath)) {
-    const existing = fs.readFileSync(resolvedPath, "utf-8");
-    const sections = parseSections(existing);
-    for (const section of sections) {
-      const key = section.aliases[0];
-      if (!kitNames.has(key)) {
-        parts.push(formatHostSectionFromSections(section));
+    let cursor = 0;
+    for (const block of existingBlocks) {
+      preservedText += existing.slice(cursor, block.start);
+      const matchesKitHost = block.aliases.some((alias) => kitNames.has(alias));
+      if (matchesKitHost && (block.managed || options.overwriteUnmanaged)) {
+        // Matching blocks are replaced by the generated SSH Kit block below.
+      } else {
+        preservedText += block.text;
       }
+      cursor = block.end;
     }
+    preservedText += existing.slice(cursor);
   }
 
-  // 追加 SSH Kit 主机（带标记）
+  const managedParts: string[] = [];
   for (const host of hosts) {
-    parts.push(formatHostSection(host) + "\n  " + MANAGED_MARKER);
+    managedParts.push(formatHostSection(host) + "\n  " + MANAGED_MARKER);
   }
 
-  const merged = parts.join("\n\n") + (parts.length > 0 ? "\n" : "");
+  const merged = joinConfigParts(preservedText, managedParts.join("\n\n"));
   fs.writeFileSync(resolvedPath, merged, "utf-8");
   return resolvedPath;
-}
-
-/** 从 HostSection 格式化为文本（兼容旧 parse 输出） */
-function formatHostSectionFromSections(section: HostSection): string {
-  const lines: string[] = [];
-  lines.push(`Host ${section.aliases.join(" ")}`);
-  for (const [key, value] of Object.entries(section.props)) {
-    lines.push(`  ${key} ${value}`);
-  }
-  return lines.join("\n");
 }
 
 /**
@@ -328,4 +379,57 @@ export function stringifyHosts(hosts: SSHHost[]): string {
   if (hosts.length === 0) {return "";}
 
   return hosts.map(formatHostSection).join("\n\n") + "\n";
+}
+
+/** Find raw Host blocks while treating Host and Match as section boundaries. */
+function findHostBlocks(rawText: string): HostBlock[] {
+  const sectionRegex = /^\s*(Host|Match)\s+(.+)$/gim;
+  const sections: Array<{ kind: string; value: string; start: number }> = [];
+  let match: RegExpExecArray | null;
+
+  while ((match = sectionRegex.exec(rawText)) !== null) {
+    sections.push({
+      kind: match[1].toLowerCase(),
+      value: match[2].trim(),
+      start: match.index,
+    });
+  }
+
+  const blocks: HostBlock[] = [];
+  for (let index = 0; index < sections.length; index++) {
+    const section = sections[index];
+    if (section.kind !== "host") {continue;}
+
+    const end = sections[index + 1]?.start ?? rawText.length;
+    const text = rawText.slice(section.start, end);
+    blocks.push({
+      aliases: section.value.split(/\s+/).filter(Boolean),
+      text,
+      start: section.start,
+      end,
+      managed: text.includes(MANAGED_MARKER),
+    });
+  }
+
+  return blocks;
+}
+
+/** Find same-name Host aliases that exist but are not managed by SSH Kit. */
+function findUnmanagedConflicts(blocks: HostBlock[], kitNames: Set<string>): string[] {
+  const conflicts = new Set<string>();
+  for (const block of blocks) {
+    if (block.managed) {continue;}
+    for (const alias of block.aliases) {
+      if (kitNames.has(alias)) {
+        conflicts.add(alias);
+      }
+    }
+  }
+  return [...conflicts].sort();
+}
+
+/** Join preserved user config and generated SSH Kit blocks with stable spacing. */
+function joinConfigParts(preservedText: string, managedText: string): string {
+  const parts = [preservedText.trimEnd(), managedText.trim()].filter(Boolean);
+  return parts.length > 0 ? parts.join("\n\n") + "\n" : "";
 }

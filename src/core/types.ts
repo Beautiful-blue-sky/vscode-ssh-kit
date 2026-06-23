@@ -52,3 +52,9 @@ export type PromptNewHostFn = (
   storage: StorageService,
   prefill?: Partial<SSHHost>
 ) => Promise<Omit<SSHHost, "id"> | undefined>;
+
+/** Single-field edit callback signature for updating hosts */
+export type PromptEditHostFn = (
+  storage: StorageService,
+  host: SSHHost
+) => Promise<Partial<Omit<SSHHost, "id">> | undefined>;

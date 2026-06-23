@@ -1,7 +1,7 @@
 # SSH Kit
 
-[![VS Code Marketplace](https://img.shields.io/visual-studio-marketplace/v/vscode-ssh-kit.ssh-kit?label=市场)](https://marketplace.visualstudio.com/items?itemName=vscode-ssh-kit.ssh-kit)
-[![Installs](https://img.shields.io/visual-studio-marketplace/i/vscode-ssh-kit.ssh-kit?label=安装量)](https://marketplace.visualstudio.com/items?itemName=vscode-ssh-kit.ssh-kit)
+[![VS Code Marketplace](https://img.shields.io/visual-studio-marketplace/v/lixiaoyu.ssh-kit?label=市场)](https://marketplace.visualstudio.com/items?itemName=lixiaoyu.ssh-kit)
+[![Installs](https://img.shields.io/visual-studio-marketplace/i/lixiaoyu.ssh-kit?label=安装量)](https://marketplace.visualstudio.com/items?itemName=lixiaoyu.ssh-kit)
 [![许可: MIT](https://img.shields.io/badge/许可-MIT-blue.svg)](LICENSE)
 
 SSH 主机分组管理面板，作为 [Remote-SSH](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-ssh) 的配置管理前端。提供分组、标签、密钥面板与一键连接，数据与 `~/.ssh/config` 双向互通。
@@ -74,7 +74,8 @@ pnpm install       # 安装依赖
 pnpm run compile   # 类型检查（tsc --noEmit）+ 构建（esbuild）
 pnpm run watch     # 监听模式
 pnpm run lint      # ESLint
-pnpm run package   # 打包 .vsix
+pnpm run package   # VS Code 预发布用的生产构建
+pnpm run vsix      # 生成用于分发的 .vsix 包
 ```
 
 基于 TypeScript + esbuild 构建，零运行时依赖。主机数据通过 VS Code `globalState` 本地持久化，使用「备份数据 / 恢复数据」可在不同机器间迁移。

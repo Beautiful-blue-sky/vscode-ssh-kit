@@ -1,7 +1,7 @@
 # SSH Kit
 
-[![VS Code Marketplace](https://img.shields.io/visual-studio-marketplace/v/vscode-ssh-kit.ssh-kit?label=Marketplace)](https://marketplace.visualstudio.com/items?itemName=vscode-ssh-kit.ssh-kit)
-[![Installs](https://img.shields.io/visual-studio-marketplace/i/vscode-ssh-kit.ssh-kit?label=Installs)](https://marketplace.visualstudio.com/items?itemName=vscode-ssh-kit.ssh-kit)
+[![VS Code Marketplace](https://img.shields.io/visual-studio-marketplace/v/lixiaoyu.ssh-kit?label=Marketplace)](https://marketplace.visualstudio.com/items?itemName=lixiaoyu.ssh-kit)
+[![Installs](https://img.shields.io/visual-studio-marketplace/i/lixiaoyu.ssh-kit?label=Installs)](https://marketplace.visualstudio.com/items?itemName=lixiaoyu.ssh-kit)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 A VS Code extension providing a host management panel with grouping, key management, and quick-connect shortcuts for [Remote-SSH](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-ssh). Data stays compatible with `~/.ssh/config` via import/export.
@@ -74,7 +74,8 @@ pnpm install       # Install dependencies
 pnpm run compile   # Type-check (tsc --noEmit) and bundle (esbuild)
 pnpm run watch     # Watch mode
 pnpm run lint      # ESLint
-pnpm run package   # Package .vsix for distribution
+pnpm run package   # Production bundle for VS Code prepublish
+pnpm run vsix      # Create a .vsix package for distribution
 ```
 
 Built with TypeScript and esbuild. Zero runtime dependencies. Host data is persisted in VS Code `globalState`. Use **Backup Data** / **Restore Data** to migrate between machines.

@@ -1,8 +1,10 @@
 // SSH Kit — Entry point (activation, helpers, command registration)
+import * as os from "os";
+import * as path from "path";
 import * as vscode from "vscode";
 import { SSHHost, SSHGroup } from "./core/types";
 import { StorageService } from "./core/storage";
-import { GroupItem, HostItem, HostTreeDataProvider, HostDragAndDropController } from "./views/treeView";
+import { GroupItem, HostItem, HostTreeDataProvider, HostDragAndDropController, RECENT_GROUP_ID } from "./views/treeView";
 import { KeyTreeDataProvider, KeyItem } from "./views/keyTreeView";
 import { readPublicKey, deleteKeyPair, renameKeyPair } from "./keys/keyManager";
 import { getErrorMessage } from "./core/utils";
@@ -33,6 +35,51 @@ async function promptInput(step: InputStep): Promise<string | undefined> {
   });
 }
 
+function validateRequiredName(v: string): string | undefined {
+  return v.trim() ? undefined : "名称不能为空";
+}
+
+function validateHostAddress(v: string): string | undefined {
+  const t = v.trim();
+  if (!t) {return "地址不能为空";}
+  if (/\s/.test(t)) {return "地址不能包含空格";}
+
+  const ipv4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
+  const m = t.match(ipv4);
+  if (m) {
+    if (m.slice(1).some((o) => +o > 255)) {return "IP 每段不超过 255";}
+    return undefined;
+  }
+
+  if (/^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)*$/.test(t)) {
+    return undefined;
+  }
+  return "请输入合法的 IP 地址或域名";
+}
+
+function validatePort(v: string): string | undefined {
+  if (!/^\d+$/.test(v)) {return "请输入数字";}
+  const p = parseInt(v, 10);
+  if (p < 1 || p > 65535) {return "端口范围 1-65535";}
+  return undefined;
+}
+
+function validateUsername(v: string): string | undefined {
+  const t = v.trim();
+  if (!t) {return "用户名不能为空";}
+  if (!/^[a-z_][a-z0-9_-]*$/.test(t)) {
+    return "仅允许小写字母、数字、下划线、连字符（字母开头）";
+  }
+  return undefined;
+}
+
+function parseTags(value: string): string[] {
+  return value
+    .split(",")
+    .map((tag) => tag.trim())
+    .filter(Boolean);
+}
+
 /** Multi-step input collection: create or edit a host */
 async function promptNewHost(
   storage: StorageService,
@@ -42,7 +89,7 @@ async function promptNewHost(
     prompt: "主机显示名称",
     placeHolder: "如 es-node1",
     value: prefill?.name,
-    validate: (v) => (v.trim() ? undefined : "名称不能为空"),
+    validate: validateRequiredName,
   });
   if (name === undefined) {return;}
 
@@ -50,23 +97,7 @@ async function promptNewHost(
     prompt: "主机地址（IP 或域名）",
     placeHolder: "如 10.0.1.11 或 my.server.com",
     value: prefill?.hostname,
-    validate: (v) => {
-      const t = v.trim();
-      if (!t) {return "地址不能为空";}
-      if (/\s/.test(t)) {return "地址不能包含空格";}
-      // IPv4
-      const ipv4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
-      const m = t.match(ipv4);
-      if (m) {
-        if (m.slice(1).some((o) => +o > 255)) {return "IP 每段不超过 255";}
-        return undefined;
-      }
-      // Hostname or domain (alphanumeric, hyphens, dots)
-      if (/^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)*$/.test(t)) {
-        return undefined;
-      }
-      return "请输入合法的 IP 地址或域名";
-    },
+    validate: validateHostAddress,
   });
   if (hostname === undefined) {return;}
 
@@ -74,12 +105,7 @@ async function promptNewHost(
     prompt: "SSH 端口",
     placeHolder: "22",
     value: String(prefill?.port ?? 22),
-    validate: (v) => {
-      if (!/^\d+$/.test(v)) {return "请输入数字";}
-      const p = parseInt(v, 10);
-      if (p < 1 || p > 65535) {return "端口范围 1-65535";}
-      return undefined;
-    },
+    validate: validatePort,
   });
   if (portStr === undefined) {return;}
 
@@ -87,15 +113,7 @@ async function promptNewHost(
     prompt: "登录用户名",
     placeHolder: "如 root",
     value: prefill?.username ?? "root",
-    validate: (v) => {
-      const t = v.trim();
-      if (!t) {return "用户名不能为空";}
-      // SSH username convention: lowercase letters, digits, underscores, hyphens only
-      if (!/^[a-z_][a-z0-9_-]*$/.test(t)) {
-        return "仅允许小写字母、数字、下划线、连字符（字母开头）";
-      }
-      return undefined;
-    },
+    validate: validateUsername,
   });
   if (username === undefined) {return;}
 
@@ -115,7 +133,90 @@ async function promptNewHost(
     groupId: groupId || undefined,
     identityFile: identityFile || undefined,
     tags: prefill?.tags ?? [],
+    extraConfig: prefill?.extraConfig,
   };
+}
+
+/** Single-field edit flow for an existing host */
+async function promptEditHost(
+  storage: StorageService,
+  host: SSHHost
+): Promise<Partial<Omit<SSHHost, "id">> | undefined> {
+  const picked = await vscode.window.showQuickPick(
+    [
+      { label: "$(symbol-string) 名称", description: host.name, key: "name" },
+      { label: "$(globe) 主机地址", description: host.hostname, key: "hostname" },
+      { label: "$(remote) 端口", description: String(host.port), key: "port" },
+      { label: "$(person) 用户名", description: host.username, key: "username" },
+      {
+        label: "$(folder) 分组",
+        description: storage.getGroups().find((g) => g.id === host.groupId)?.name ?? "未分组",
+        key: "group",
+      },
+      { label: "$(key) 认证文件", description: host.identityFile ?? "未关联", key: "identityFile" },
+      { label: "$(tag) 标签", description: host.tags.length > 0 ? host.tags.join(", ") : "无", key: "tags" },
+      { label: "$(edit) 完整编辑", description: "按旧向导逐项检查所有字段", key: "full" },
+    ],
+    { placeHolder: `选择要修改的字段：${host.name}` }
+  );
+  if (!picked) {return;}
+
+  switch (picked.key) {
+    case "name": {
+      const value = await promptInput({
+        prompt: "主机显示名称",
+        placeHolder: "如 es-node1",
+        value: host.name,
+        validate: validateRequiredName,
+      });
+      return value === undefined ? undefined : { name: value.trim() };
+    }
+    case "hostname": {
+      const value = await promptInput({
+        prompt: "主机地址（IP 或域名）",
+        placeHolder: "如 10.0.1.11 或 my.server.com",
+        value: host.hostname,
+        validate: validateHostAddress,
+      });
+      return value === undefined ? undefined : { hostname: value.trim() };
+    }
+    case "port": {
+      const value = await promptInput({
+        prompt: "SSH 端口",
+        placeHolder: "22",
+        value: String(host.port),
+        validate: validatePort,
+      });
+      return value === undefined ? undefined : { port: parseInt(value, 10) };
+    }
+    case "username": {
+      const value = await promptInput({
+        prompt: "登录用户名",
+        placeHolder: "如 root",
+        value: host.username,
+        validate: validateUsername,
+      });
+      return value === undefined ? undefined : { username: value.trim() };
+    }
+    case "group": {
+      const groupId = await promptGroup(storage, host.groupId);
+      return groupId === null ? undefined : { groupId: groupId || undefined };
+    }
+    case "identityFile": {
+      const identityFile = await promptIdentityFile(host.identityFile);
+      return identityFile === null ? undefined : { identityFile: identityFile || undefined };
+    }
+    case "tags": {
+      const value = await vscode.window.showInputBox({
+        prompt: "标签（英文逗号分隔）",
+        placeHolder: "如 prod, gpu, cn-shanghai",
+        value: host.tags.join(", "),
+      });
+      return value === undefined ? undefined : { tags: parseTags(value) };
+    }
+    case "full":
+      return promptNewHost(storage, host);
+  }
 }
 
 /**
@@ -126,22 +227,41 @@ async function promptIdentityFile(
   prefillPath?: string
 ): Promise<string | null> {
   const keys = listKeys();
-  if (keys.length === 0) {return prefillPath ?? "";}
+  if (keys.length === 0 && !prefillPath) {return "";}
+
+  const matchingKey = prefillPath
+    ? keys.find((k) => areIdentityPathsEquivalent(prefillPath, k.privateKeyPath))
+    : undefined;
+  const shouldShowCurrentPath = Boolean(
+    prefillPath && (!matchingKey || matchingKey.privateKeyPath !== prefillPath)
+  );
 
   const items: (vscode.QuickPickItem & { path?: string })[] = [
     { label: "$(circle-slash) 不关联密钥", path: "" },
-    ...keys.map((k) => ({
-      label: `$(key) ${k.name}`,
-      description: k.type,
-      detail: k.privateKeyPath,
-      path: k.privateKeyPath,
-    })),
   ];
 
-  // Pre-select currently associated key when editing
   let activeItem: (typeof items)[number] | undefined;
-  if (prefillPath) {
-    activeItem = items.find((it) => it.path === prefillPath);
+  if (prefillPath && shouldShowCurrentPath) {
+    activeItem = {
+      label: "$(key) 当前配置",
+      description: "保留原路径",
+      detail: prefillPath,
+      path: prefillPath,
+    };
+    items.push(activeItem);
+  }
+
+  const keyItems = keys.map((k) => ({
+      label: `$(key) ${k.name}`,
+      description: matchingKey?.privateKeyPath === k.privateKeyPath ? `${k.type} · 匹配当前配置` : k.type,
+      detail: k.privateKeyPath,
+      path: k.privateKeyPath,
+    }));
+  items.push(...keyItems);
+
+  // Pre-select currently associated key when editing
+  if (!activeItem && matchingKey) {
+    activeItem = items.find((it) => it.path === matchingKey.privateKeyPath);
   }
 
   const quickPick = vscode.window.createQuickPick<(typeof items)[number]>();
@@ -154,7 +274,7 @@ async function promptIdentityFile(
     quickPick.onDidAccept(() => {
       resolved = true;
       quickPick.hide();
-      resolve(quickPick.selectedItems[0]);
+      resolve(quickPick.selectedItems[0] ?? quickPick.activeItems[0]);
     });
     quickPick.onDidHide(() => {
       quickPick.dispose();
@@ -165,6 +285,44 @@ async function promptIdentityFile(
 
   if (picked === undefined) {return null;} // Cancel
   return picked.path ?? "";
+}
+
+function areIdentityPathsEquivalent(left: string, right: string): boolean {
+  const leftCandidates = identityPathCompareCandidates(left);
+  const rightCandidates = identityPathCompareCandidates(right);
+  return leftCandidates.some((candidate) => rightCandidates.includes(candidate));
+}
+
+function identityPathCompareCandidates(filePath: string): string[] {
+  const cleaned = stripWrappingQuotes(filePath.trim());
+  if (!cleaned) {return [];}
+
+  const candidates = new Set<string>();
+  if (cleaned.startsWith("~/") || cleaned.startsWith("~\\")) {
+    candidates.add(path.join(os.homedir(), cleaned.slice(2)));
+  } else if (path.isAbsolute(cleaned)) {
+    candidates.add(cleaned);
+  } else {
+    candidates.add(path.resolve(os.homedir(), cleaned));
+    candidates.add(path.resolve(os.homedir(), ".ssh", cleaned));
+  }
+
+  return [...candidates].map(normalizeIdentityPathForCompare);
+}
+
+function normalizeIdentityPathForCompare(filePath: string): string {
+  const normalized = path.normalize(filePath);
+  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+}
+
+function stripWrappingQuotes(value: string): string {
+  if (
+    (value.startsWith('"') && value.endsWith('"')) ||
+    (value.startsWith("'") && value.endsWith("'"))
+  ) {
+    return value.slice(1, -1);
+  }
+  return value;
 }
 
 /**
@@ -199,7 +357,7 @@ async function promptGroup(
     quickPick.onDidAccept(() => {
       resolved = true;
       quickPick.hide();
-      resolve(quickPick.selectedItems[0]);
+      resolve(quickPick.selectedItems[0] ?? quickPick.activeItems[0]);
     });
     quickPick.onDidHide(() => {
       quickPick.dispose();
@@ -248,12 +406,12 @@ export function activate(context: vscode.ExtensionContext) {
   // Persist group collapse state
   context.subscriptions.push(
     treeView.onDidCollapseElement((e) => {
-      if (e.element instanceof GroupItem) {
+      if (e.element instanceof GroupItem && e.element.group.id !== RECENT_GROUP_ID) {
         storage.setGroupCollapsedState(e.element.group.id, true);
       }
     }),
     treeView.onDidExpandElement((e) => {
-      if (e.element instanceof GroupItem) {
+      if (e.element instanceof GroupItem && e.element.group.id !== RECENT_GROUP_ID) {
         storage.setGroupCollapsedState(e.element.group.id, false);
       }
     })
@@ -295,7 +453,7 @@ function registerHostCommands(
     vscode.commands.registerCommand(
       "sshKit.editHost",
       (arg: HostItem | SSHHost) =>
-        editHost(unwrapHost(arg), storage, tree, promptNewHost)
+        editHost(unwrapHost(arg), storage, tree, promptEditHost)
     ),
     vscode.commands.registerCommand(
       "sshKit.deleteHost",

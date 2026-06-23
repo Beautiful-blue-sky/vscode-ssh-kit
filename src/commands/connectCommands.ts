@@ -1,5 +1,8 @@
 // SSH Kit — Connection, search, and connectivity test commands
 import * as cp from "child_process";
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
 import * as vscode from "vscode";
 import { SSHHost } from "../core/types";
 import { StorageService } from "../core/storage";
@@ -73,8 +76,7 @@ export async function testConnection(host: SSHHost): Promise<void> {
     "-o", "ConnectTimeout=5",
     "-o", "StrictHostKeyChecking=no",
     "-o", "BatchMode=yes",
-    "-p", String(host.port),
-    `${host.username}@${host.hostname}`,
+    ...buildSSHArgs(host),
     "exit",
   ];
 
@@ -170,63 +172,26 @@ export async function searchHosts(storage: StorageService): Promise<void> {
 
 /**
  * Connect via SSH in a system-native terminal.
- * Platform-specific launcher: Windows uses `start cmd`, macOS uses Terminal.app,
- * Linux probes gnome-terminal → konsole → xterm → x-terminal-emulator.
+ * Platform-specific launcher: Windows opens a detached cmd.exe, macOS uses
+ * Terminal.app, Linux probes gnome-terminal -> konsole -> xterm ->
+ * x-terminal-emulator.
  */
 export async function connectInExternalTerminal(
   host: SSHHost,
   storage: StorageService
 ): Promise<void> {
-  // Build ssh argument list (quoting differs per platform)
-  const sshParts = ["ssh"];
-  sshParts.push("-p", String(host.port));
-  if (host.identityFile) {
-    sshParts.push("-i", host.identityFile);
-  }
-  sshParts.push(`${host.username}@${host.hostname}`);
-
-  // Unix: wrap args containing spaces in double quotes
-  const sshCmdUnix = sshParts
-    .map((p) => (/\s/.test(p) ? `"${p}"` : p))
-    .join(" ");
-  // Windows: wrap args containing spaces, escaping inner quotes for cmd /k
-  const sshCmdWin = sshParts
-    .map((p) => (/\s/.test(p) ? `\\"${p}\\"` : p))
-    .join(" ");
-
-  // Escape double quotes in host name to avoid breaking the `start` window title
-  const safeName = host.name.replace(/"/g, "'");
-
-  let cmd: string;
-
-  if (process.platform === "win32") {
-    // Windows：start 打开新 cmd 窗口，/k 保持窗口不关闭
-    cmd = `start "SSH: ${safeName}" cmd /k "${sshCmdWin} && pause"`;
-  } else if (process.platform === "darwin") {
-    // macOS：Terminal.app 新建标签页执行 ssh
-    cmd = `osascript -e 'tell app "Terminal" to do script "${sshCmdUnix}"'`;
-  } else {
-    // Linux：按优先级探测可用终端，最后回退 x-terminal-emulator
-    cmd =
-      `(gnome-terminal -- bash -c "${sshCmdUnix}; exec bash" 2>/dev/null || ` +
-      `konsole -e bash -c "${sshCmdUnix}; exec bash" 2>/dev/null || ` +
-      `xterm -e bash -c "${sshCmdUnix}; exec bash" 2>/dev/null || ` +
-      `x-terminal-emulator -e bash -c "${sshCmdUnix}; exec bash") &`;
-  }
-
   vscode.window.showInformationMessage(
     `正在外部终端连接 ${host.name} (${host.username}@${host.hostname}:${host.port})...`
   );
 
-  await storage.addRecentConnection(host.id);
-
-  cp.exec(cmd, (error) => {
-    if (error) {
-      vscode.window.showErrorMessage(
-        `启动外部终端失败：${getErrorMessage(error)}`
-      );
-    }
-  });
+  try {
+    await launchExternalTerminal(host);
+    await storage.addRecentConnection(host.id);
+  } catch (err: unknown) {
+    vscode.window.showErrorMessage(
+      `启动外部终端失败：${getErrorMessage(err)}`
+    );
+  }
 }
 
 // ─── VS Code built-in terminal connection ──────────────────────────────────
@@ -239,22 +204,12 @@ export async function connectInVSCodeTerminal(
   host: SSHHost,
   storage: StorageService
 ): Promise<void> {
-  const sshParts = ["ssh"];
-  sshParts.push("-p", String(host.port));
-  if (host.identityFile) {
-    sshParts.push("-i", host.identityFile);
-  }
-  sshParts.push(`${host.username}@${host.hostname}`);
-
-  const sshCmd = sshParts
-    .map((p) => (/\s/.test(p) ? `"${p}"` : p))
-    .join(" ");
-
   const terminal = vscode.window.createTerminal({
     name: `SSH: ${host.name}`,
+    shellPath: "ssh",
+    shellArgs: buildSSHArgs(host),
     hideFromUser: false,
   });
-  terminal.sendText(sshCmd);
   terminal.show();
 
   vscode.window.showInformationMessage(
@@ -297,4 +252,152 @@ export async function promptTerminalConnect(
   } else {
     await connectInVSCodeTerminal(host, storage);
   }
+}
+
+/** Build raw ssh arguments shared by test, integrated terminal, and launchers. */
+function buildSSHArgs(host: SSHHost): string[] {
+  const args = ["-p", String(host.port)];
+  if (host.identityFile) {
+    args.push("-i", resolveIdentityFileForSSHArg(host.identityFile));
+  }
+  args.push(`${host.username}@${host.hostname}`);
+  return args;
+}
+
+/** Resolve user-friendly IdentityFile forms before passing them as raw process args. */
+function resolveIdentityFileForSSHArg(identityFile: string): string {
+  const cleaned = stripWrappingQuotes(identityFile.trim());
+  if (!cleaned || cleaned.includes("%")) {return identityFile;}
+
+  if (cleaned.startsWith("~/") || cleaned.startsWith("~\\")) {
+    return path.join(os.homedir(), cleaned.slice(2));
+  }
+  if (path.isAbsolute(cleaned)) {
+    return cleaned;
+  }
+
+  const sshDirCandidate = path.resolve(os.homedir(), ".ssh", cleaned);
+  if (fs.existsSync(sshDirCandidate)) {
+    return sshDirCandidate;
+  }
+
+  const homeCandidate = path.resolve(os.homedir(), cleaned);
+  return fs.existsSync(homeCandidate) ? homeCandidate : cleaned;
+}
+
+function stripWrappingQuotes(value: string): string {
+  if (
+    (value.startsWith('"') && value.endsWith('"')) ||
+    (value.startsWith("'") && value.endsWith("'"))
+  ) {
+    return value.slice(1, -1);
+  }
+  return value;
+}
+
+/** Launch the platform-native terminal with an ssh command. */
+async function launchExternalTerminal(host: SSHHost): Promise<void> {
+  if (process.platform === "win32") {
+    await launchWindowsTerminal(host);
+    return;
+  }
+
+  const sshCommand = ["ssh", ...buildSSHArgs(host)].map(quoteForPosixShell).join(" ");
+  if (process.platform === "darwin") {
+    const script = `tell application "Terminal" to do script "${escapeAppleScriptString(sshCommand)}"`;
+    await spawnDetached("osascript", ["-e", script]);
+    return;
+  }
+
+  await launchLinuxTerminal(sshCommand);
+}
+
+/** Launch cmd.exe in its own console window and keep it open after ssh exits. */
+async function launchWindowsTerminal(host: SSHHost): Promise<void> {
+  const commandLine = ["ssh", ...buildSSHArgs(host)]
+    .map((arg, index) => index === 0 ? arg : quoteForCmdArg(arg))
+    .join(" ");
+
+  await spawnDetached("cmd.exe", ["/d", "/k", commandLine], {
+    windowsHide: false,
+  });
+}
+
+/** Probe common Linux terminal emulators and launch the first available one. */
+async function launchLinuxTerminal(sshCommand: string): Promise<void> {
+  const shellCommand = `${sshCommand}; exec bash`;
+  const candidates: Array<{ command: string; args: string[] }> = [
+    { command: "gnome-terminal", args: ["--", "bash", "-lc", shellCommand] },
+    { command: "konsole", args: ["-e", "bash", "-lc", shellCommand] },
+    { command: "xterm", args: ["-e", "bash", "-lc", shellCommand] },
+    { command: "x-terminal-emulator", args: ["-e", "bash", "-lc", shellCommand] },
+  ];
+
+  for (const candidate of candidates) {
+    if (commandExists(candidate.command)) {
+      await spawnDetached(candidate.command, candidate.args);
+      return;
+    }
+  }
+
+  throw new Error("未找到可用的 Linux 终端（gnome-terminal / konsole / xterm / x-terminal-emulator）。");
+}
+
+/** Check whether a command exists on PATH. */
+function commandExists(command: string): boolean {
+  const checker = process.platform === "win32" ? "where" : "which";
+  const result = cp.spawnSync(checker, [command], { stdio: "ignore" });
+  return result.status === 0;
+}
+
+/** Spawn a process detached from the extension host. */
+function spawnDetached(
+  command: string,
+  args: string[],
+  options: cp.SpawnOptions = {}
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = cp.spawn(command, args, {
+      detached: true,
+      stdio: "ignore",
+      windowsHide: true,
+      ...options,
+    });
+
+    let settled = false;
+    child.once("error", (error) => {
+      if (!settled) {
+        settled = true;
+        reject(error);
+      }
+    });
+    child.once("spawn", () => {
+      if (!settled) {
+        settled = true;
+        child.unref();
+        resolve();
+      }
+    });
+  });
+}
+
+/** Quote a value for a POSIX shell command string. */
+function quoteForPosixShell(value: string): string {
+  if (/^[A-Za-z0-9_@%+=:,./-]+$/.test(value)) {
+    return value;
+  }
+  return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+/** Quote a value that will be parsed by cmd.exe. */
+function quoteForCmdArg(value: string): string {
+  if (!/[ \t&()^|<>"]/.test(value)) {
+    return value;
+  }
+  return `"${value.replace(/"/g, '\\"')}"`;
+}
+
+/** Escape text for an AppleScript double-quoted string. */
+function escapeAppleScriptString(value: string): string {
+  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }

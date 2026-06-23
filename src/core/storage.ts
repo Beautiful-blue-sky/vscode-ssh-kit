@@ -230,7 +230,7 @@ export class StorageService {
   }
 
   /** Execute import (write to storage + restore key files) */
-  commitImport(json: string): { importedHosts: number; importedGroups: number; keyFilesRestored: number } {
+  async commitImport(json: string): Promise<{ importedHosts: number; importedGroups: number; keyFilesRestored: number }> {
     let source: SSHKitData & { keyFiles?: Array<{ name: string; type: string; privateKey: string; publicKey?: string }> };
     try {
       source = JSON.parse(json);
@@ -261,7 +261,7 @@ export class StorageService {
       }
     }
 
-    this.saveData(data);
+    await this.saveData(data);
 
     // 密钥写入可能部分失败，不影响已导入的主机/分组
     let keyFilesRestored = 0;

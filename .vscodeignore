@@ -5,4 +5,8 @@ tsconfig.json
 esbuild.js
 eslint.config.mjs
 .gitignore
+icon.svg
+pnpm-lock.yaml
+pnpm-workspace.yaml
+dist/**/*.map
 *.vsix

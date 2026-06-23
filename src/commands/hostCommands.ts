@@ -1,6 +1,6 @@
 // SSH Kit — Host CRUD commands (add, edit, delete, copy, deduplicate, batch delete)
 import * as vscode from "vscode";
-import { SSHHost, PromptNewHostFn } from "../core/types";
+import { SSHHost, PromptNewHostFn, PromptEditHostFn } from "../core/types";
 import { StorageService } from "../core/storage";
 import { HostTreeDataProvider } from "../views/treeView";
 
@@ -25,15 +25,15 @@ export async function editHost(
   host: SSHHost,
   storage: StorageService,
   tree: HostTreeDataProvider,
-  promptNewHost: PromptNewHostFn
+  promptEditHost: PromptEditHostFn
 ): Promise<void> {
-  const updates = await promptNewHost(storage, host);
+  const updates = await promptEditHost(storage, host);
   if (!updates) {return;}
 
   await storage.updateHost(host.id, updates);
   tree.refresh();
   vscode.window.showInformationMessage(
-    `已更新主机：${updates.name} (${updates.hostname}:${updates.port})`
+    `已更新主机：${updates.name ?? host.name}`
   );
 }
 

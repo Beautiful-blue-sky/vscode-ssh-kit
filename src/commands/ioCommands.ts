@@ -57,10 +57,30 @@ export async function exportConfig(storage: StorageService): Promise<void> {
       return;
     }
 
+    let overwriteUnmanaged = false;
+    if (stats.conflicts.length > 0) {
+      const preview = stats.conflicts.slice(0, 8).join(", ");
+      const more = stats.conflicts.length > 8 ? ` 等 ${stats.conflicts.length} 个` : "";
+      const takeover = await vscode.window.showWarningMessage(
+        [
+          `发现 ${stats.conflicts.length} 个同名 Host 已存在，但不是 SSH Kit 托管：`,
+          `${preview}${more}`,
+          "",
+          "SSH Kit 按 Host 别名判断同一配置，不按 HostName/IP 判断。",
+          "接管后这些 Host 块会被 SSH Kit 生成内容覆盖，原文件仍会先备份。",
+        ].join("\n"),
+        { modal: true },
+        "接管并覆盖"
+      );
+      if (takeover !== "接管并覆盖") {return;}
+      overwriteUnmanaged = true;
+    }
+
     const lines = [
       `即将写入 ${hosts.length} 台主机到 ~/.ssh/config：`,
       stats.added > 0 ? `  新增 ${stats.added} 台` : "",
       stats.synced > 0 ? `  同步 ${stats.synced} 台（已存在，将更新）` : "",
+      stats.conflicts.length > 0 ? `  接管 ${stats.conflicts.length} 个同名 Host` : "",
       stats.preserved > 0 ? `  保留 ${stats.preserved} 个现有主机不动` : "",
       "",
       "原文件将备份为 config.bak.YYYYMMDD-HHmmss",
@@ -73,7 +93,7 @@ export async function exportConfig(storage: StorageService): Promise<void> {
     );
     if (confirmed !== "确认写入") {return;}
 
-    const filePath = exportToSSHConfig(hosts);
+    const filePath = exportToSSHConfig(hosts, undefined, { overwriteUnmanaged });
     vscode.window.showInformationMessage(
       `已写入 ${hosts.length} 台主机到 ${filePath}（原文件已备份）`
     );
@@ -154,7 +174,7 @@ export async function restoreKitData(
     );
     if (confirmed !== "确认导入") {return;}
 
-    const result = storage.commitImport(json);
+    const result = await storage.commitImport(json);
     tree.refresh();
     keyTree?.refresh();
 

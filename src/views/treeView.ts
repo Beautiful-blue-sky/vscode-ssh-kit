@@ -206,8 +206,8 @@ export class HostDragAndDropController implements vscode.TreeDragAndDropControll
       return;
     }
 
-    // Determine target group: GroupItem → that group, otherwise → ungrouped
-    const targetGroupId = target instanceof GroupItem
+    // Determine target group: real GroupItem -> that group, otherwise -> ungrouped
+    const targetGroupId = target instanceof GroupItem && target.group.id !== RECENT_GROUP_ID
       ? target.group.id
       : undefined;
 
