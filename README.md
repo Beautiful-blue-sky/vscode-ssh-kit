@@ -75,6 +75,7 @@ pnpm run compile   # Type-check (tsc --noEmit) and bundle (esbuild)
 pnpm run watch     # Watch mode
 pnpm run lint      # ESLint
 pnpm run package   # Production bundle for VS Code prepublish
+pnpm run preflight # Type-check, lint, build, and print release comparison details
 pnpm run vsix      # Create a .vsix package for distribution
 ```
 

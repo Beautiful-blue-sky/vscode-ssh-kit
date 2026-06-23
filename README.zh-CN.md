@@ -75,6 +75,7 @@ pnpm run compile   # 类型检查（tsc --noEmit）+ 构建（esbuild）
 pnpm run watch     # 监听模式
 pnpm run lint      # ESLint
 pnpm run package   # VS Code 预发布用的生产构建
+pnpm run preflight # 类型检查、Lint、构建，并输出上架前对比明细
 pnpm run vsix      # 生成用于分发的 .vsix 包
 ```
 
