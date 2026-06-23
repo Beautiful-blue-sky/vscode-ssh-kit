@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <!-- 背景圆 -->
+  <circle cx="64" cy="64" r="60" fill="#007ACC" />
+  <!-- 服务器机箱 -->
+  <rect x="32" y="28" width="64" height="48" rx="4" fill="#FFFFFF" />
+  <!-- 前面板指示灯 -->
+  <circle cx="44" cy="42" r="4" fill="#4EC9B0" />
+  <circle cx="56" cy="42" r="4" fill="#4EC9B0" />
+  <circle cx="68" cy="42" r="4" fill="#4EC9B0" />
+  <!-- 通风槽 -->
+  <rect x="44" y="54" width="24" height="3" rx="1.5" fill="#CCCCCC" />
+  <rect x="44" y="60" width="24" height="3" rx="1.5" fill="#CCCCCC" />
+  <rect x="44" y="66" width="24" height="3" rx="1.5" fill="#CCCCCC" />
+  <!-- 钥匙齿 -->
+  <circle cx="72" cy="78" r="14" fill="#FFD700" stroke="#E6BE00" stroke-width="2" />
+  <rect x="82" y="72" width="10" height="4" rx="2" fill="#FFD700" />
+  <rect x="88" y="78" width="10" height="4" rx="2" fill="#FFD700" />
+  <rect x="88" y="84" width="8" height="4" rx="2" fill="#FFD700" />
+  <circle cx="72" cy="78" r="5" fill="#007ACC" />
+  <!-- SSH 文字 -->
+  <text x="64" y="110" text-anchor="middle" font-family="Consolas, monospace" font-size="14" font-weight="bold" fill="#007ACC" letter-spacing="2">SSH</text>
+</svg>

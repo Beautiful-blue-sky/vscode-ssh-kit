@@ -6,7 +6,7 @@ import { GroupItem, HostItem, HostTreeDataProvider, HostDragAndDropController } 
 import { KeyTreeDataProvider, KeyItem } from "./views/keyTreeView";
 import { readPublicKey, deleteKeyPair, renameKeyPair } from "./keys/keyManager";
 import { getErrorMessage } from "./core/utils";
-import { connectHostInCurrentWindow, connectHostInNewWindow, connectInExternalTerminal, testConnection, searchHosts } from "./commands/connectCommands";
+import { connectHostInCurrentWindow, connectHostInNewWindow, promptTerminalConnect, testConnection, searchHosts } from "./commands/connectCommands";
 import { addHost, editHost, deleteHost, copyHostName, deduplicateHosts, batchDeleteHosts } from "./commands/hostCommands";
 import { addGroup, renameGroup, deleteGroup } from "./commands/groupCommands";
 import { importConfig, exportConfig, openSshConfig, backupKitData, restoreKitData } from "./commands/ioCommands";
@@ -359,7 +359,7 @@ function registerConnectCommands(
     vscode.commands.registerCommand(
       "sshKit.connectInExternalTerminal",
       (arg: HostItem | SSHHost) =>
-        connectInExternalTerminal(unwrapHost(arg), storage)
+        promptTerminalConnect(unwrapHost(arg), storage)
     ),
     vscode.commands.registerCommand("sshKit.searchHosts", () =>
       searchHosts(storage)

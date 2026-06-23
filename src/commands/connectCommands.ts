@@ -228,3 +228,73 @@ export async function connectInExternalTerminal(
     }
   });
 }
+
+// ─── VS Code 内置终端连接 ──────────────────────────────────────────────────
+
+/**
+ * 在 VS Code 内置终端中通过 SSH 连接到主机。
+ * 使用 vscode.window.createTerminal 创建终端面板，自动执行 ssh 命令。
+ */
+export async function connectInVSCodeTerminal(
+  host: SSHHost,
+  storage: StorageService
+): Promise<void> {
+  const sshParts = ["ssh"];
+  sshParts.push("-p", String(host.port));
+  if (host.identityFile) {
+    sshParts.push("-i", host.identityFile);
+  }
+  sshParts.push(`${host.username}@${host.hostname}`);
+
+  const sshCmd = sshParts
+    .map((p) => (/\s/.test(p) ? `"${p}"` : p))
+    .join(" ");
+
+  const terminal = vscode.window.createTerminal({
+    name: `SSH: ${host.name}`,
+    hideFromUser: false,
+  });
+  terminal.sendText(sshCmd);
+  terminal.show();
+
+  vscode.window.showInformationMessage(
+    `已在终端连接 ${host.name} (${host.username}@${host.hostname}:${host.port})`
+  );
+
+  await storage.addRecentConnection(host.id);
+}
+
+// ─── 终端连接入口（二选一）─────────────────────────────────────────────────
+
+/**
+ * 弹出 QuickPick 让用户选择 VS Code 内置终端或外部终端。
+ * 供内联按钮和命令面板调用。
+ */
+export async function promptTerminalConnect(
+  host: SSHHost,
+  storage: StorageService
+): Promise<void> {
+  const picked = await vscode.window.showQuickPick(
+    [
+      {
+        label: "$(terminal) 在 VS Code 终端打开",
+        description: "使用内置终端，保持在编辑器内",
+        key: "vscode",
+      },
+      {
+        label: "$(remote-explorer) 在外部终端打开",
+        description: "打开系统原生终端窗口",
+        key: "external",
+      },
+    ],
+    { placeHolder: `选择 ${host.name} 的连接方式` }
+  );
+
+  if (!picked) {return;}
+
+  if (picked.key === "external") {
+    await connectInExternalTerminal(host, storage);
+  } else {
+    await connectInVSCodeTerminal(host, storage);
+  }
+}

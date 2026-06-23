@@ -14,6 +14,7 @@
   "commands.connectHostInCurrentWindow": "Connect in Current Window",
   "commands.connectHostInNewWindow": "Connect in New Window",
   "commands.connectInExternalTerminal": "Connect in External Terminal",
+  "commands.connectInTerminal": "Connect via Terminal",
   "commands.copyHostName": "Copy Hostname",
   "commands.testConnection": "Test Connection",
   "commands.searchHosts": "Search Hosts",

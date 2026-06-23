@@ -79,7 +79,7 @@
       },
       {
         "command": "sshKit.connectInExternalTerminal",
-        "title": "%commands.connectInExternalTerminal%",
+        "title": "%commands.connectInTerminal%",
         "icon": "$(terminal)"
       },
       {

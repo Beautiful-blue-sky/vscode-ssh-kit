@@ -14,6 +14,7 @@
   "commands.connectHostInCurrentWindow": "在当前窗口连接",
   "commands.connectHostInNewWindow": "在新窗口连接",
   "commands.connectInExternalTerminal": "在外部终端连接",
+  "commands.connectInTerminal": "终端连接",
   "commands.copyHostName": "复制 HostName",
   "commands.testConnection": "测试连通性",
   "commands.searchHosts": "搜索主机",
