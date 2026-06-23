@@ -1,4 +1,4 @@
-// SSH Kit —— SSH Config 导入/导出命令
+// SSH Kit — SSH Config import/export commands
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
@@ -8,7 +8,7 @@ import { getErrorMessage } from "../core/utils";
 import { importFromSSHConfig, exportToSSHConfig, analyzeExport } from "../ssh/sshConfig";
 import { HostTreeDataProvider } from "../views/treeView";
 
-/** 从 SSH config 导入主机 */
+/** Import hosts from SSH config */
 export async function importConfig(
   storage: StorageService,
   tree: HostTreeDataProvider
@@ -42,7 +42,7 @@ export async function importConfig(
   }
 }
 
-/** 写入所有主机到 SSH config（带变更预览确认） */
+/** Export all hosts to SSH config with change preview and confirmation */
 export async function exportConfig(storage: StorageService): Promise<void> {
   try {
     const hosts = storage.getAllHosts();
@@ -82,7 +82,7 @@ export async function exportConfig(storage: StorageService): Promise<void> {
   }
 }
 
-/** 打开 SSH config 文件（~/.ssh/config） */
+/** Open the SSH config file (~/.ssh/config) */
 export async function openSshConfig(): Promise<void> {
   const configPath = path.join(os.homedir(), ".ssh", "config");
   if (!fs.existsSync(configPath)) {
@@ -95,7 +95,7 @@ export async function openSshConfig(): Promise<void> {
   await vscode.window.showTextDocument(doc);
 }
 
-/** 备份 SSH Kit 数据到 JSON 文件（含密钥文件） */
+/** Backup SSH Kit data to a JSON file (including key files) */
 export async function backupKitData(storage: StorageService): Promise<void> {
   const defaultUri = vscode.Uri.file(
     path.join(os.homedir(), `ssh-kit-backup-${new Date().toISOString().slice(0, 10)}.json`)
@@ -106,7 +106,7 @@ export async function backupKitData(storage: StorageService): Promise<void> {
   });
   if (!uri) {return;}
 
-  // 安全提示
+  // Security warning: backup contains private key material
   const confirmed = await vscode.window.showWarningMessage(
     "备份文件将包含 SSH 私钥内容，请妥善保管。\n建议保存到加密位置，使用后及时删除。",
     { modal: true },
@@ -123,7 +123,7 @@ export async function backupKitData(storage: StorageService): Promise<void> {
   }
 }
 
-/** 从 JSON 文件恢复 SSH Kit 数据 */
+/** Restore SSH Kit data from a JSON backup file */
 export async function restoreKitData(
   storage: StorageService,
   tree: HostTreeDataProvider,
@@ -162,7 +162,7 @@ export async function restoreKitData(
     if (result.keyFilesRestored > 0) {
       parts.push(`恢复了 ${result.keyFilesRestored} 个密钥文件到 ~/.ssh/`);
     } else if (result.importedHosts > 0 || result.importedGroups > 0) {
-      // 主机/分组已导入但密钥可能失败，仅在有数据导入时才提示
+      // Host/group import succeeded but key restore may have partially failed; only report when data was imported
     }
     vscode.window.showInformationMessage(parts.join("，"));
   } catch (err: unknown) {

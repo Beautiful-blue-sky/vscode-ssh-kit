@@ -1,27 +1,27 @@
-// SSH Kit —— SSH config 导入/导出工具（自研 parser，零外部依赖）
+// SSH Kit — SSH config import/export (zero external dependencies)
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
 import { SSHHost, SSHGroup } from "../core/types";
 
-/** 默认 SSH config 路径 */
+/** Default SSH config file path */
 function defaultConfigPath(): string {
   return path.join(os.homedir(), ".ssh", "config");
 }
 
-// ─── 数据结构 ─────────────────────────────────────────────────────────────
+// ─── Data structures ──────────────────────────────────────────────────────
 
-/** 解析后的 Host 段 */
+/** Parsed Host section */
 interface HostSection {
-  aliases: string[];                 // Host 别名列表
-  props: Record<string, string>;     // 配置键值对（directive → value）
+  aliases: string[];                 // Host alias list
+  props: Record<string, string>;     // Directive → value map
 }
 
-// ─── 解析器 ───────────────────────────────────────────────────────────────
+// ─── Parser ───────────────────────────────────────────────────────────────
 
 /**
- * 解析 SSH config 文本为 Host 段列表
- * 处理续行符（\）、注释行（#）
+ * Parse SSH config text into Host sections.
+ * Handles line continuation (\) and comment lines (#).
  */
 function parseSections(rawText: string): HostSection[] {
   const lines = normalizeLines(rawText);
@@ -30,27 +30,27 @@ function parseSections(rawText: string): HostSection[] {
 
   for (const line of lines) {
     const trimmed = line.trim();
-    // 跳过空行和注释
+    // Skip blank lines and comments
     if (!trimmed || trimmed.startsWith("#")) {continue;}
 
-    // 解析 directive value
+    // Parse directive and value
     const spaceIdx = trimmed.search(/\s/);
     if (spaceIdx === -1) {continue;}
     const directive = trimmed.slice(0, spaceIdx).toLowerCase();
     const value = trimmed.slice(spaceIdx + 1).trim();
 
     if (directive === "host") {
-      // 新 Host 段开始，保存上一个
+      // New Host section starts; save the previous one
       if (current) {sections.push(current);}
       current = {
         aliases: value.split(/\s+/).filter(Boolean),
         props: {},
       };
     } else if (current) {
-      // 段内配置项（key 存小写以便查找）
+      // Section-level directive (stored lowercase for lookup)
       current.props[directive] = value;
     }
-    // 段外的顶层指令（如全局 IdentityFile）暂忽略，Phase 1 只处理 Host 段
+    // Top-level directives outside Host sections (e.g. global IdentityFile) are ignored for now
   }
 
   if (current) {sections.push(current);}
@@ -58,22 +58,22 @@ function parseSections(rawText: string): HostSection[] {
 }
 
 /**
- * 将原始文本规范化为行数组（处理续行符 \）
+ * Normalize raw text into an array of lines (handle line continuation \).
  */
 function normalizeLines(rawText: string): string[] {
-  // 合并续行：行尾 \ 表示下一行是续行
+  // Merge continuation lines: trailing \ means next line continues
   const merged = rawText.replace(/\\\r?\n\s*/g, " ");
   return merged.split(/\r?\n/);
 }
 
-// ─── 导入 ─────────────────────────────────────────────────────────────────
+// ─── Import ───────────────────────────────────────────────────────────────
 
 /**
- * 从 SSH config 文件导入主机列表。
- * 支持 Include 指令的递归解析。
+ * Import host list from an SSH config file.
+ * Supports recursive Include directive resolution.
  *
- * **已知限制**：忽略 Host 段外的全局指令（如全局 IdentityFile），
- * 也暂不解析分组信息（groups 始终为空数组）。
+ * Known limitation: ignores global directives outside Host sections
+ * (e.g. global IdentityFile). Groups are always returned as an empty array.
  */
 export function importFromSSHConfig(
   configPath?: string
@@ -89,7 +89,7 @@ export function importFromSSHConfig(
   const hosts: Omit<SSHHost, "id">[] = [];
 
   for (const section of sections) {
-    // 跳过通配符 Host *
+    // Skip wildcard Host *
     if (section.aliases.length === 1 && section.aliases[0] === "*") {continue;}
 
     const hostname = section.props.hostname ?? section.aliases[0];
@@ -113,15 +113,15 @@ export function importFromSSHConfig(
   return { hosts, groups: [] };
 }
 
-// ─── Include 递归解析 ─────────────────────────────────────────────────────
+// ─── Include recursive resolution ─────────────────────────────────────────
 
-/** 读取 SSH config 并递归解析 Include 指令 */
+/** Read SSH config and recursively resolve Include directives */
 function readConfigWithIncludes(
   filePath: string,
   visited = new Set<string>()
 ): string {
   const resolved = path.resolve(filePath);
-  if (visited.has(resolved)) {return "";} // 防止循环引用
+  if (visited.has(resolved)) {return "";} // Prevent circular references
   visited.add(resolved);
 
   let content = fs.readFileSync(resolved, "utf-8");
@@ -137,7 +137,7 @@ function readConfigWithIncludes(
   return content;
 }
 
-/** 解析 Include 模式匹配的文件并递归读取 */
+/** Resolve Include pattern to matching files and recursively read them */
 function resolveIncludeFiles(
   pattern: string,
   basePath: string,
@@ -155,7 +155,7 @@ function resolveIncludeFiles(
     return readConfigWithIncludes(fullPattern, visited);
   }
 
-  // glob 匹配（支持 * 通配符）
+  // Glob matching (supports * wildcard)
   const dir = path.dirname(fullPattern);
   const filename = path.basename(fullPattern);
 
@@ -177,10 +177,10 @@ function resolveIncludeFiles(
     .join("\n");
 }
 
-// ─── 导出 ─────────────────────────────────────────────────────────────────
+// ─── Export ───────────────────────────────────────────────────────────────
 
 /**
- * 将单台主机格式化为 SSH config 段文本
+ * Format a single host as an SSH config block.
  */
 function formatHostSection(host: SSHHost): string {
   const lines: string[] = [];
@@ -195,7 +195,7 @@ function formatHostSection(host: SSHHost): string {
   if (host.identityFile) {
     lines.push(`  IdentityFile ${host.identityFile}`);
   }
-  // 保留额外配置项
+  // Preserve additional config directives
   if (host.extraConfig) {
     for (const [key, value] of Object.entries(host.extraConfig)) {
       const kl = key.toLowerCase();
@@ -212,19 +212,19 @@ function formatHostSection(host: SSHHost): string {
   return lines.join("\n");
 }
 
-/** 已导出的 SSH Kit 标记 */
+/** Marker for SSH Kit managed blocks */
 const MANAGED_MARKER = "# SSH Kit managed";
 
-/** 导出统计 */
+/** Export statistics */
 export interface ExportStats {
-  added: number;        // 新增（config 中不存在的）
-  synced: number;       // 已同步（config 中已存在且有 SSH Kit 标记）
-  preserved: number;    // 非 SSH Kit 段落保留不动
+  added: number;        // New hosts (not present in config)
+  synced: number;       // Already managed (present in config with SSH Kit marker)
+  preserved: number;    // Non-Kit sections left untouched
 }
 
 /**
- * 分析导出影响，不实际写入。
- * 已带 SSH Kit 标记的段落视为"已同步"而非"新增"。
+ * Analyze export impact without writing.
+ * Sections already tagged as SSH Kit managed count as "synced" rather than "added".
  */
 export function analyzeExport(
   hosts: SSHHost[],
@@ -256,13 +256,13 @@ export function analyzeExport(
 }
 
 /**
- * 将主机列表合并写入 SSH config。
- * 安全策略：
- * 1. 备份原文件为 config.bak.YYYYMMDD-HHmmss
- * 2. 保留非 SSH Kit 管理的已有 Host 段落不动
- * 3. 仅更新或追加 SSH Kit 管理的主机
- * 4. 段落末尾追加标记行
- * @returns 写入的文件路径
+ * Merge hosts into the SSH config file.
+ * Safety strategy:
+ * 1. Back up original as config.bak.YYYYMMDD-HHmmss
+ * 2. Preserve non-Kit Host sections untouched
+ * 3. Only update or append SSH Kit-managed hosts
+ * 4. Append the managed marker line at the end of each section
+ * @returns path of the written file
  */
 export function exportToSSHConfig(
   hosts: SSHHost[],

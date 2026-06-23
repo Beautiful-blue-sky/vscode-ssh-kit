@@ -1,13 +1,13 @@
-// SSH Kit —— 连接 / 搜索 / 连通性测试命令
+// SSH Kit — Connection, search, and connectivity test commands
 import * as cp from "child_process";
 import * as vscode from "vscode";
 import { SSHHost } from "../core/types";
 import { StorageService } from "../core/storage";
 import { getErrorMessage } from "../core/utils";
 
-// ─── 连接 ──────────────────────────────────────────────────────────────────
+// ─── VS Code Remote-SSH connection ────────────────────────────────────────
 
-/** 调起 Remote-SSH 连接 —— 在当前窗口打开 */
+/** Open Remote-SSH connection in the current window */
 export async function connectHostInCurrentWindow(
   host: SSHHost,
   storage: StorageService
@@ -15,7 +15,7 @@ export async function connectHostInCurrentWindow(
   await doConnect(host, storage, false);
 }
 
-/** 调起 Remote-SSH 连接 —— 在新窗口打开 */
+/** Open Remote-SSH connection in a new window */
 export async function connectHostInNewWindow(
   host: SSHHost,
   storage: StorageService
@@ -23,7 +23,7 @@ export async function connectHostInNewWindow(
   await doConnect(host, storage, true);
 }
 
-/** 执行 Remote-SSH 连接的公共实现 */
+/** Shared Remote-SSH connection implementation */
 async function doConnect(
   host: SSHHost,
   storage: StorageService,
@@ -49,7 +49,7 @@ async function doConnect(
     );
   } catch {
     try {
-      // 回退：Remote-SSH 原生命令
+      // Fallback: Remote-SSH native command
       await vscode.commands.executeCommand(
         "openssh-remotes.openEmptyWindow",
         { host: hostSpec }
@@ -62,11 +62,11 @@ async function doConnect(
   }
 }
 
-// ─── 连通性测试 ────────────────────────────────────────────────────────────
+// ─── Connectivity test ────────────────────────────────────────────────────
 
 /**
- * 测试 SSH 连通性（ssh -o ConnectTimeout=5 -o BatchMode=yes）。
- * 成功时显示耗时，失败时提取 SSH 错误信息的前 3 行关键内容。
+ * Test SSH connectivity using `ssh -o ConnectTimeout=5 -o BatchMode=yes`.
+ * Shows elapsed time on success; extracts the first 3 relevant error lines on failure.
  */
 export async function testConnection(host: SSHHost): Promise<void> {
   const args = [
@@ -94,7 +94,7 @@ export async function testConnection(host: SSHHost): Promise<void> {
   }
 }
 
-/** 展示连通性测试结果（成功/失败） */
+/** Display connectivity test result (success or failure) */
 function showTestResult(
   host: SSHHost,
   exitCode: number | null,
@@ -123,7 +123,7 @@ function showTestResult(
   );
 }
 
-/** 展示连接测试异常（超时等非正常退出） */
+/** Display connectivity test exceptions (timeout, etc.) */
 function showTestError(host: SSHHost, message: string): void {
   if (message.includes("ETIMEDOUT") || message.includes("timed out")) {
     vscode.window.showErrorMessage(
@@ -138,9 +138,9 @@ function showTestError(host: SSHHost, message: string): void {
   }
 }
 
-// ─── 搜索 ──────────────────────────────────────────────────────────────────
+// ─── Host search ──────────────────────────────────────────────────────────
 
-/** 搜索/过滤主机（QuickPick 模糊匹配） */
+/** Search/filter hosts via QuickPick fuzzy matching */
 export async function searchHosts(storage: StorageService): Promise<void> {
   const hosts = storage.getAllHosts();
   if (hosts.length === 0) {
@@ -166,18 +166,18 @@ export async function searchHosts(storage: StorageService): Promise<void> {
   }
 }
 
-// ─── 外部终端连接 ──────────────────────────────────────────────────────────
+// ─── External terminal connection ──────────────────────────────────────────
 
 /**
- * 在系统外部终端中通过 SSH 连接到主机。
- * 按平台选择最合适的终端模拟器：Windows 用 start cmd，
- * macOS 用 Terminal.app，Linux 按优先级探测 gnome-terminal / konsole / xterm。
+ * Connect via SSH in a system-native terminal.
+ * Platform-specific launcher: Windows uses `start cmd`, macOS uses Terminal.app,
+ * Linux probes gnome-terminal → konsole → xterm → x-terminal-emulator.
  */
 export async function connectInExternalTerminal(
   host: SSHHost,
   storage: StorageService
 ): Promise<void> {
-  // 构造 ssh 命令片段（平台差异在于引号和外层终端包装）
+  // Build ssh argument list (quoting differs per platform)
   const sshParts = ["ssh"];
   sshParts.push("-p", String(host.port));
   if (host.identityFile) {
@@ -185,16 +185,16 @@ export async function connectInExternalTerminal(
   }
   sshParts.push(`${host.username}@${host.hostname}`);
 
-  // Unix: 含空格参数用双引号包裹
+  // Unix: wrap args containing spaces in double quotes
   const sshCmdUnix = sshParts
     .map((p) => (/\s/.test(p) ? `"${p}"` : p))
     .join(" ");
-  // Windows: 含空格参数用双引号包裹（cmd /k 内层引号需反斜杠转义）
+  // Windows: wrap args containing spaces, escaping inner quotes for cmd /k
   const sshCmdWin = sshParts
     .map((p) => (/\s/.test(p) ? `\\"${p}\\"` : p))
     .join(" ");
 
-  // 主机名中的双引号转义，避免破坏 start 标题
+  // Escape double quotes in host name to avoid breaking the `start` window title
   const safeName = host.name.replace(/"/g, "'");
 
   let cmd: string;
@@ -229,11 +229,11 @@ export async function connectInExternalTerminal(
   });
 }
 
-// ─── VS Code 内置终端连接 ──────────────────────────────────────────────────
+// ─── VS Code built-in terminal connection ──────────────────────────────────
 
 /**
- * 在 VS Code 内置终端中通过 SSH 连接到主机。
- * 使用 vscode.window.createTerminal 创建终端面板，自动执行 ssh 命令。
+ * Connect via SSH in the VS Code integrated terminal.
+ * Creates a named terminal panel and sends the ssh command.
  */
 export async function connectInVSCodeTerminal(
   host: SSHHost,
@@ -264,11 +264,11 @@ export async function connectInVSCodeTerminal(
   await storage.addRecentConnection(host.id);
 }
 
-// ─── 终端连接入口（二选一）─────────────────────────────────────────────────
+// ─── Terminal connection entry point (choose type) ─────────────────────────
 
 /**
- * 弹出 QuickPick 让用户选择 VS Code 内置终端或外部终端。
- * 供内联按钮和命令面板调用。
+ * Show a QuickPick to let the user choose between VS Code integrated terminal
+ * and an external system terminal. Called from inline buttons and Command Palette.
  */
 export async function promptTerminalConnect(
   host: SSHHost,

@@ -1,4 +1,4 @@
-// SSH Kit —— 密钥管理 UI 命令
+// SSH Kit — Key management UI commands
 import * as path from "path";
 import * as vscode from "vscode";
 import {
@@ -7,7 +7,7 @@ import {
 } from "../keys/keyManager";
 import { getErrorMessage } from "../core/utils";
 
-/** 列出并展示 ~/.ssh/ 下的密钥 */
+/** List and display keys found under ~/.ssh/ */
 export async function showKeyList(keyTree?: { refresh: () => void }): Promise<void> {
   const keys = listKeys();
   if (keys.length === 0) {
@@ -35,7 +35,7 @@ export async function showKeyList(keyTree?: { refresh: () => void }): Promise<vo
   }
 }
 
-/** 查看密钥详情 + 复制/删除/重命名 */
+/** Show key detail dialog with copy/delete/rename actions */
 async function showKeyDetail(key: KeyInfo, keyTree?: { refresh: () => void }): Promise<void> {
   const parts: string[] = [];
   parts.push(`$(key) 密钥：${key.name}`);
@@ -64,7 +64,7 @@ async function showKeyDetail(key: KeyInfo, keyTree?: { refresh: () => void }): P
   }
 }
 
-/** 复制公钥到剪贴板 */
+/** Copy public key to clipboard */
 async function copyPublicKeyToClipboard(key: KeyInfo): Promise<void> {
   if (!key.publicKeyPath) {
     vscode.window.showErrorMessage("该密钥没有对应的公钥文件。");
@@ -79,7 +79,7 @@ async function copyPublicKeyToClipboard(key: KeyInfo): Promise<void> {
   }
 }
 
-/** 删除密钥确认 */
+/** Confirm and delete a key pair */
 async function promptDeleteKey(key: KeyInfo, keyTree?: { refresh: () => void }): Promise<void> {
   const confirmed = await vscode.window.showWarningMessage(
     `确定删除密钥「${key.name}」？此操作不可撤销。\n私钥：${key.privateKeyPath}`,
@@ -97,7 +97,7 @@ async function promptDeleteKey(key: KeyInfo, keyTree?: { refresh: () => void }):
   }
 }
 
-/** 重命名密钥 */
+/** Rename a key pair */
 async function promptRenameKey(key: KeyInfo, keyTree?: { refresh: () => void }): Promise<void> {
   const newName = await vscode.window.showInputBox({
     prompt: "新文件名（不含路径）",
@@ -122,7 +122,7 @@ async function promptRenameKey(key: KeyInfo, keyTree?: { refresh: () => void }):
   }
 }
 
-/** 生成新的 SSH 密钥对 */
+/** Generate a new SSH key pair */
 export async function generateKey(keyTree?: { refresh: () => void }): Promise<void> {
   const config = await promptKeyGenConfig();
   if (!config) {return;}
@@ -142,7 +142,7 @@ export async function generateKey(keyTree?: { refresh: () => void }): Promise<vo
   }
 }
 
-/** 交互收集密钥生成配置 */
+/** Prompt for key generation configuration */
 interface KeyGenConfig {
   type: KeyType;
   name: string;
@@ -152,7 +152,7 @@ interface KeyGenConfig {
 }
 
 async function promptKeyGenConfig(): Promise<KeyGenConfig | undefined> {
-  // 1. 选择类型
+  // 1. Select key type
   const typeItems: { label: string; description: string; type: KeyType }[] = [
     { label: "ed25519", description: "推荐 · 256 位 · 安全性高 · 密钥短速度快", type: "ed25519" },
     { label: "RSA 4096", description: "4096 位 · 安全性高 · 兼容旧系统 · 密钥体积大", type: "rsa" },
@@ -165,7 +165,7 @@ async function promptKeyGenConfig(): Promise<KeyGenConfig | undefined> {
   if (!typePick) {return;}
   const type = typePick.type;
 
-  // 2. 文件名
+  // 2. Key file name
   const name = await vscode.window.showInputBox({
     prompt: "密钥文件名（保存在 ~/.ssh/ 下）",
     placeHolder: `如 id_${type}_github`,
@@ -177,14 +177,14 @@ async function promptKeyGenConfig(): Promise<KeyGenConfig | undefined> {
   });
   if (!name) {return;}
 
-  // 3. 备注
+  // 3. Comment (optional)
   const comment = await vscode.window.showInputBox({
     prompt: "备注（可选，用于标识密钥用途）",
     placeHolder: "如 your-name@company.com",
   });
   if (comment === undefined) {return;}
 
-  // 4. 密码
+  // 4. Passphrase (optional)
   const passphrase = await vscode.window.showInputBox({
     prompt: "密码短语（可选，留空则无密码）",
     placeHolder: "建议设置密码保护私钥",

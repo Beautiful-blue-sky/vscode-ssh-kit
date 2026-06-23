@@ -1,9 +1,9 @@
-// SSH Kit —— 分组管理命令
+// SSH Kit — Group management commands
 import * as vscode from "vscode";
 import { StorageService } from "../core/storage";
 import { GroupItem, HostTreeDataProvider } from "../views/treeView";
 
-/** 添加分组 */
+/** Add a new group */
 export async function addGroup(
   storage: StorageService,
   tree: HostTreeDataProvider
@@ -20,7 +20,7 @@ export async function addGroup(
   vscode.window.showInformationMessage(`已添加分组：${name}`);
 }
 
-/** 重命名分组 */
+/** Rename a group */
 export async function renameGroup(
   groupItem: GroupItem,
   storage: StorageService,
@@ -37,7 +37,7 @@ export async function renameGroup(
   tree.refresh();
 }
 
-/** 删除分组 */
+/** Delete a group */
 export async function deleteGroup(
   groupItem: GroupItem,
   storage: StorageService,

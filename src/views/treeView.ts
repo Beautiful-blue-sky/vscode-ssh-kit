@@ -1,11 +1,11 @@
-// SSH Kit —— TreeView 节点与 DataProvider
+// SSH Kit — TreeView nodes and DataProvider
 import * as vscode from "vscode";
 import { SSHHost, SSHGroup } from "../core/types";
 import { StorageService } from "../core/storage";
 
-// ─── TreeView 节点 ────────────────────────────────────────────────────────
+// ─── TreeView nodes ───────────────────────────────────────────────────────
 
-/** 分组节点 */
+/** Group node */
 export class GroupItem extends vscode.TreeItem {
   constructor(
     public readonly group: SSHGroup,
@@ -25,7 +25,7 @@ export class GroupItem extends vscode.TreeItem {
   }
 }
 
-/** 主机详情子节点 */
+/** Host detail child node */
 class HostDetailItem extends vscode.TreeItem {
   constructor(label: string, value: string, icon: string, command?: vscode.Command) {
     super(label, vscode.TreeItemCollapsibleState.None);
@@ -35,7 +35,7 @@ class HostDetailItem extends vscode.TreeItem {
   }
 }
 
-/** 主机节点 —— 单击展开详情，内联按钮连接 */
+/** Host node — expand for details, inline buttons for connection */
 export class HostItem extends vscode.TreeItem {
   constructor(public readonly host: SSHHost) {
     super(host.name, vscode.TreeItemCollapsibleState.Collapsed);
@@ -50,7 +50,7 @@ export class HostItem extends vscode.TreeItem {
 
 // ─── TreeDataProvider ──────────────────────────────────────────────────────
 
-/** 最近连接虚拟分组 ID */
+/** Virtual group ID for recent connections */
 export const RECENT_GROUP_ID = "__recent__";
 
 export class HostTreeDataProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
@@ -61,7 +61,7 @@ export class HostTreeDataProvider implements vscode.TreeDataProvider<vscode.Tree
 
   constructor(private storage: StorageService) {}
 
-  /** 刷新整个树 */
+  /** Refresh the entire tree */
   refresh(): void {
     this._onDidChangeTreeData.fire();
   }
@@ -85,7 +85,7 @@ export class HostTreeDataProvider implements vscode.TreeDataProvider<vscode.Tree
       return this.buildHostNodes(element.group.id);
     }
 
-    // 展开主机节点 → 显示详情
+    // Expand host node → show detail children
     if (element instanceof HostItem) {
       return this.buildHostDetailNodes(element);
     }
@@ -93,7 +93,7 @@ export class HostTreeDataProvider implements vscode.TreeDataProvider<vscode.Tree
     return [];
   }
 
-  /** 构建主机详情子节点列表 */
+  /** Build detail child nodes for a host */
   private buildHostDetailNodes(hostItem: HostItem): HostDetailItem[] {
     const h = hostItem.host;
     const children: HostDetailItem[] = [];
@@ -122,7 +122,7 @@ export class HostTreeDataProvider implements vscode.TreeDataProvider<vscode.Tree
     return children;
   }
 
-  /** 构建最近连接虚拟分组节点（无最近连接时返回空数组） */
+  /** Build the recent connections virtual group node (empty if none) */
   private buildRecentGroup(): GroupItem[] {
     const recentHosts = this.storage.getRecentHosts();
     if (recentHosts.length === 0) {return [];}
@@ -135,12 +135,12 @@ export class HostTreeDataProvider implements vscode.TreeDataProvider<vscode.Tree
     return [new GroupItem(group, recentHosts.length, false)];
   }
 
-  /** 构建最近连接主机节点列表 */
+  /** Build recent connection host nodes */
   private buildRecentHostNodes(): HostItem[] {
     return this.storage.getRecentHosts().map((h) => new HostItem(h));
   }
 
-  /** 构建分组节点列表 */
+  /** Build group nodes from storage */
   private buildGroupNodes(): GroupItem[] {
     const groups = this.storage.getGroups();
     const collapsed = this.storage.getGroupCollapsedState();
@@ -150,7 +150,7 @@ export class HostTreeDataProvider implements vscode.TreeDataProvider<vscode.Tree
     });
   }
 
-  /** 构建指定分组下的主机节点列表（groupId 为 undefined 时返回未分组主机），按名称排序 */
+  /** Build host nodes for a given group (groupId=undefined returns ungrouped hosts), sorted by name */
   private buildHostNodes(groupId: string | undefined): HostItem[] {
     return this.storage.getHostsByGroup(groupId)
       .sort((a, b) => a.name.localeCompare(b.name))
@@ -158,13 +158,14 @@ export class HostTreeDataProvider implements vscode.TreeDataProvider<vscode.Tree
   }
 }
 
-// ─── 拖拽控制器 ────────────────────────────────────────────────────────────
+// ─── Drag-and-drop controller ─────────────────────────────────────────────
 
 const SSHKIT_MIME = "application/vnd.code.tree.sshKit";
 
 /**
- * 主机拖拽控制器 —— 支持在分组间、分组与未分组之间拖拽移动主机。
- * 拖到分组节点 → 移入该分组；拖到空白处 → 取消分组。
+ * Host drag-and-drop controller — supports moving hosts between groups.
+ * Drop onto a group node → move host into that group.
+ * Drop onto empty space → ungroup the host.
  */
 export class HostDragAndDropController implements vscode.TreeDragAndDropController<vscode.TreeItem> {
   readonly dropMimeTypes = [SSHKIT_MIME];
@@ -175,7 +176,7 @@ export class HostDragAndDropController implements vscode.TreeDragAndDropControll
     private onChanged: () => void
   ) {}
 
-  /** 准备拖拽数据：将主机 ID 写入 DataTransfer */
+  /** Prepare drag data: serialize host IDs into the DataTransfer */
   handleDrag(
     source: readonly vscode.TreeItem[],
     dataTransfer: vscode.DataTransfer,
@@ -189,7 +190,7 @@ export class HostDragAndDropController implements vscode.TreeDragAndDropControll
     }
   }
 
-  /** 处理放置：读取主机 ID，更新所属分组 */
+  /** Handle drop: read host IDs and update their group assignment */
   async handleDrop(
     target: vscode.TreeItem | undefined,
     dataTransfer: vscode.DataTransfer,
@@ -205,7 +206,7 @@ export class HostDragAndDropController implements vscode.TreeDragAndDropControll
       return;
     }
 
-    // 目标分组：拖到 GroupItem → 该分组，否则 → 未分组
+    // Determine target group: GroupItem → that group, otherwise → ungrouped
     const targetGroupId = target instanceof GroupItem
       ? target.group.id
       : undefined;

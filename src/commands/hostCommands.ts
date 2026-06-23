@@ -1,10 +1,10 @@
-// SSH Kit —— 主机 CRUD 命令（增/改/删/复制/去重/批量删除）
+// SSH Kit — Host CRUD commands (add, edit, delete, copy, deduplicate, batch delete)
 import * as vscode from "vscode";
 import { SSHHost, PromptNewHostFn } from "../core/types";
 import { StorageService } from "../core/storage";
 import { HostTreeDataProvider } from "../views/treeView";
 
-/** 添加主机 */
+/** Add a host */
 export async function addHost(
   storage: StorageService,
   tree: HostTreeDataProvider,
@@ -20,7 +20,7 @@ export async function addHost(
   );
 }
 
-/** 编辑主机 */
+/** Edit a host */
 export async function editHost(
   host: SSHHost,
   storage: StorageService,
@@ -37,7 +37,7 @@ export async function editHost(
   );
 }
 
-/** 单台删除主机 */
+/** Delete a single host */
 export async function deleteHost(
   host: SSHHost,
   storage: StorageService,
@@ -57,13 +57,13 @@ export async function deleteHost(
   );
 }
 
-/** 复制主机地址到剪贴板 */
+/** Copy hostname to clipboard */
 export async function copyHostName(host: SSHHost): Promise<void> {
   await vscode.env.clipboard.writeText(host.hostname);
   vscode.window.showInformationMessage(`已复制：${host.hostname}`);
 }
 
-/** 删除重复主机（按名称去重，保留第一个） */
+/** Remove duplicate hosts (by name, keep first occurrence) */
 export async function deduplicateHosts(
   storage: StorageService,
   tree: HostTreeDataProvider
@@ -77,7 +77,7 @@ export async function deduplicateHosts(
   }
 }
 
-/** 批量删除主机（QuickPick 多选，注意：canPickMany 有 VS Code 原生 checkbox 闪烁，属平台限制） */
+/** Batch delete hosts via multi-select QuickPick. Note: canPickMany checkbox flickering is a VS Code platform limitation. */
 export async function batchDeleteHosts(
   storage: StorageService,
   tree: HostTreeDataProvider

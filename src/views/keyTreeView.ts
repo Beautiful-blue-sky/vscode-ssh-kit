@@ -1,8 +1,8 @@
-// SSH Kit —— 密钥 TreeView
+// SSH Kit — Key tree view
 import * as vscode from "vscode";
 import { listKeys, populateFingerprints, KeyInfo } from "../keys/keyManager";
 
-/** 详情子节点 */
+/** Detail child node for key properties */
 class KeyDetailItem extends vscode.TreeItem {
   constructor(label: string, value: string, icon: string, command?: vscode.Command) {
     super(label, vscode.TreeItemCollapsibleState.None);
@@ -12,7 +12,7 @@ class KeyDetailItem extends vscode.TreeItem {
   }
 }
 
-/** 密钥树节点 — 单击展开查看详情，内联按钮复制公钥 */
+/** Key tree node — expand to view details, inline button to copy public key */
 export class KeyItem extends vscode.TreeItem {
   constructor(public readonly key: KeyInfo) {
     super(key.name, vscode.TreeItemCollapsibleState.Collapsed);
@@ -28,7 +28,7 @@ export class KeyItem extends vscode.TreeItem {
   }
 }
 
-/** 密钥树 DataProvider */
+/** Key tree DataProvider */
 export class KeyTreeDataProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
   private _onDidChangeTreeData = new vscode.EventEmitter<vscode.TreeItem | undefined | void>();
   readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
@@ -52,15 +52,15 @@ export class KeyTreeDataProvider implements vscode.TreeDataProvider<vscode.TreeI
       const k = element.key;
       const children: KeyDetailItem[] = [];
 
-      // 类型
+      // Key type
       children.push(new KeyDetailItem("类型", k.type, "symbol-keyword"));
 
-      // 指纹
+      // Fingerprint
       if (k.fingerprint) {
         children.push(new KeyDetailItem("指纹", k.fingerprint, "fingerprint"));
       }
 
-      // 私钥 — 单击打开
+      // Private key — click to open
       children.push(new KeyDetailItem(
         "私钥", k.privateKeyPath, "lock",
         {
@@ -70,7 +70,7 @@ export class KeyTreeDataProvider implements vscode.TreeDataProvider<vscode.TreeI
         }
       ));
 
-      // 公钥 — 单击打开
+      // Public key — click to open
       if (k.publicKeyPath) {
         children.push(new KeyDetailItem(
           "公钥", k.publicKeyPath, "key",

@@ -1,4 +1,4 @@
-// SSH Kit —— 扩展入口（激活 + 辅助函数 + 命令注册）
+// SSH Kit — Entry point (activation, helpers, command registration)
 import * as vscode from "vscode";
 import { SSHHost, SSHGroup } from "./core/types";
 import { StorageService } from "./core/storage";
@@ -13,9 +13,9 @@ import { importConfig, exportConfig, openSshConfig, backupKitData, restoreKitDat
 import { showKeyList, generateKey } from "./commands/keyCommands";
 import { listKeys } from "./keys/keyManager";
 
-// ─── 交互辅助 ─────────────────────────────────────────────────────────────
+// ─── Interaction helpers ──────────────────────────────────────────────────
 
-/** 单步输入配置 */
+/** Single-step input configuration */
 interface InputStep {
   prompt: string;
   placeHolder: string;
@@ -23,7 +23,7 @@ interface InputStep {
   validate: (v: string) => string | undefined;
 }
 
-/** 通用单步输入：取消返回 undefined */
+/** Generic single-step input: returns undefined on cancel */
 async function promptInput(step: InputStep): Promise<string | undefined> {
   return vscode.window.showInputBox({
     prompt: step.prompt,
@@ -33,7 +33,7 @@ async function promptInput(step: InputStep): Promise<string | undefined> {
   });
 }
 
-/** 多步输入收集：新建/编辑主机 */
+/** Multi-step input collection: create or edit a host */
 async function promptNewHost(
   storage: StorageService,
   prefill?: Partial<SSHHost>
@@ -61,7 +61,7 @@ async function promptNewHost(
         if (m.slice(1).some((o) => +o > 255)) {return "IP 每段不超过 255";}
         return undefined;
       }
-      // 主机名/域名（字母数字 + 连字符 + 点号）
+      // Hostname or domain (alphanumeric, hyphens, dots)
       if (/^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)*$/.test(t)) {
         return undefined;
       }
@@ -90,7 +90,7 @@ async function promptNewHost(
     validate: (v) => {
       const t = v.trim();
       if (!t) {return "用户名不能为空";}
-      // SSH 用户名规范：仅允许小写字母、数字、下划线、连字符
+      // SSH username convention: lowercase letters, digits, underscores, hyphens only
       if (!/^[a-z_][a-z0-9_-]*$/.test(t)) {
         return "仅允许小写字母、数字、下划线、连字符（字母开头）";
       }
@@ -99,11 +99,11 @@ async function promptNewHost(
   });
   if (username === undefined) {return;}
 
-  // 选择分组（可选）
+  // Select group (optional)
   const groupId = await promptGroup(storage, prefill?.groupId);
-  if (groupId === null) {return;} // 用户取消
+  if (groupId === null) {return;} // User cancelled
 
-  // 选择关联密钥（可选）
+  // Select associated key (optional)
   const identityFile = await promptIdentityFile(prefill?.identityFile);
   if (identityFile === null) {return;}
 
@@ -119,8 +119,8 @@ async function promptNewHost(
 }
 
 /**
- * 密钥选择步骤。
- * @returns 取消时返回 null，不关联时返回 ""，选中时返回私钥路径
+ * Key selection step.
+ * @returns null on cancel, "" for no key, private key path when selected
  */
 async function promptIdentityFile(
   prefillPath?: string
@@ -138,7 +138,7 @@ async function promptIdentityFile(
     })),
   ];
 
-  // 编辑时预选当前关联的密钥
+  // Pre-select currently associated key when editing
   let activeItem: (typeof items)[number] | undefined;
   if (prefillPath) {
     activeItem = items.find((it) => it.path === prefillPath);
@@ -163,13 +163,13 @@ async function promptIdentityFile(
     quickPick.show();
   });
 
-  if (picked === undefined) {return null;} // 取消
+  if (picked === undefined) {return null;} // Cancel
   return picked.path ?? "";
 }
 
 /**
- * 分组选择步骤。
- * @returns 取消时返回 null，不分组时返回 ""，选中分组时返回分组 ID
+ * Group selection step.
+ * @returns null on cancel, "" for no group, group ID when selected
  */
 async function promptGroup(
   storage: StorageService,
@@ -183,7 +183,7 @@ async function promptGroup(
     ...groups.map((g) => ({ label: `$(folder) ${g.name}`, group: g })),
   ];
 
-  // 编辑时预选当前分组
+  // Pre-select current group when editing
   let activeItem: (typeof items)[number] | undefined;
   if (prefillGroupId) {
     activeItem = items.find((it) => it.group?.id === prefillGroupId);
@@ -208,22 +208,22 @@ async function promptGroup(
     quickPick.show();
   });
 
-  if (picked === undefined) {return null;} // 用户取消
-  return picked.group?.id ?? ""; // undefined → ""（不分组）
+  if (picked === undefined) {return null;} // User cancelled
+  return picked.group?.id ?? ""; // undefined → "" (no group)
 }
 
-// ─── 工具函数 ─────────────────────────────────────────────────────────────
+// ─── Utility functions ────────────────────────────────────────────────────
 
 /**
- * 从 TreeView 回调参数中提取 SSHHost。
- * 右键菜单/内联按钮传过来的是 HostItem（TreeItem），
- * 命令面板调用时可能直接传 SSHHost，统一解包。
+ * Extract SSHHost from TreeView callback arguments.
+ * Context menus / inline buttons pass HostItem (TreeItem);
+ * Command Palette may pass SSHHost directly. Unwrap uniformly.
  */
 function unwrapHost(arg: HostItem | SSHHost): SSHHost {
   return arg instanceof HostItem ? arg.host : arg;
 }
 
-// ─── 扩展激活 ─────────────────────────────────────────────────────────────
+// ─── Extension activation ─────────────────────────────────────────────────
 
 export function activate(context: vscode.ExtensionContext) {
   console.log("SSH Kit activated");
@@ -245,7 +245,7 @@ export function activate(context: vscode.ExtensionContext) {
   });
   context.subscriptions.push(keyTreeView);
 
-  // 折叠状态持久化
+  // Persist group collapse state
   context.subscriptions.push(
     treeView.onDidCollapseElement((e) => {
       if (e.element instanceof GroupItem) {
@@ -259,7 +259,7 @@ export function activate(context: vscode.ExtensionContext) {
     })
   );
 
-  // 按类别注册命令
+  // Register commands by category
   registerCoreCommands(context, treeDataProvider, keyTreeDataProvider);
   registerHostCommands(context, storage, treeDataProvider);
   registerGroupCommands(context, storage, treeDataProvider);
@@ -268,7 +268,7 @@ export function activate(context: vscode.ExtensionContext) {
   registerKeyCommands(context, keyTreeDataProvider);
 }
 
-/** 核心命令：刷新 */
+/** Core command: refresh */
 function registerCoreCommands(
   context: vscode.ExtensionContext,
   tree: HostTreeDataProvider,
@@ -282,7 +282,7 @@ function registerCoreCommands(
   );
 }
 
-/** 主机 CRUD + 去重 + 批量删除 */
+/** Host CRUD, dedup, and batch delete */
 function registerHostCommands(
   context: vscode.ExtensionContext,
   storage: StorageService,
@@ -315,7 +315,7 @@ function registerHostCommands(
   );
 }
 
-/** 分组管理 */
+/** Group management */
 function registerGroupCommands(
   context: vscode.ExtensionContext,
   storage: StorageService,
@@ -336,7 +336,7 @@ function registerGroupCommands(
   );
 }
 
-/** 连接 + 连通性测试 + 搜索 */
+/** Connection, connectivity test, and search */
 function registerConnectCommands(
   context: vscode.ExtensionContext,
   storage: StorageService
@@ -367,7 +367,7 @@ function registerConnectCommands(
   );
 }
 
-/** SSH Config 导入/导出 + 备份恢复 */
+/** SSH Config import/export and backup/restore */
 function registerIOCommands(
   context: vscode.ExtensionContext,
   storage: StorageService,
@@ -393,13 +393,13 @@ function registerIOCommands(
   );
 }
 
-/** 密钥管理 */
+/** Key management */
 function registerKeyCommands(
   context: vscode.ExtensionContext,
   keyTree: KeyTreeDataProvider
 ): void {
   context.subscriptions.push(
-    // 单击打开密钥文件（优先公钥）
+    // Open key file on click (prefer public key)
     vscode.commands.registerCommand(
       "sshKit.openKeyFile",
       async (item: KeyItem) => {
@@ -409,7 +409,7 @@ function registerKeyCommands(
       }
     ),
 
-    // 查看私钥（右键菜单用）
+    // View private key (for context menu)
     vscode.commands.registerCommand(
       "sshKit.openPrivateKey",
       async (item: KeyItem) => {
@@ -418,7 +418,7 @@ function registerKeyCommands(
       }
     ),
 
-    // 查看详情（右键菜单用）
+    // View details (for context menu)
     vscode.commands.registerCommand(
       "sshKit.showKeyDetail",
       (item: KeyItem) => {
@@ -434,7 +434,7 @@ function registerKeyCommands(
       }
     ),
 
-    // 复制公钥（内联按钮 + 右键菜单共用）
+    // Copy public key (shared by inline button and context menu)
     vscode.commands.registerCommand(
       "sshKit.copyKeyPublic",
       async (item: KeyItem) => {
@@ -453,7 +453,7 @@ function registerKeyCommands(
       }
     ),
 
-    // 删除密钥
+    // Delete key
     vscode.commands.registerCommand(
       "sshKit.deleteKey",
       async (item: KeyItem) => {
@@ -474,7 +474,7 @@ function registerKeyCommands(
       }
     ),
 
-    // 重命名密钥
+    // Rename key
     vscode.commands.registerCommand(
       "sshKit.renameKey",
       async (item: KeyItem) => {
@@ -499,7 +499,7 @@ function registerKeyCommands(
       }
     ),
 
-    // 命令面板入口（保留 QuickPick 方式）
+    // Command Palette entry (keep QuickPick approach)
     vscode.commands.registerCommand("sshKit.listKeys", () => showKeyList(keyTree)),
     vscode.commands.registerCommand("sshKit.generateKey", () => generateKey(keyTree))
   );
