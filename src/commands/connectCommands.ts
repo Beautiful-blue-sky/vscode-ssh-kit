@@ -10,7 +10,7 @@ import { getErrorMessage } from "../core/utils";
 
 // ─── VS Code Remote-SSH connection ────────────────────────────────────────
 
-/** Open Remote-SSH connection in the current window */
+/** Open Remote-SSH connection in the current window. */
 export async function connectHostInCurrentWindow(
   host: SSHHost,
   storage: StorageService
@@ -32,37 +32,127 @@ async function doConnect(
   storage: StorageService,
   forceNewWindow: boolean
 ): Promise<void> {
-  const hostSpec = `${host.username}@${host.hostname}:${host.port}`;
-  const windowLabel = forceNewWindow ? "新窗口" : "当前窗口";
-  vscode.window.showInformationMessage(
-    `正在连接 ${host.name} (${hostSpec}) [${windowLabel}]...`
+  const windowTarget = await resolveWindowTarget(forceNewWindow);
+  if (!windowTarget) {return;}
+
+  const openInNewWindow = windowTarget.openInNewWindow;
+  const hostSpec = formatHostSpec(host);
+  const remoteDisplayLabel = buildRemoteDisplayLabel(host);
+  const windowLabel = openInNewWindow ? "新窗口" : "当前窗口";
+  const status = vscode.window.setStatusBarMessage(
+    `$(sync~spin) SSH Kit: 正在打开 ${remoteDisplayLabel} (${hostSpec}) [${windowLabel} · 空窗口]...`
   );
+  if (windowTarget.reason) {
+    vscode.window.setStatusBarMessage(
+      `$(info) SSH Kit: ${windowTarget.reason}`,
+      7000
+    );
+  }
 
   await storage.addRecentConnection(host.id);
 
-  const remoteUri = vscode.Uri.parse(
-    `vscode-remote://ssh-remote+${hostSpec}/`
-  );
-
   try {
-    await vscode.commands.executeCommand(
-      "vscode.openFolder",
-      remoteUri,
-      forceNewWindow ? { forceNewWindow: true } : undefined
-    );
+    if (!openInNewWindow) {
+      await prepareCurrentWindowForRemoteReuse();
+    }
+    await openVSCodeRemoteEmptyWindow(host, openInNewWindow);
+    showRemoteOpenSuccess(remoteDisplayLabel, windowLabel);
   } catch {
     try {
-      // Fallback: Remote-SSH native command
-      await vscode.commands.executeCommand(
-        "openssh-remotes.openEmptyWindow",
-        { host: hostSpec }
-      );
+      await openRemoteSSHEmptyWindow(host, openInNewWindow);
+      showRemoteOpenSuccess(remoteDisplayLabel, windowLabel);
     } catch {
       vscode.window.showErrorMessage(
         "无法调起 Remote-SSH 连接。请确认已安装 Remote-SSH 扩展。"
       );
     }
+  } finally {
+    status.dispose();
   }
+}
+
+interface WindowTarget {
+  openInNewWindow: boolean;
+  reason?: string;
+}
+
+/** Reusing a local workspace window can make VS Code carry local cwd state into the remote side. */
+async function resolveWindowTarget(forceNewWindow: boolean): Promise<WindowTarget | undefined> {
+  if (forceNewWindow) {
+    return { openInNewWindow: true };
+  }
+
+  const risks = getCurrentWindowReuseRisks();
+  if (risks.length === 0) {
+    return { openInNewWindow: false };
+  }
+
+  const hasTerminals = vscode.window.terminals.length > 0;
+  const continueCurrent = hasTerminals ? "关闭终端并继续当前窗口" : "继续当前窗口";
+  const message = hasTerminals
+    ? [
+        `当前窗口已有${risks.join("、")}，复用窗口连接 Remote-SSH 前需要先关闭本窗口终端。`,
+        "这样可以避免 VS Code 在远程端恢复本地 cwd，导致 Starting directory (cwd) 不存在。",
+      ].join("\n")
+    : [
+        `当前窗口已有${risks.join("、")}，复用窗口连接 Remote-SSH 可能让远程端继承本地窗口状态。`,
+        "低配置服务器建议改用新窗口，避免工作区索引和终端状态影响远程连接。",
+      ].join("\n");
+
+  const choice = await vscode.window.showWarningMessage(
+    message,
+    { modal: true },
+    continueCurrent,
+    "改用新窗口"
+  );
+
+  if (choice === continueCurrent) {
+    return { openInNewWindow: false };
+  }
+  if (choice === "改用新窗口") {
+    return {
+      openInNewWindow: true,
+      reason: "已按选择改用新窗口，避免远程 cwd 报错。",
+    };
+  }
+  return undefined;
+}
+
+function getCurrentWindowReuseRisks(): string[] {
+  const risks: string[] = [];
+  if ((vscode.workspace.workspaceFolders?.length ?? 0) > 0) {
+    risks.push("工作区");
+  }
+  if (vscode.window.terminals.length > 0) {
+    risks.push("终端");
+  }
+  return risks;
+}
+
+/** Clear local terminal state before reusing the current window as a remote window. */
+async function prepareCurrentWindowForRemoteReuse(): Promise<void> {
+  const terminals = [...vscode.window.terminals];
+  for (const terminal of terminals) {
+    terminal.dispose();
+  }
+
+  try {
+    await vscode.commands.executeCommand("workbench.action.terminal.killAll");
+  } catch {
+    // Older VS Code builds or restricted environments may not expose this command.
+  }
+
+  if (terminals.length > 0) {
+    await new Promise((resolve) => globalThis.setTimeout(resolve, 150));
+  }
+}
+
+/** Show a short, auto-disappearing status after VS Code accepts the remote open request. */
+function showRemoteOpenSuccess(hostName: string, windowLabel: string): void {
+  vscode.window.setStatusBarMessage(
+    `$(check) SSH Kit: 已打开 ${hostName} [${windowLabel} · 空窗口]`,
+    5000
+  );
 }
 
 // ─── Connectivity test ────────────────────────────────────────────────────
@@ -192,6 +282,213 @@ export async function connectInExternalTerminal(
       `启动外部终端失败：${getErrorMessage(err)}`
     );
   }
+}
+
+/** Open an empty Remote-SSH window via the extension command as a fallback. */
+async function openRemoteSSHEmptyWindow(host: SSHHost, openInNewWindow: boolean): Promise<void> {
+  const command = openInNewWindow
+    ? "opensshremotes.openEmptyWindow"
+    : "opensshremotes.openEmptyWindowInCurrentWindow";
+
+  try {
+    await vscode.commands.executeCommand(command, {
+      host: ensureRemoteSshAlias(host),
+    });
+  } catch {
+    await vscode.commands.executeCommand(command, {
+      host: host.hostname,
+      userName: host.username,
+      port: host.port,
+    });
+  }
+}
+
+/** Open a remote empty window without invoking Remote-SSH's host picker UI. */
+async function openVSCodeRemoteEmptyWindow(host: SSHHost, openInNewWindow: boolean): Promise<void> {
+  const alias = ensureRemoteSshAlias(host);
+  await vscode.commands.executeCommand("vscode.newWindow", {
+    remoteAuthority: `ssh-remote+${alias}`,
+    reuseWindow: !openInNewWindow,
+  });
+}
+
+function formatHostSpec(host: SSHHost): string {
+  return `${host.username}@${host.hostname}:${host.port}`;
+}
+
+function buildRemoteDisplayLabel(host: SSHHost): string {
+  return buildRemoteSshAlias(host);
+}
+
+function ensureRemoteSshAlias(host: SSHHost): string {
+  const alias = buildRemoteSshAlias(host);
+  const configPath = getSSHConfigPath();
+  const dir = path.dirname(configPath);
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+
+  const existing = fs.existsSync(configPath)
+    ? fs.readFileSync(configPath, "utf-8")
+    : "";
+  const block = formatRemoteSshAliasBlock(host, alias);
+  const markerPattern = new RegExp(
+    `^${escapeRegExp(aliasBlockBegin(host.id))}\\r?\\n[\\s\\S]*?^${escapeRegExp(aliasBlockEnd(host.id))}\\r?\\n?`,
+    "m"
+  );
+  const updated = markerPattern.test(existing)
+    ? existing.replace(markerPattern, block + "\n")
+    : joinConfigText(existing, block);
+
+  if (updated !== existing) {
+    fs.writeFileSync(configPath, updated, "utf-8");
+  }
+  return alias;
+}
+
+function buildRemoteSshAlias(host: SSHHost): string {
+  const prefix = "SSH Kit: ";
+  const separator = " | ";
+  const endpoint = formatDisplayEndpoint(host);
+  const maxLength = 120;
+  const maxNameLength = Math.max(8, maxLength - prefix.length - separator.length - endpoint.length);
+  const name = truncateText(sanitizeRemoteAliasText(host.name), maxNameLength) || "host";
+  return `${prefix}${name}${separator}${endpoint}`;
+}
+
+function sanitizeRemoteAliasText(value: string): string {
+  return value
+    .trim()
+    .replace(/[\r\n\t]+/g, " ")
+    .replace(/["\\#]/g, "_")
+    .replace(/\s+/g, " ");
+}
+
+function truncateText(value: string, maxLength: number): string {
+  if (value.length <= maxLength) {return value;}
+  return value.slice(0, maxLength).trimEnd();
+}
+
+function formatDisplayEndpoint(host: SSHHost): string {
+  const hostname = host.hostname.includes(":") && !host.hostname.startsWith("[")
+    ? `[${host.hostname}]`
+    : host.hostname;
+  return `${hostname}:${host.port}`;
+}
+
+function getSSHConfigPath(): string {
+  return path.join(os.homedir(), ".ssh", "config");
+}
+
+function formatRemoteSshAliasBlock(host: SSHHost, alias: string): string {
+  const lines = [
+    aliasBlockBegin(host.id),
+    `Host ${formatSSHHostPattern(alias)}`,
+    `  HostName ${host.hostname}`,
+  ];
+  if (host.port && host.port !== 22) {
+    lines.push(`  Port ${host.port}`);
+  }
+  if (host.username) {
+    lines.push(`  User ${host.username}`);
+  }
+  if (host.identityFile) {
+    lines.push(`  IdentityFile ${host.identityFile}`);
+  }
+  if (host.extraConfig) {
+    for (const [key, value] of Object.entries(host.extraConfig)) {
+      const lowerKey = key.toLowerCase();
+      if (["host", "hostname", "port", "user", "identityfile"].includes(lowerKey)) {continue;}
+      const values = Array.isArray(value) ? value : [value];
+      for (const item of values) {
+        lines.push(`  ${formatSSHDirectiveKey(key)} ${item}`);
+      }
+    }
+  }
+  lines.push(aliasBlockEnd(host.id));
+  return lines.join("\n");
+}
+
+function formatSSHHostPattern(alias: string): string {
+  if (/[\s#"'\\]/.test(alias)) {
+    return `"${alias.replace(/\\/g, "\\\\").replace(/"/g, "\\\"")}"`;
+  }
+  return alias;
+}
+
+function formatSSHDirectiveKey(key: string): string {
+  const canonical: Record<string, string> = {
+    addkeystoagent: "AddKeysToAgent",
+    certificatefile: "CertificateFile",
+    compression: "Compression",
+    connecttimeout: "ConnectTimeout",
+    forwardagent: "ForwardAgent",
+    identitiesonly: "IdentitiesOnly",
+    localforward: "LocalForward",
+    loglevel: "LogLevel",
+    proxycommand: "ProxyCommand",
+    proxyjump: "ProxyJump",
+    remoteforward: "RemoteForward",
+    sendenv: "SendEnv",
+    serveralivecountmax: "ServerAliveCountMax",
+    serveraliveinterval: "ServerAliveInterval",
+    stricthostkeychecking: "StrictHostKeyChecking",
+    userknownhostsfile: "UserKnownHostsFile",
+  };
+  return canonical[key.toLowerCase()] ?? key;
+}
+
+function aliasBlockBegin(hostId: string): string {
+  return `# SSH Kit connect alias ${hostId} begin`;
+}
+
+function aliasBlockEnd(hostId: string): string {
+  return `# SSH Kit connect alias ${hostId} end`;
+}
+
+function joinConfigText(existing: string, block: string): string {
+  const prefix = existing.trimEnd();
+  return prefix ? `${prefix}\n\n${block}\n` : `${block}\n`;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** Remove SSH Kit connection aliases whose host no longer exists in storage. */
+export async function cleanupRemoteSshAliases(storage: StorageService): Promise<void> {
+  const configPath = getSSHConfigPath();
+  if (!fs.existsSync(configPath)) {
+    vscode.window.showInformationMessage("SSH Config 文件不存在，无需清理连接别名。");
+    return;
+  }
+
+  const existing = fs.readFileSync(configPath, "utf-8");
+  const activeHostIds = new Set(storage.getAllHosts().map((host) => host.id));
+  const staleAliases: string[] = [];
+  const aliasBlockPattern = /^# SSH Kit connect alias ([^\r\n]+) begin\r?\n[\s\S]*?^# SSH Kit connect alias \1 end\r?\n?/gm;
+  const updated = existing.replace(aliasBlockPattern, (block, hostId: string) => {
+    if (activeHostIds.has(hostId)) {
+      return block;
+    }
+    staleAliases.push(hostId);
+    return "";
+  });
+
+  if (staleAliases.length === 0) {
+    vscode.window.showInformationMessage("没有失效的 SSH Kit 连接别名。");
+    return;
+  }
+
+  const confirmed = await vscode.window.showWarningMessage(
+    `将从 SSH Config 删除 ${staleAliases.length} 个失效的 SSH Kit 连接别名。此操作只影响 SSH Kit 自动生成的别名块。`,
+    { modal: true },
+    "确认清理"
+  );
+  if (confirmed !== "确认清理") {return;}
+
+  fs.writeFileSync(configPath, updated.replace(/\n{3,}/g, "\n\n"), "utf-8");
+  vscode.window.showInformationMessage(`已清理 ${staleAliases.length} 个失效的 SSH Kit 连接别名。`);
 }
 
 // ─── VS Code built-in terminal connection ──────────────────────────────────

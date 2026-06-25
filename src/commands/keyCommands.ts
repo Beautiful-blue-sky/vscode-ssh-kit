@@ -3,7 +3,7 @@ import * as path from "path";
 import * as vscode from "vscode";
 import {
   listKeys, populateFingerprints, generateKeyPair, deleteKeyPair, renameKeyPair,
-  readPublicKey, KeyInfo, KeyType
+  readPublicKey, regeneratePublicKey, KeyInfo, KeyType
 } from "../keys/keyManager";
 import { getErrorMessage } from "../core/utils";
 
@@ -21,7 +21,7 @@ export async function showKeyList(keyTree?: { refresh: () => void }): Promise<vo
 
   const items = keys.map((k) => ({
     label: `$(key) ${k.name}`,
-    description: k.type,
+    description: formatKeyType(k),
     detail: k.fingerprint ?? "正在获取指纹...",
     key: k,
   }));
@@ -39,19 +39,31 @@ export async function showKeyList(keyTree?: { refresh: () => void }): Promise<vo
 async function showKeyDetail(key: KeyInfo, keyTree?: { refresh: () => void }): Promise<void> {
   const parts: string[] = [];
   parts.push(`$(key) 密钥：${key.name}`);
-  parts.push(`类型：${key.type}`);
+  parts.push(`类型：${formatKeyType(key)}`);
   if (key.fingerprint) {
     parts.push(`指纹：${key.fingerprint}`);
   }
   parts.push(`路径：${key.privateKeyPath}`);
+  if (!key.publicKeyPath) {
+    parts.push("公钥：缺少公钥文件");
+  }
 
+  const actions = [
+    ...(!key.publicKeyPath || key.type === "unknown" ? ["重新生成公钥"] : []),
+    "复制公钥",
+    "重命名",
+    "删除",
+  ];
   const choice = await vscode.window.showInformationMessage(
     parts.join("\n"),
     { modal: false },
-    "复制公钥", "重命名", "删除"
+    ...actions
   );
 
   switch (choice) {
+    case "重新生成公钥":
+      await promptRegeneratePublicKey(key, keyTree);
+      break;
     case "复制公钥":
       await copyPublicKeyToClipboard(key);
       break;
@@ -62,6 +74,10 @@ async function showKeyDetail(key: KeyInfo, keyTree?: { refresh: () => void }): P
       await promptDeleteKey(key, keyTree);
       break;
   }
+}
+
+function formatKeyType(key: KeyInfo): string {
+  return key.type === "unknown" ? "无法识别" : key.type;
 }
 
 /** Copy public key to clipboard */
@@ -94,6 +110,26 @@ async function promptDeleteKey(key: KeyInfo, keyTree?: { refresh: () => void }):
     vscode.window.showInformationMessage(`已删除密钥：${key.name}`);
   } catch (err: unknown) {
     vscode.window.showErrorMessage(`删除失败：${getErrorMessage(err)}`);
+  }
+}
+
+async function promptRegeneratePublicKey(key: KeyInfo, keyTree?: { refresh: () => void }): Promise<void> {
+  const hasPublicKey = Boolean(key.publicKeyPath);
+  if (hasPublicKey) {
+    const confirmed = await vscode.window.showWarningMessage(
+      `公钥文件已存在，确定重新生成并覆盖「${key.name}.pub」？`,
+      { modal: true },
+      "重新生成"
+    );
+    if (confirmed !== "重新生成") {return;}
+  }
+
+  try {
+    const publicKeyPath = regeneratePublicKey(key.privateKeyPath, hasPublicKey);
+    keyTree?.refresh();
+    vscode.window.showInformationMessage(`已生成公钥：${publicKeyPath}`);
+  } catch (err: unknown) {
+    vscode.window.showErrorMessage(`生成公钥失败：${getErrorMessage(err)}`);
   }
 }
 

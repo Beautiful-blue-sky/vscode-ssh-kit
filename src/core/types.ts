@@ -10,7 +10,7 @@ export interface SSHHost {
   identityFile?: string;   // Associated private key path
   groupId?: string;        // Owning group ID (undefined means ungrouped)
   tags: string[];          // Tags for cross-group filtering
-  extraConfig?: Record<string, string>; // Additional SSH config directives
+  extraConfig?: Record<string, string | string[]>; // Additional SSH config directives
 }
 
 /** Host group */

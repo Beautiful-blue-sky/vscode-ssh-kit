@@ -14,7 +14,7 @@ function defaultConfigPath(): string {
 /** Parsed Host section */
 interface HostSection {
   aliases: string[];                 // Host alias list
-  props: Record<string, string>;     // Directive → value map
+  props: Record<string, string[]>;   // Directive → values map
 }
 
 /** Raw Host block with source text offsets, used to preserve user config text */
@@ -52,12 +52,12 @@ function parseSections(rawText: string): HostSection[] {
       // New Host section starts; save the previous one
       if (current) {sections.push(current);}
       current = {
-        aliases: value.split(/\s+/).filter(Boolean),
+        aliases: splitSSHWords(value),
         props: {},
       };
     } else if (current) {
       // Section-level directive (stored lowercase for lookup)
-      current.props[directive] = value;
+      current.props[directive] = [...(current.props[directive] ?? []), value];
     }
     // Top-level directives outside Host sections (e.g. global IdentityFile) are ignored for now
   }
@@ -92,7 +92,7 @@ export function importFromSSHConfig(
     throw new Error(`SSH config 文件不存在：${resolvedPath}`);
   }
 
-  const rawText = readConfigWithIncludes(resolvedPath);
+  const rawText = stripConnectAliasBlocks(readConfigWithIncludes(resolvedPath));
   const sections = parseSections(rawText);
 
   const hosts: Omit<SSHHost, "id">[] = [];
@@ -101,10 +101,10 @@ export function importFromSSHConfig(
     // Skip wildcard Host *
     if (section.aliases.length === 1 && section.aliases[0] === "*") {continue;}
 
-    const hostname = section.props.hostname ?? section.aliases[0];
-    const port = parseInt(section.props.port ?? "22", 10);
-    const username = section.props.user ?? "";
-    const identityFile = section.props.identityfile;
+    const hostname = getLastDirective(section.props, "hostname") ?? section.aliases[0];
+    const port = parseInt(getLastDirective(section.props, "port") ?? "22", 10);
+    const username = getLastDirective(section.props, "user") ?? "";
+    const identityFile = getLastDirective(section.props, "identityfile");
 
     for (const alias of section.aliases) {
       hosts.push({
@@ -114,7 +114,7 @@ export function importFromSSHConfig(
         username,
         identityFile: identityFile || undefined,
         tags: [],
-        extraConfig: section.props,
+        extraConfig: toExtraConfig(section.props),
       });
     }
   }
@@ -142,7 +142,7 @@ function readConfigWithIncludes(
       const match = line.match(includeRegex);
       if (!match) {return line;}
 
-      const includePatterns = splitIncludePatterns(match[1].trim());
+      const includePatterns = splitSSHWords(match[1].trim());
       return includePatterns
         .map((includePattern) => resolveIncludeFiles(includePattern, resolved, visited))
         .join("\n");
@@ -188,17 +188,24 @@ function resolveIncludeFiles(
     .join("\n");
 }
 
-/** Split an Include directive into path patterns (quotes preserve spaces). */
-function splitIncludePatterns(value: string): string[] {
-  const patterns: string[] = [];
+/** Split SSH config word lists (quotes preserve spaces). */
+function splitSSHWords(value: string): string[] {
+  const words: string[] = [];
   const tokenRegex = /"([^"]+)"|'([^']+)'|(\S+)/g;
   let match: RegExpExecArray | null;
 
   while ((match = tokenRegex.exec(value)) !== null) {
-    patterns.push(match[1] ?? match[2] ?? match[3]);
+    words.push(match[1] ?? match[2] ?? match[3]);
   }
 
-  return patterns;
+  return words;
+}
+
+function stripConnectAliasBlocks(rawText: string): string {
+  return rawText.replace(
+    /^# SSH Kit connect alias ([^\r\n]+) begin\r?\n[\s\S]*?^# SSH Kit connect alias \1 end\r?\n?/gm,
+    ""
+  );
 }
 
 /** Convert a simple SSH Include glob pattern to a regex. */
@@ -217,7 +224,7 @@ function globPatternToRegex(pattern: string): RegExp {
  */
 function formatHostSection(host: SSHHost): string {
   const lines: string[] = [];
-  lines.push(`Host ${host.name}`);
+  lines.push(`Host ${formatHostPattern(host.name)}`);
   lines.push(`  HostName ${host.hostname}`);
   if (host.port && host.port !== 22) {
     lines.push(`  Port ${host.port}`);
@@ -239,10 +246,58 @@ function formatHostSection(host: SSHHost): string {
         kl === "user" ||
         kl === "identityfile"
       ) {continue;}
-      lines.push(`  ${key} ${value}`);
+      const values = Array.isArray(value) ? value : [value];
+      for (const item of values) {
+        lines.push(`  ${formatDirectiveKey(key)} ${item}`);
+      }
     }
   }
   return lines.join("\n");
+}
+
+function getLastDirective(
+  props: Record<string, string[]>,
+  key: string
+): string | undefined {
+  const values = props[key.toLowerCase()];
+  return values?.[values.length - 1];
+}
+
+function toExtraConfig(props: Record<string, string[]>): Record<string, string | string[]> {
+  const extraConfig: Record<string, string | string[]> = {};
+  for (const [key, values] of Object.entries(props)) {
+    extraConfig[key] = values.length === 1 ? values[0] : [...values];
+  }
+  return extraConfig;
+}
+
+function formatDirectiveKey(key: string): string {
+  const canonical: Record<string, string> = {
+    addkeystoagent: "AddKeysToAgent",
+    certificatefile: "CertificateFile",
+    compression: "Compression",
+    connecttimeout: "ConnectTimeout",
+    forwardagent: "ForwardAgent",
+    identitiesonly: "IdentitiesOnly",
+    localforward: "LocalForward",
+    loglevel: "LogLevel",
+    proxycommand: "ProxyCommand",
+    proxyjump: "ProxyJump",
+    remoteforward: "RemoteForward",
+    sendenv: "SendEnv",
+    serveralivecountmax: "ServerAliveCountMax",
+    serveraliveinterval: "ServerAliveInterval",
+    stricthostkeychecking: "StrictHostKeyChecking",
+    userknownhostsfile: "UserKnownHostsFile",
+  };
+  return canonical[key.toLowerCase()] ?? key;
+}
+
+function formatHostPattern(pattern: string): string {
+  if (/[\s#"'\\]/.test(pattern)) {
+    return `"${pattern.replace(/\\/g, "\\\\").replace(/"/g, "\\\"")}"`;
+  }
+  return pattern;
 }
 
 /** Marker for SSH Kit managed blocks */
@@ -403,7 +458,7 @@ function findHostBlocks(rawText: string): HostBlock[] {
     const end = sections[index + 1]?.start ?? rawText.length;
     const text = rawText.slice(section.start, end);
     blocks.push({
-      aliases: section.value.split(/\s+/).filter(Boolean),
+      aliases: splitSSHWords(section.value),
       text,
       start: section.start,
       end,

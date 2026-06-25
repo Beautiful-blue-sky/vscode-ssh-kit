@@ -7,7 +7,8 @@ import {
   createDefaultData,
   generateId,
 } from "./types";
-import { listKeys, populateFingerprints, exportKeyFiles, importKeyFiles } from "../keys/keyManager";
+import { listKeys, populateFingerprints, exportKeyFiles, importKeyFiles, sanitizeKeyFileName } from "../keys/keyManager";
+import { findDuplicateEndpointGroups, findImportMatch } from "./hostMatching";
 
 /** Key used in globalState storage */
 const DATA_KEY = "sshKit.data";
@@ -90,23 +91,11 @@ export class StorageService {
     return this.getData().hosts.find((h) => h.name === name);
   }
 
-  /**
-   * Remove duplicate hosts by name, keeping the first occurrence.
-   * Side effect: also cleans up deleted host IDs from recentConnections.
-   * @returns number of duplicates removed
-   */
+  /** Remove duplicate hosts by actual SSH endpoint, keeping the first occurrence. */
   async deduplicateHosts(): Promise<number> {
     const data = this.getData();
-    const seen = new Set<string>();
-    const duplicates: string[] = []; // Host IDs to delete
-
-    for (const host of data.hosts) {
-      if (seen.has(host.name)) {
-        duplicates.push(host.id);
-      } else {
-        seen.add(host.name);
-      }
-    }
+    const duplicates = findDuplicateEndpointGroups(data.hosts)
+      .flatMap((group) => group.hosts.slice(1).map((host) => host.id));
 
     if (duplicates.length === 0) {return 0;}
 
@@ -187,19 +176,23 @@ export class StorageService {
 
   // ─── Backup / restore ───────────────────────────────────────────────
 
-  /** Export all data as JSON (including base64-encoded key files) */
+  /** Export all data as JSON (including base64-encoded associated key files) */
   exportAllData(): string {
     const keys = listKeys();
     populateFingerprints(keys);
+    const data = this.getData();
+    const keyFiles = exportKeyFiles(data.hosts.map((host) => host.identityFile).filter(Boolean) as string[]);
 
     const exportData = {
-      ...this.getData(),
-      keyMetadata: keys.map((k) => ({
-        name: k.name,
-        type: k.type,
-        fingerprint: k.fingerprint,
-      })),
-      keyFiles: exportKeyFiles(),
+      ...data,
+      keyMetadata: keys
+        .filter((key) => keyFiles.some((entry) => entry.name === key.name))
+        .map((k) => ({
+          name: k.name,
+          type: k.type,
+          fingerprint: k.fingerprint,
+        })),
+      keyFiles,
       exportedAt: new Date().toISOString(),
     };
 
@@ -207,7 +200,13 @@ export class StorageService {
   }
 
   /** Preview an import (parse only, used for the confirmation dialog) */
-  previewImport(json: string): { importedHosts: number; importedGroups: number; keyCount: number } {
+  previewImport(json: string): {
+    importedHosts: number;
+    importedGroups: number;
+    skippedHosts: number;
+    keyCount: number;
+    keyTargets: string[];
+  } {
     let source: SSHKitData & { keyMetadata?: Array<{ name: string }>; keyFiles?: Array<unknown> };
     try {
       source = JSON.parse(json);
@@ -220,17 +219,50 @@ export class StorageService {
 
     const data = this.getData();
     const existingGroupNames = new Set(data.groups.map((g) => g.name));
-    const existingHostNames = new Set(data.hosts.map((h) => h.name));
+    const existingHosts = [...data.hosts];
+    const touchedHostIds = new Set<string>();
+    let importedHosts = 0;
+    let skippedHosts = 0;
 
     const importedGroups = source.groups.filter((g) => !existingGroupNames.has(g.name)).length;
-    const importedHosts = source.hosts.filter((h) => !existingHostNames.has(h.name)).length;
-    const keyCount = source.keyMetadata?.length ?? 0;
+    for (const host of source.hosts) {
+      const match = findImportMatch(host, existingHosts, touchedHostIds);
+      if (match) {
+        skippedHosts++;
+        if (typeof match !== "string") {
+          touchedHostIds.add(match.host.id);
+        }
+        continue;
+      }
+      importedHosts++;
+      const previewHost: SSHHost = {
+        ...host,
+        id: `preview-${importedHosts}`,
+        tags: host.tags ?? [],
+      };
+      existingHosts.push(previewHost);
+      touchedHostIds.add(previewHost.id);
+    }
+    const keyNames = extractKeyNames(source);
+    const keyCount = keyNames.length;
+    const keyTargets = keyNames
+      .map((name) => sanitizeKeyFileName(name))
+      .filter(Boolean)
+      .map((name) => `~/.ssh/${name}`);
 
-    return { importedHosts, importedGroups, keyCount };
+    return { importedHosts, importedGroups, skippedHosts, keyCount, keyTargets };
   }
 
   /** Execute import (write to storage + restore key files) */
-  async commitImport(json: string): Promise<{ importedHosts: number; importedGroups: number; keyFilesRestored: number }> {
+  async commitImport(json: string): Promise<{
+    importedHosts: number;
+    importedGroups: number;
+    skippedHosts: number;
+    keyFilesRestored: number;
+    keyFilesSkipped: number;
+    keyFilesFailed: number;
+    keyFileFailures: Array<{ name: string; reason: string }>;
+  }> {
     let source: SSHKitData & { keyFiles?: Array<{ name: string; type: string; privateKey: string; publicKey?: string }> };
     try {
       source = JSON.parse(json);
@@ -244,35 +276,86 @@ export class StorageService {
     const data = this.getData();
     let importedHosts = 0;
     let importedGroups = 0;
+    let skippedHosts = 0;
+    const groupIdMap = new Map<string, string>();
 
-    const existingGroupNames = new Set(data.groups.map((g) => g.name));
+    const existingGroupsByName = new Map(data.groups.map((g) => [g.name, g]));
     for (const g of source.groups) {
-      if (!existingGroupNames.has(g.name)) {
-        data.groups.push(g);
-        importedGroups++;
+      const existing = existingGroupsByName.get(g.name);
+      if (existing) {
+        groupIdMap.set(g.id, existing.id);
+        continue;
       }
+
+      const group: SSHGroup = {
+        ...g,
+        id: generateId(),
+        order: data.groups.length,
+      };
+      data.groups.push(group);
+      existingGroupsByName.set(group.name, group);
+      groupIdMap.set(g.id, group.id);
+      importedGroups++;
     }
 
-    const existingHostNames = new Set(data.hosts.map((h) => h.name));
+    const touchedHostIds = new Set<string>();
     for (const h of source.hosts) {
-      if (!existingHostNames.has(h.name)) {
-        data.hosts.push(h);
-        importedHosts++;
+      const match = findImportMatch(h, data.hosts, touchedHostIds);
+      if (match) {
+        skippedHosts++;
+        if (typeof match !== "string") {
+          touchedHostIds.add(match.host.id);
+        }
+        continue;
       }
+
+      const host: SSHHost = {
+        ...h,
+        id: generateId(),
+        groupId: h.groupId ? groupIdMap.get(h.groupId) : undefined,
+        tags: h.tags ?? [],
+      };
+      data.hosts.push(host);
+      touchedHostIds.add(host.id);
+      importedHosts++;
     }
 
     await this.saveData(data);
 
-    // 密钥写入可能部分失败，不影响已导入的主机/分组
     let keyFilesRestored = 0;
+    let keyFilesSkipped = 0;
+    let keyFilesFailed = 0;
+    let keyFileFailures: Array<{ name: string; reason: string }> = [];
     if (source.keyFiles && source.keyFiles.length > 0) {
-      try {
-        keyFilesRestored = importKeyFiles(source.keyFiles);
-      } catch {
-        // Key file write failed, silently recorded (hosts/groups already imported)
-      }
+      const keyResult = importKeyFiles(source.keyFiles);
+      keyFilesRestored = keyResult.written;
+      keyFilesSkipped = keyResult.skipped;
+      keyFilesFailed = keyResult.failed.length;
+      keyFileFailures = keyResult.failed;
     }
 
-    return { importedHosts, importedGroups, keyFilesRestored };
+    return {
+      importedHosts,
+      importedGroups,
+      skippedHosts,
+      keyFilesRestored,
+      keyFilesSkipped,
+      keyFilesFailed,
+      keyFileFailures,
+    };
   }
+}
+
+function extractKeyNames(source: {
+  keyMetadata?: Array<{ name: string }>;
+  keyFiles?: Array<unknown>;
+}): string[] {
+  if (source.keyFiles && source.keyFiles.length > 0) {
+    return source.keyFiles
+      .map((entry) => typeof entry === "object" && entry !== null && "name" in entry
+        ? String((entry as { name?: unknown }).name ?? "")
+        : "")
+      .filter(Boolean);
+  }
+  return source.keyMetadata?.map((entry) => entry.name).filter(Boolean) ?? [];
 }

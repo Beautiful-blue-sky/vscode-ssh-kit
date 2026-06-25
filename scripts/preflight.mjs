@@ -40,6 +40,8 @@ const forbiddenPackageRules = [
 const manifest = readJson("package.json");
 const nlsEn = readJson("package.nls.json");
 const nlsZh = readJson("package.nls.zh-cn.json");
+const readmeEn = readFileSync(join(root, "README.md"), "utf8");
+const readmeZh = readFileSync(join(root, "README.zh-CN.md"), "utf8");
 const packageFiles = getVscePackageFiles();
 const checks = [];
 
@@ -72,7 +74,95 @@ addCheck(
 );
 
 const contributedCommands = manifest.contributes?.commands ?? [];
+const hiddenCommandPaletteCommands = new Set(
+  (manifest.contributes?.menus?.commandPalette ?? [])
+    .filter((item) => item.when === "false")
+    .map((item) => item.command),
+);
+const contextOnlyCommands = [
+  "sshKit.connectHostInCurrentWindow",
+  "sshKit.connectHostInNewWindow",
+  "sshKit.connectInExternalTerminal",
+  "sshKit.editHost",
+  "sshKit.deleteHost",
+  "sshKit.renameGroup",
+  "sshKit.deleteGroup",
+  "sshKit.copyHostName",
+  "sshKit.copyHostDetail",
+  "sshKit.testConnection",
+  "sshKit.copyKeyPublic",
+  "sshKit.copyKeyDetail",
+  "sshKit.deleteKey",
+  "sshKit.renameKey",
+  "sshKit.showKeyDetail",
+  "sshKit.openKeyFile",
+  "sshKit.openPrivateKey",
+];
+const commandsMissingCategory = contributedCommands
+  .filter((command) => command.category !== "%commands.category%")
+  .map((command) => command.command);
+const visibleContextCommands = contextOnlyCommands.filter((command) => !hiddenCommandPaletteCommands.has(command));
+const commandPaletteCommands = contributedCommands
+  .filter((command) => !hiddenCommandPaletteCommands.has(command.command));
+const readmeCommandsEn = commandLabelsFromReadme(readmeEn);
+const readmeCommandsZh = commandLabelsFromReadme(readmeZh);
+const missingReadmeCommandsEn = commandPaletteCommands
+  .map((command) => commandLabel(command, nlsEn))
+  .filter((label) => !readmeCommandsEn.has(label));
+const missingReadmeCommandsZh = commandPaletteCommands
+  .map((command) => commandLabel(command, nlsZh))
+  .filter((label) => !readmeCommandsZh.has(label));
+const allowedInlineReadmeCommandsEn = new Set(["SSH Kit: Search Hosts"]);
+const allowedInlineReadmeCommandsZh = new Set(["SSH Kit: 搜索主机"]);
+const visibleCommandLabelsEn = new Set(commandPaletteCommands.map((command) => commandLabel(command, nlsEn)));
+const visibleCommandLabelsZh = new Set(commandPaletteCommands.map((command) => commandLabel(command, nlsZh)));
+const extraReadmeCommandsEn = [...readmeCommandsEn]
+  .filter((label) => !visibleCommandLabelsEn.has(label) && !allowedInlineReadmeCommandsEn.has(label));
+const extraReadmeCommandsZh = [...readmeCommandsZh]
+  .filter((label) => !visibleCommandLabelsZh.has(label) && !allowedInlineReadmeCommandsZh.has(label));
 addCheck("Contribution surface", "commands", "non-empty", String(contributedCommands.length), contributedCommands.length > 0);
+addCheck(
+  "Contribution surface",
+  "command category",
+  "all commands categorized as SSH Kit",
+  commandsMissingCategory.length > 0 ? commandsMissingCategory.join(", ") : "all categorized",
+  commandsMissingCategory.length === 0,
+);
+addCheck(
+  "Contribution surface",
+  "context-only command palette",
+  "hidden",
+  visibleContextCommands.length > 0 ? visibleContextCommands.join(", ") : "hidden",
+  visibleContextCommands.length === 0,
+);
+addCheck(
+  "Contribution surface",
+  "README command table (en)",
+  "covers visible commands",
+  missingReadmeCommandsEn.length > 0 ? missingReadmeCommandsEn.join(", ") : "covers visible commands",
+  missingReadmeCommandsEn.length === 0,
+);
+addCheck(
+  "Contribution surface",
+  "README command extras (en)",
+  "no nonexistent commands",
+  extraReadmeCommandsEn.length > 0 ? extraReadmeCommandsEn.join(", ") : "no nonexistent commands",
+  extraReadmeCommandsEn.length === 0,
+);
+addCheck(
+  "Contribution surface",
+  "README command table (zh)",
+  "covers visible commands",
+  missingReadmeCommandsZh.length > 0 ? missingReadmeCommandsZh.join(", ") : "covers visible commands",
+  missingReadmeCommandsZh.length === 0,
+);
+addCheck(
+  "Contribution surface",
+  "README command extras (zh)",
+  "no nonexistent commands",
+  extraReadmeCommandsZh.length > 0 ? extraReadmeCommandsZh.join(", ") : "no nonexistent commands",
+  extraReadmeCommandsZh.length === 0,
+);
 addCheck("Contribution surface", "activity bar container", "sshKit", manifest.contributes?.viewsContainers?.activitybar?.[0]?.id ?? "");
 addCheck("Contribution surface", "hosts view", "sshKit.hosts", viewIds().includes("sshKit.hosts") ? "sshKit.hosts" : viewIds().join(", "));
 addCheck("Contribution surface", "keys view", "sshKit.keys", viewIds().includes("sshKit.keys") ? "sshKit.keys" : viewIds().join(", "));
@@ -151,6 +241,25 @@ function viewIds() {
   return Object.values(manifest.contributes?.views ?? {})
     .flat()
     .map((view) => view.id);
+}
+
+function commandLabelsFromReadme(content) {
+  const labels = new Set();
+  const regex = /`(SSH Kit: [^`]+)`/g;
+  let match;
+  while ((match = regex.exec(content)) !== null) {
+    labels.add(match[1]);
+  }
+  return labels;
+}
+
+function commandLabel(command, nls) {
+  return `${resolveNls(command.category, nls)}: ${resolveNls(command.title, nls)}`;
+}
+
+function resolveNls(value, nls) {
+  const match = /^%(.+)%$/.exec(value ?? "");
+  return match ? nls[match[1]] : value;
 }
 
 function getVscePackageFiles() {

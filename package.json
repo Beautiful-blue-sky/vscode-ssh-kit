@@ -54,140 +54,192 @@
       {
         "command": "sshKit.addHost",
         "title": "%commands.addHost%",
+        "category": "%commands.category%",
         "icon": "$(add)"
       },
       {
         "command": "sshKit.addGroup",
         "title": "%commands.addGroup%",
+        "category": "%commands.category%",
         "icon": "$(new-folder)"
       },
       {
         "command": "sshKit.refresh",
         "title": "%commands.refresh%",
+        "category": "%commands.category%",
         "icon": "$(refresh)"
       },
       {
         "command": "sshKit.connectHostInCurrentWindow",
         "title": "%commands.connectHostInCurrentWindow%",
+        "category": "%commands.category%",
         "icon": "$(window)"
       },
       {
         "command": "sshKit.connectHostInNewWindow",
         "title": "%commands.connectHostInNewWindow%",
+        "category": "%commands.category%",
         "icon": "$(empty-window)"
       },
       {
         "command": "sshKit.connectInExternalTerminal",
         "title": "%commands.connectInTerminal%",
+        "category": "%commands.category%",
         "icon": "$(terminal)"
       },
       {
         "command": "sshKit.editHost",
         "title": "%commands.editHost%",
+        "category": "%commands.category%",
         "icon": "$(edit)"
       },
       {
         "command": "sshKit.deleteHost",
         "title": "%commands.deleteHost%",
+        "category": "%commands.category%",
         "icon": "$(trash)"
       },
       {
         "command": "sshKit.renameGroup",
         "title": "%commands.renameGroup%",
+        "category": "%commands.category%",
         "icon": "$(edit)"
       },
       {
         "command": "sshKit.deleteGroup",
         "title": "%commands.deleteGroup%",
+        "category": "%commands.category%",
         "icon": "$(trash)"
       },
       {
         "command": "sshKit.copyHostName",
         "title": "%commands.copyHostName%",
+        "category": "%commands.category%",
+        "icon": "$(copy)"
+      },
+      {
+        "command": "sshKit.copyHostDetail",
+        "title": "%commands.copyHostDetail%",
+        "category": "%commands.category%",
         "icon": "$(copy)"
       },
       {
         "command": "sshKit.testConnection",
         "title": "%commands.testConnection%",
+        "category": "%commands.category%",
         "icon": "$(pulse)"
       },
       {
         "command": "sshKit.importConfig",
         "title": "%commands.importConfig%",
+        "category": "%commands.category%",
         "icon": "$(arrow-down)"
       },
       {
         "command": "sshKit.exportConfig",
         "title": "%commands.exportConfig%",
+        "category": "%commands.category%",
         "icon": "$(arrow-up)"
       },
       {
         "command": "sshKit.searchHosts",
-        "title": "%commands.searchHosts%"
+        "title": "%commands.searchHosts%",
+        "category": "%commands.category%"
       },
       {
         "command": "sshKit.openSshConfig",
         "title": "%commands.openSshConfig%",
+        "category": "%commands.category%",
         "icon": "$(go-to-file)"
+      },
+      {
+        "command": "sshKit.cleanupAliases",
+        "title": "%commands.cleanupAliases%",
+        "category": "%commands.category%",
+        "icon": "$(clear-all)"
       },
       {
         "command": "sshKit.listKeys",
         "title": "%commands.listKeys%",
+        "category": "%commands.category%",
         "icon": "$(key)"
       },
       {
         "command": "sshKit.generateKey",
         "title": "%commands.generateKey%",
+        "category": "%commands.category%",
         "icon": "$(new-file)"
       },
       {
         "command": "sshKit.deduplicateHosts",
         "title": "%commands.deduplicateHosts%",
+        "category": "%commands.category%",
         "icon": "$(clear-all)"
       },
       {
         "command": "sshKit.batchDeleteHosts",
         "title": "%commands.batchDeleteHosts%",
+        "category": "%commands.category%",
         "icon": "$(trash)"
       },
       {
         "command": "sshKit.backupData",
         "title": "%commands.backupData%",
+        "category": "%commands.category%",
         "icon": "$(save)"
       },
       {
         "command": "sshKit.restoreData",
         "title": "%commands.restoreData%",
+        "category": "%commands.category%",
         "icon": "$(folder-opened)"
       },
       {
         "command": "sshKit.copyKeyPublic",
         "title": "%commands.copyKeyPublic%",
+        "category": "%commands.category%",
         "icon": "$(copy)"
+      },
+      {
+        "command": "sshKit.copyKeyDetail",
+        "title": "%commands.copyKeyDetail%",
+        "category": "%commands.category%",
+        "icon": "$(copy)"
+      },
+      {
+        "command": "sshKit.regenerateKeyPublic",
+        "title": "%commands.regenerateKeyPublic%",
+        "category": "%commands.category%",
+        "icon": "$(sync)"
       },
       {
         "command": "sshKit.deleteKey",
         "title": "%commands.deleteKey%",
+        "category": "%commands.category%",
         "icon": "$(trash)"
       },
       {
         "command": "sshKit.renameKey",
         "title": "%commands.renameKey%",
+        "category": "%commands.category%",
         "icon": "$(edit)"
       },
       {
         "command": "sshKit.showKeyDetail",
         "title": "%commands.showKeyDetail%",
+        "category": "%commands.category%",
         "icon": "$(info)"
       },
       {
         "command": "sshKit.openKeyFile",
         "title": "%commands.openKeyFile%",
+        "category": "%commands.category%",
         "icon": "$(go-to-file)"
       },
       {
         "command": "sshKit.openPrivateKey",
         "title": "%commands.openPrivateKey%",
+        "category": "%commands.category%",
         "icon": "$(lock)"
       }
     ],
@@ -254,6 +306,11 @@
           "group": "2_io@4"
         },
         {
+          "command": "sshKit.cleanupAliases",
+          "when": "view == sshKit.hosts",
+          "group": "2_io@5"
+        },
+        {
           "command": "sshKit.generateKey",
           "when": "view == sshKit.keys",
           "group": "navigation"
@@ -296,6 +353,11 @@
           "group": "2_info"
         },
         {
+          "command": "sshKit.copyHostDetail",
+          "when": "view == sshKit.hosts && viewItem == hostDetail",
+          "group": "2_info"
+        },
+        {
           "command": "sshKit.testConnection",
           "when": "view == sshKit.hosts && viewItem == host",
           "group": "2_info"
@@ -316,6 +378,11 @@
           "group": "inline"
         },
         {
+          "command": "sshKit.regenerateKeyPublic",
+          "when": "view == sshKit.keys && viewItem == key",
+          "group": "inline@2"
+        },
+        {
           "command": "sshKit.renameKey",
           "when": "view == sshKit.keys && viewItem == key",
           "group": "1_modify"
@@ -334,6 +401,93 @@
           "command": "sshKit.showKeyDetail",
           "when": "view == sshKit.keys && viewItem == key",
           "group": "2_info"
+        },
+        {
+          "command": "sshKit.copyKeyDetail",
+          "when": "view == sshKit.keys && viewItem == keyDetail",
+          "group": "inline"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "workbench.view.extension.sshKit",
+          "when": "false"
+        },
+        {
+          "command": "sshKit.hosts.focus",
+          "when": "false"
+        },
+        {
+          "command": "sshKit.keys.focus",
+          "when": "false"
+        },
+        {
+          "command": "sshKit.connectHostInCurrentWindow",
+          "when": "false"
+        },
+        {
+          "command": "sshKit.connectHostInNewWindow",
+          "when": "false"
+        },
+        {
+          "command": "sshKit.connectInExternalTerminal",
+          "when": "false"
+        },
+        {
+          "command": "sshKit.editHost",
+          "when": "false"
+        },
+        {
+          "command": "sshKit.deleteHost",
+          "when": "false"
+        },
+        {
+          "command": "sshKit.renameGroup",
+          "when": "false"
+        },
+        {
+          "command": "sshKit.deleteGroup",
+          "when": "false"
+        },
+        {
+          "command": "sshKit.copyHostName",
+          "when": "false"
+        },
+        {
+          "command": "sshKit.copyHostDetail",
+          "when": "false"
+        },
+        {
+          "command": "sshKit.testConnection",
+          "when": "false"
+        },
+        {
+          "command": "sshKit.copyKeyPublic",
+          "when": "false"
+        },
+        {
+          "command": "sshKit.copyKeyDetail",
+          "when": "false"
+        },
+        {
+          "command": "sshKit.deleteKey",
+          "when": "false"
+        },
+        {
+          "command": "sshKit.renameKey",
+          "when": "false"
+        },
+        {
+          "command": "sshKit.showKeyDetail",
+          "when": "false"
+        },
+        {
+          "command": "sshKit.openKeyFile",
+          "when": "false"
+        },
+        {
+          "command": "sshKit.openPrivateKey",
+          "when": "false"
         }
       ]
     }
@@ -345,10 +499,11 @@
     "watch:esbuild": "node esbuild.js --watch",
     "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
     "package": "npm run check-types && node esbuild.js --production",
-    "preflight": "npm run lint && npm run package && node scripts/preflight.mjs",
+    "preflight": "npm run lint && npm run package && npm run check:runtime && node scripts/preflight.mjs",
     "vsix": "vsce package --no-dependencies",
     "check-types": "tsc --noEmit",
-    "lint": "eslint src"
+    "lint": "eslint src",
+    "check:runtime": "node scripts/check-runtime-behavior.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^9.13.0",

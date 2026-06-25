@@ -4,16 +4,15 @@ import * as path from "path";
 import * as vscode from "vscode";
 import { SSHHost, SSHGroup } from "./core/types";
 import { StorageService } from "./core/storage";
-import { GroupItem, HostItem, HostTreeDataProvider, HostDragAndDropController, RECENT_GROUP_ID } from "./views/treeView";
-import { KeyTreeDataProvider, KeyItem } from "./views/keyTreeView";
-import { readPublicKey, deleteKeyPair, renameKeyPair } from "./keys/keyManager";
+import { GroupItem, HostDetailItem, HostItem, HostTreeDataProvider, HostDragAndDropController, RECENT_GROUP_ID } from "./views/treeView";
+import { KeyTreeDataProvider, KeyItem, KeyDetailItem } from "./views/keyTreeView";
+import { readPublicKey, deleteKeyPair, renameKeyPair, regeneratePublicKey, listKeys, populateFingerprints } from "./keys/keyManager";
 import { getErrorMessage } from "./core/utils";
-import { connectHostInCurrentWindow, connectHostInNewWindow, promptTerminalConnect, testConnection, searchHosts } from "./commands/connectCommands";
-import { addHost, editHost, deleteHost, copyHostName, deduplicateHosts, batchDeleteHosts } from "./commands/hostCommands";
+import { connectHostInCurrentWindow, connectHostInNewWindow, promptTerminalConnect, testConnection, searchHosts, cleanupRemoteSshAliases } from "./commands/connectCommands";
+import { addHost, editHost, deleteHost, copyHostName, copyHostDetail, deduplicateHosts, batchDeleteHosts } from "./commands/hostCommands";
 import { addGroup, renameGroup, deleteGroup } from "./commands/groupCommands";
 import { importConfig, exportConfig, openSshConfig, backupKitData, restoreKitData } from "./commands/ioCommands";
 import { showKeyList, generateKey } from "./commands/keyCommands";
-import { listKeys } from "./keys/keyManager";
 
 // ─── Interaction helpers ──────────────────────────────────────────────────
 
@@ -464,6 +463,16 @@ function registerHostCommands(
       "sshKit.copyHostName",
       (arg: HostItem | SSHHost) => copyHostName(unwrapHost(arg))
     ),
+    vscode.commands.registerCommand(
+      "sshKit.copyHostDetail",
+      (item: HostDetailItem | undefined) => {
+        if (!item) {
+          vscode.window.showInformationMessage("请在主机详情项上使用复制。");
+          return;
+        }
+        return copyHostDetail(item.detailLabel, item.detailValue);
+      }
+    ),
     vscode.commands.registerCommand("sshKit.deduplicateHosts", () =>
       deduplicateHosts(storage, tree)
     ),
@@ -547,6 +556,9 @@ function registerIOCommands(
     ),
     vscode.commands.registerCommand("sshKit.restoreData", () =>
       restoreKitData(storage, tree, keyTree)
+    ),
+    vscode.commands.registerCommand("sshKit.cleanupAliases", () =>
+      cleanupRemoteSshAliases(storage)
     )
   );
 }
@@ -573,6 +585,18 @@ function registerKeyCommands(
       async (item: KeyItem) => {
         const doc = await vscode.workspace.openTextDocument(item.key.privateKeyPath);
         await vscode.window.showTextDocument(doc);
+      }
+    ),
+
+    vscode.commands.registerCommand(
+      "sshKit.copyKeyDetail",
+      async (item: KeyDetailItem | undefined) => {
+        if (!item) {
+          vscode.window.showInformationMessage("请在密钥详情项上使用复制。");
+          return;
+        }
+        await vscode.env.clipboard.writeText(item.detailValue);
+        vscode.window.showInformationMessage(`已复制${item.detailLabel}：${item.detailValue}`);
       }
     ),
 
@@ -607,6 +631,32 @@ function registerKeyCommands(
           vscode.window.showInformationMessage(`已复制 ${key.name} 的公钥。`);
         } catch (err: unknown) {
           vscode.window.showErrorMessage(`复制失败：${getErrorMessage(err)}`);
+        }
+      }
+    ),
+
+    vscode.commands.registerCommand(
+      "sshKit.regenerateKeyPublic",
+      async (item?: KeyItem) => {
+        const keyItem = item ?? await pickKeyForPublicRegeneration();
+        if (!keyItem) {return;}
+
+        const key = keyItem.key;
+        const hasPublicKey = Boolean(key.publicKeyPath);
+        if (hasPublicKey) {
+          const confirmed = await vscode.window.showWarningMessage(
+            `公钥文件已存在，确定重新生成并覆盖「${key.name}.pub」？`,
+            { modal: true },
+            "重新生成"
+          );
+          if (confirmed !== "重新生成") {return;}
+        }
+        try {
+          const publicKeyPath = regeneratePublicKey(key.privateKeyPath, hasPublicKey);
+          keyTree.refresh();
+          vscode.window.showInformationMessage(`已生成公钥：${publicKeyPath}`);
+        } catch (err: unknown) {
+          vscode.window.showErrorMessage(`生成公钥失败：${getErrorMessage(err)}`);
         }
       }
     ),
@@ -661,6 +711,34 @@ function registerKeyCommands(
     vscode.commands.registerCommand("sshKit.listKeys", () => showKeyList(keyTree)),
     vscode.commands.registerCommand("sshKit.generateKey", () => generateKey(keyTree))
   );
+}
+
+async function pickKeyForPublicRegeneration(): Promise<KeyItem | undefined> {
+  const keys = listKeys();
+  if (keys.length === 0) {
+    vscode.window.showInformationMessage("未找到 SSH 密钥。可以先使用「SSH Kit: 生成 SSH 密钥」新建。");
+    return undefined;
+  }
+
+  populateFingerprints(keys);
+  const picked = await vscode.window.showQuickPick(
+    keys.map((key) => ({
+      label: `$(key) ${key.name}`,
+      description: [
+        key.type === "unknown" ? "无法识别" : key.type,
+        key.publicKeyPath ? "已有公钥" : "缺少公钥",
+      ].join(" · "),
+      detail: key.privateKeyPath,
+      key,
+    })),
+    {
+      matchOnDescription: true,
+      matchOnDetail: true,
+      placeHolder: "选择要重新生成公钥的密钥",
+    }
+  );
+
+  return picked ? new KeyItem(picked.key) : undefined;
 }
 
 export function deactivate() {}

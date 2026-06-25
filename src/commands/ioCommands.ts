@@ -3,6 +3,8 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import * as vscode from "vscode";
+import { SSHHost } from "../core/types";
+import { createImportedHostUpdates, findImportMatch } from "../core/hostMatching";
 import { StorageService } from "../core/storage";
 import { getErrorMessage } from "../core/utils";
 import { importFromSSHConfig, exportToSSHConfig, analyzeExport } from "../ssh/sshConfig";
@@ -20,14 +22,41 @@ export async function importConfig(
       return;
     }
 
+    const preview = previewSSHConfigImport(hosts, storage.getAllHosts());
+    const confirmed = await confirmSSHConfigImport(preview);
+    if (!confirmed) {return;}
+
     let imported = 0;
+    let updated = 0;
+    let endpointMatched = 0;
     let skipped = 0;
+    let ambiguous = 0;
+    const touchedHostIds = new Set<string>();
+    const knownHosts = storage.getAllHosts();
+
     for (const host of hosts) {
-      if (storage.getHostByName(host.name)) {
+      const match = findImportMatch(host, knownHosts, touchedHostIds);
+      if (match === "already-touched") {
         skipped++;
         continue;
       }
-      await storage.addHost(host);
+      if (match === "ambiguous") {
+        ambiguous++;
+        continue;
+      }
+      if (match) {
+        const updates = createImportedHostUpdates(match.host, host, match.reason);
+        await storage.updateHost(match.host.id, updates);
+        Object.assign(match.host, updates);
+        touchedHostIds.add(match.host.id);
+        updated++;
+        if (match.reason === "endpoint") {endpointMatched++;}
+        continue;
+      }
+
+      const added = await storage.addHost(host);
+      knownHosts.push(added);
+      touchedHostIds.add(added.id);
       imported++;
     }
 
@@ -35,11 +64,128 @@ export async function importConfig(
 
     const parts: string[] = [];
     if (imported > 0) {parts.push(`已导入 ${imported} 台主机`);}
+    if (updated > 0) {
+      const detail = endpointMatched > 0 ? `，其中 ${endpointMatched} 台按地址匹配` : "";
+      parts.push(`已更新 ${updated} 台已有主机${detail}`);
+    }
     if (skipped > 0) {parts.push(`跳过 ${skipped} 台重复`);}
+    if (ambiguous > 0) {parts.push(`跳过 ${ambiguous} 台目标重复需手动确认`);}
+    if (parts.length === 0) {parts.push("没有需要导入或更新的主机");}
     vscode.window.showInformationMessage(parts.join("，") + "。");
   } catch (err: unknown) {
     vscode.window.showErrorMessage(`导入失败：${getErrorMessage(err)}`);
   }
+}
+
+interface SSHConfigImportPreview {
+  imported: number;
+  updated: number;
+  nameMatched: number;
+  endpointMatched: number;
+  skipped: number;
+  ambiguous: number;
+  importedSamples: string[];
+  updatedSamples: string[];
+  ambiguousSamples: string[];
+}
+
+function previewSSHConfigImport(
+  hosts: Omit<SSHHost, "id">[],
+  existingHosts: SSHHost[]
+): SSHConfigImportPreview {
+  const knownHosts = existingHosts.map((host) => ({ ...host, tags: [...host.tags] }));
+  const touchedHostIds = new Set<string>();
+  const preview: SSHConfigImportPreview = {
+    imported: 0,
+    updated: 0,
+    nameMatched: 0,
+    endpointMatched: 0,
+    skipped: 0,
+    ambiguous: 0,
+    importedSamples: [],
+    updatedSamples: [],
+    ambiguousSamples: [],
+  };
+
+  for (const host of hosts) {
+    const match = findImportMatch(host, knownHosts, touchedHostIds);
+    if (match === "already-touched") {
+      preview.skipped++;
+      continue;
+    }
+    if (match === "ambiguous") {
+      preview.ambiguous++;
+      pushSample(preview.ambiguousSamples, `${host.name} (${host.username}@${host.hostname}:${host.port})`);
+      continue;
+    }
+    if (match) {
+      const updates = createImportedHostUpdates(match.host, host, match.reason);
+      Object.assign(match.host, updates);
+      touchedHostIds.add(match.host.id);
+      preview.updated++;
+      if (match.reason === "name") {
+        preview.nameMatched++;
+      } else {
+        preview.endpointMatched++;
+      }
+      pushSample(preview.updatedSamples, `${host.name} → ${match.host.name}（${match.reason === "name" ? "名称" : "地址"}匹配）`);
+      continue;
+    }
+
+    preview.imported++;
+    const previewHost: SSHHost = {
+      ...host,
+      id: `preview-${preview.imported}`,
+      tags: host.tags ?? [],
+    };
+    knownHosts.push(previewHost);
+    touchedHostIds.add(previewHost.id);
+    pushSample(preview.importedSamples, `${host.name} (${host.username}@${host.hostname}:${host.port})`);
+  }
+
+  return preview;
+}
+
+async function confirmSSHConfigImport(preview: SSHConfigImportPreview): Promise<boolean> {
+  if (
+    preview.imported === 0 &&
+    preview.updated === 0 &&
+    preview.skipped === 0 &&
+    preview.ambiguous === 0
+  ) {
+    vscode.window.showInformationMessage("没有需要导入或更新的主机。");
+    return false;
+  }
+
+  const lines = [
+    "即将从 SSH Config 导入：",
+    preview.imported > 0 ? `  新增 ${preview.imported} 台` : "",
+    preview.updated > 0
+      ? `  更新 ${preview.updated} 台（按名称 ${preview.nameMatched}，按地址 ${preview.endpointMatched}）`
+      : "",
+    preview.skipped > 0 ? `  跳过 ${preview.skipped} 台重复项` : "",
+    preview.ambiguous > 0 ? `  跳过 ${preview.ambiguous} 台目标重复需手动确认` : "",
+    formatPreviewSamples("新增示例", preview.importedSamples),
+    formatPreviewSamples("更新示例", preview.updatedSamples),
+    formatPreviewSamples("冲突示例", preview.ambiguousSamples),
+  ].filter(Boolean);
+
+  const confirmed = await vscode.window.showInformationMessage(
+    lines.join("\n"),
+    { modal: true },
+    "确认导入"
+  );
+  return confirmed === "确认导入";
+}
+
+function pushSample(samples: string[], value: string): void {
+  if (samples.length < 5) {
+    samples.push(value);
+  }
+}
+
+function formatPreviewSamples(label: string, samples: string[]): string {
+  return samples.length > 0 ? `  ${label}：${samples.join("；")}` : "";
 }
 
 /** Export all hosts to SSH config with change preview and confirmation */
@@ -115,7 +261,7 @@ export async function openSshConfig(): Promise<void> {
   await vscode.window.showTextDocument(doc);
 }
 
-/** Backup SSH Kit data to a JSON file (including key files) */
+/** Backup SSH Kit data to a JSON file (including associated key files) */
 export async function backupKitData(storage: StorageService): Promise<void> {
   const defaultUri = vscode.Uri.file(
     path.join(os.homedir(), `ssh-kit-backup-${new Date().toISOString().slice(0, 10)}.json`)
@@ -128,7 +274,7 @@ export async function backupKitData(storage: StorageService): Promise<void> {
 
   // Security warning: backup contains private key material
   const confirmed = await vscode.window.showWarningMessage(
-    "备份文件将包含 SSH 私钥内容，请妥善保管。\n建议保存到加密位置，使用后及时删除。",
+    "备份文件将包含已关联主机的 SSH 私钥内容，请妥善保管。\n建议保存到加密位置，使用后及时删除。",
     { modal: true },
     "确认备份"
   );
@@ -161,7 +307,9 @@ export async function restoreKitData(
 
     const lines = [
       `即将导入 ${preview.importedHosts} 台主机、${preview.importedGroups} 个分组`,
-      preview.keyCount > 0 ? `含 ${preview.keyCount} 个密钥文件（将写入 ~/.ssh/）` : "",
+      preview.skippedHosts > 0 ? `跳过 ${preview.skippedHosts} 台已存在主机` : "",
+      preview.keyCount > 0 ? `含 ${preview.keyCount} 个密钥文件（将尝试写入 ~/.ssh/）` : "",
+      formatRestoreKeyTargets(preview.keyTargets),
       "已存在的项目将跳过（不覆盖）",
       "",
       "⚠ 请确认备份文件来源可信，其中可能包含私钥",
@@ -179,13 +327,39 @@ export async function restoreKitData(
     keyTree?.refresh();
 
     const parts = [`已导入 ${result.importedHosts} 台主机、${result.importedGroups} 个分组`];
-    if (result.keyFilesRestored > 0) {
-      parts.push(`恢复了 ${result.keyFilesRestored} 个密钥文件到 ~/.ssh/`);
-    } else if (result.importedHosts > 0 || result.importedGroups > 0) {
-      // Host/group import succeeded but key restore may have partially failed; only report when data was imported
+    if (result.skippedHosts > 0) {
+      parts.push(`跳过 ${result.skippedHosts} 台已存在主机`);
     }
-    vscode.window.showInformationMessage(parts.join("，"));
+    if (result.keyFilesRestored > 0) {
+      parts.push(`恢复 ${result.keyFilesRestored} 个密钥文件到 ~/.ssh/`);
+    }
+    if (result.keyFilesSkipped > 0) {
+      parts.push(`跳过 ${result.keyFilesSkipped} 个已存在密钥`);
+    }
+    if (result.keyFilesFailed > 0) {
+      parts.push(`${result.keyFilesFailed} 个密钥恢复失败`);
+    }
+    const action = await vscode.window.showInformationMessage(
+      parts.join("，"),
+      ...(result.keyFileFailures.length > 0 ? ["查看失败详情"] : [])
+    );
+    if (action === "查看失败详情") {
+      vscode.window.showWarningMessage(
+        result.keyFileFailures
+          .slice(0, 20)
+          .map((failure) => `${failure.name}: ${failure.reason}`)
+          .join("\n"),
+        { modal: true }
+      );
+    }
   } catch (err: unknown) {
     vscode.window.showErrorMessage(`恢复失败：${getErrorMessage(err)}`);
   }
+}
+
+function formatRestoreKeyTargets(targets: string[]): string {
+  if (targets.length === 0) {return "";}
+  const visible = targets.slice(0, 8).map((target) => `  - ${target}`);
+  const suffix = targets.length > visible.length ? `  ... 另有 ${targets.length - visible.length} 个` : "";
+  return ["密钥恢复目标：", ...visible, suffix].filter(Boolean).join("\n");
 }

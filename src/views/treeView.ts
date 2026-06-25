@@ -26,20 +26,40 @@ export class GroupItem extends vscode.TreeItem {
 }
 
 /** Host detail child node */
-class HostDetailItem extends vscode.TreeItem {
-  constructor(label: string, value: string, icon: string, command?: vscode.Command) {
+export class HostDetailItem extends vscode.TreeItem {
+  constructor(
+    public readonly detailLabel: string,
+    public readonly detailValue: string,
+    icon: string,
+    copyable = true,
+    parentItemId?: string
+  ) {
+    const value = detailValue;
+    const label = detailLabel;
     super(label, vscode.TreeItemCollapsibleState.None);
+    this.id = parentItemId ? `${parentItemId}:detail:${label}` : undefined;
     this.description = value;
     this.iconPath = new vscode.ThemeIcon(icon);
-    this.command = command;
+    this.contextValue = copyable && value ? "hostDetail" : "hostDetailReadonly";
+    this.tooltip = copyable && value ? `点击复制${label}：${value}` : `${label}：${value}`;
+    this.command = copyable && value
+      ? {
+          command: "sshKit.copyHostDetail",
+          title: `复制${label}`,
+          arguments: [this],
+        }
+      : undefined;
   }
 }
 
 /** Host node — expand for details, inline buttons for connection */
 export class HostItem extends vscode.TreeItem {
-  constructor(public readonly host: SSHHost) {
+  constructor(
+    public readonly host: SSHHost,
+    itemScope: string
+  ) {
     super(host.name, vscode.TreeItemCollapsibleState.Collapsed);
-    this.id = host.id;
+    this.id = `host:${itemScope}:${host.id}`;
     this.description = `${host.hostname}:${host.port}`;
     this.iconPath = new vscode.ThemeIcon("server");
     this.contextValue = "host";
@@ -97,26 +117,20 @@ export class HostTreeDataProvider implements vscode.TreeDataProvider<vscode.Tree
   private buildHostDetailNodes(hostItem: HostItem): HostDetailItem[] {
     const h = hostItem.host;
     const children: HostDetailItem[] = [];
+    const parentItemId = hostItem.id;
 
-    children.push(new HostDetailItem("地址", h.hostname, "globe"));
-    children.push(new HostDetailItem("端口", String(h.port), "remote"));
-    children.push(new HostDetailItem("用户", h.username, "person"));
+    children.push(new HostDetailItem("地址", h.hostname, "globe", true, parentItemId));
+    children.push(new HostDetailItem("端口", String(h.port), "remote", true, parentItemId));
+    children.push(new HostDetailItem("用户", h.username, "person", true, parentItemId));
 
     if (h.identityFile) {
-      children.push(new HostDetailItem(
-        "密钥", h.identityFile, "key",
-        {
-          command: "vscode.open",
-          title: "打开密钥文件",
-          arguments: [vscode.Uri.file(h.identityFile)],
-        }
-      ));
+      children.push(new HostDetailItem("密钥", h.identityFile, "key", true, parentItemId));
     } else {
-      children.push(new HostDetailItem("密钥", "未关联", "key"));
+      children.push(new HostDetailItem("密钥", "未关联", "key", false, parentItemId));
     }
 
     if (h.tags.length > 0) {
-      children.push(new HostDetailItem("标签", h.tags.join(", "), "tag"));
+      children.push(new HostDetailItem("标签", h.tags.join(", "), "tag", true, parentItemId));
     }
 
     return children;
@@ -137,7 +151,7 @@ export class HostTreeDataProvider implements vscode.TreeDataProvider<vscode.Tree
 
   /** Build recent connection host nodes */
   private buildRecentHostNodes(): HostItem[] {
-    return this.storage.getRecentHosts().map((h) => new HostItem(h));
+    return this.storage.getRecentHosts().map((h) => new HostItem(h, "recent"));
   }
 
   /** Build group nodes from storage */
@@ -152,9 +166,10 @@ export class HostTreeDataProvider implements vscode.TreeDataProvider<vscode.Tree
 
   /** Build host nodes for a given group (groupId=undefined returns ungrouped hosts), sorted by name */
   private buildHostNodes(groupId: string | undefined): HostItem[] {
+    const itemScope = groupId ? `group:${groupId}` : "ungrouped";
     return this.storage.getHostsByGroup(groupId)
       .sort((a, b) => a.name.localeCompare(b.name))
-      .map((h) => new HostItem(h));
+      .map((h) => new HostItem(h, itemScope));
   }
 }
 
