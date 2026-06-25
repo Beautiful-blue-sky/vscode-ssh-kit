@@ -2,6 +2,12 @@
 
 [![en](https://img.shields.io/badge/CHANGELOG-English-blue)](CHANGELOG.md)
 
+## 0.0.2 — 2026-06-25
+
+### 调整
+- 重写 Marketplace README，让首屏更适合插件使用者阅读，补充快速开始、功能说明、运行要求和安全提示。
+- 将开发构建说明移动到文档底部，避免市场详情页首先展示源码构建内容。
+
 ## 0.0.1 — 2026-06-25
 
 ### 新增

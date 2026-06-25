@@ -2,6 +2,12 @@
 
 [![zh-CN](https://img.shields.io/badge/CHANGELOG-中文-red)](CHANGELOG.zh-CN.md)
 
+## 0.0.2 — 2026-06-25
+
+### Changed
+- Reworked the Marketplace README for end users with a clearer quick start, feature overview, requirements, and security notes.
+- Moved development instructions to the bottom so the extension listing opens with user-facing content.
+
 ## 0.0.1 — 2026-06-25
 
 ### Added
