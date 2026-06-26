@@ -8,7 +8,7 @@ import { GroupItem, HostDetailItem, HostItem, HostTreeDataProvider, HostDragAndD
 import { KeyTreeDataProvider, KeyItem, KeyDetailItem } from "./views/keyTreeView";
 import { readPublicKey, deleteKeyPair, renameKeyPair, regeneratePublicKey, listKeys, populateFingerprints } from "./keys/keyManager";
 import { getErrorMessage } from "./core/utils";
-import { connectHostInCurrentWindow, connectHostInNewWindow, promptTerminalConnect, testConnection, searchHosts, cleanupRemoteSshAliases } from "./commands/connectCommands";
+import { buildRemoteSshAlias, connectHostInCurrentWindow, connectHostInNewWindow, promptTerminalConnect, testConnection, searchHosts, cleanupRemoteSshAliases } from "./commands/connectCommands";
 import { addHost, editHost, deleteHost, copyHostName, copyHostDetail, deduplicateHosts, batchDeleteHosts } from "./commands/hostCommands";
 import { addGroup, renameGroup, deleteGroup } from "./commands/groupCommands";
 import { importConfig, exportConfig, openSshConfig, backupKitData, restoreKitData } from "./commands/ioCommands";
@@ -380,6 +380,156 @@ function unwrapHost(arg: HostItem | SSHHost): SSHHost {
   return arg instanceof HostItem ? arg.host : arg;
 }
 
+interface CurrentConnectionInfo {
+  host: SSHHost;
+  alias: string;
+}
+
+class ConnectionStatusController implements vscode.Disposable {
+  private readonly statusItem: vscode.StatusBarItem;
+  private readonly disposables: vscode.Disposable[] = [];
+  private current: CurrentConnectionInfo | undefined;
+
+  constructor(
+    private readonly storage: StorageService,
+    private readonly tree: HostTreeDataProvider
+  ) {
+    this.statusItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 99);
+    this.statusItem.name = "SSH Kit Connection";
+    this.disposables.push(
+      this.statusItem,
+      vscode.workspace.onDidChangeWorkspaceFolders(() => this.refresh())
+    );
+    this.refresh();
+  }
+
+  refresh(): void {
+    this.current = this.resolveCurrentConnection();
+    this.tree.setConnectedHostId(this.current?.host.id);
+    this.updateStatusItem();
+  }
+
+  async showDetails(): Promise<void> {
+    if (!this.current) {
+      vscode.window.showInformationMessage("当前窗口未识别到 SSH Kit 连接。");
+      return;
+    }
+
+    await vscode.env.clipboard.writeText(this.formatConnectionDetails(this.current.host, this.current.alias));
+    vscode.window.setStatusBarMessage("$(check) SSH Kit: 已复制当前连接信息", 3000);
+  }
+
+  dispose(): void {
+    for (const disposable of this.disposables) {
+      disposable.dispose();
+    }
+  }
+
+  private updateStatusItem(): void {
+    if (!this.current) {
+      this.statusItem.hide();
+      return;
+    }
+
+    const { host, alias } = this.current;
+    this.statusItem.text = `$(remote) SSH Kit: ${host.name}`;
+    this.statusItem.tooltip = this.buildTooltip(host, alias);
+    this.statusItem.show();
+  }
+
+  private buildTooltip(host: SSHHost, alias: string): vscode.MarkdownString {
+    const details = this.formatConnectionDetails(host, alias);
+    const tooltip = new vscode.MarkdownString(undefined, true);
+    tooltip.supportThemeIcons = true;
+    tooltip.appendMarkdown("$(remote) **SSH Kit 当前连接**\n\n");
+    tooltip.appendCodeblock(details);
+    return tooltip;
+  }
+
+  private formatConnectionDetails(host: SSHHost, alias: string): string {
+    const connection = `${host.username}@${host.hostname}:${host.port}`;
+    const groupName = host.groupId
+      ? this.storage.getGroups().find((group) => group.id === host.groupId)?.name
+      : undefined;
+    return [
+      `名称: ${host.name}`,
+      `连接: ${connection}`,
+      `地址: ${host.hostname}`,
+      `端口: ${host.port}`,
+      `用户: ${host.username}`,
+      groupName ? `分组: ${groupName}` : "",
+      host.identityFile ? `密钥: ${host.identityFile}` : "",
+      host.tags.length > 0 ? `标签: ${host.tags.join(", ")}` : "",
+      alias !== host.name ? `SSH Host: ${alias}` : "",
+    ].filter(Boolean).join("\n");
+  }
+
+  private resolveCurrentConnection(): CurrentConnectionInfo | undefined {
+    const hosts = this.storage.getAllHosts();
+    const authority = getCurrentRemoteSshAuthority();
+    if (authority) {
+      const matchedByAuthority = findHostByRemoteAuthority(authority, hosts);
+      if (matchedByAuthority) {
+        return matchedByAuthority;
+      }
+    }
+
+    if (vscode.env.remoteName === "ssh-remote") {
+      const saved = this.storage.getCurrentConnection();
+      const host = saved ? hosts.find((item) => item.id === saved.hostId) : undefined;
+      if (host && saved) {
+        return { host, alias: saved.alias };
+      }
+    }
+
+    return undefined;
+  }
+}
+
+function getCurrentRemoteSshAuthority(): string | undefined {
+  const remoteFolder = vscode.workspace.workspaceFolders?.find((folder) =>
+    folder.uri.scheme === "vscode-remote" && folder.uri.authority.startsWith("ssh-remote+")
+  );
+  if (remoteFolder) {
+    return decodeRemoteSshAuthority(remoteFolder.uri.authority);
+  }
+
+  const workspaceFile = vscode.workspace.workspaceFile;
+  if (workspaceFile?.scheme === "vscode-remote" && workspaceFile.authority.startsWith("ssh-remote+")) {
+    return decodeRemoteSshAuthority(workspaceFile.authority);
+  }
+
+  return undefined;
+}
+
+function decodeRemoteSshAuthority(authority: string): string {
+  const raw = authority.slice("ssh-remote+".length);
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
+}
+
+function findHostByRemoteAuthority(
+  alias: string,
+  hosts: SSHHost[]
+): CurrentConnectionInfo | undefined {
+  const exactName = hosts.find((host) => host.name === alias);
+  if (exactName) {
+    return { host: exactName, alias };
+  }
+
+  for (const host of hosts) {
+    const generatedAlias = buildRemoteSshAlias(host, hosts);
+    if (generatedAlias === alias) {
+      return { host, alias };
+    }
+  }
+
+  return undefined;
+}
+
 // ─── Extension activation ─────────────────────────────────────────────────
 
 export function activate(context: vscode.ExtensionContext) {
@@ -388,6 +538,7 @@ export function activate(context: vscode.ExtensionContext) {
   const storage = new StorageService(context);
   const treeDataProvider = new HostTreeDataProvider(storage);
   const keyTreeDataProvider = new KeyTreeDataProvider();
+  const connectionStatus = new ConnectionStatusController(storage, treeDataProvider);
   const dragController = new HostDragAndDropController(storage, () => treeDataProvider.refresh());
 
   const treeView = vscode.window.createTreeView("sshKit.hosts", {
@@ -401,6 +552,7 @@ export function activate(context: vscode.ExtensionContext) {
     treeDataProvider: keyTreeDataProvider,
   });
   context.subscriptions.push(keyTreeView);
+  context.subscriptions.push(connectionStatus);
 
   // Persist group collapse state
   context.subscriptions.push(
@@ -417,10 +569,10 @@ export function activate(context: vscode.ExtensionContext) {
   );
 
   // Register commands by category
-  registerCoreCommands(context, treeDataProvider, keyTreeDataProvider);
+  registerCoreCommands(context, treeDataProvider, keyTreeDataProvider, connectionStatus);
   registerHostCommands(context, storage, treeDataProvider);
   registerGroupCommands(context, storage, treeDataProvider);
-  registerConnectCommands(context, storage);
+  registerConnectCommands(context, storage, connectionStatus);
   registerIOCommands(context, storage, treeDataProvider, keyTreeDataProvider);
   registerKeyCommands(context, keyTreeDataProvider);
 }
@@ -429,10 +581,12 @@ export function activate(context: vscode.ExtensionContext) {
 function registerCoreCommands(
   context: vscode.ExtensionContext,
   tree: HostTreeDataProvider,
-  keyTree: KeyTreeDataProvider
+  keyTree: KeyTreeDataProvider,
+  connectionStatus: ConnectionStatusController
 ): void {
   context.subscriptions.push(
     vscode.commands.registerCommand("sshKit.refresh", () => {
+      connectionStatus.refresh();
       tree.refresh();
       keyTree.refresh();
     })
@@ -506,18 +660,23 @@ function registerGroupCommands(
 /** Connection, connectivity test, and search */
 function registerConnectCommands(
   context: vscode.ExtensionContext,
-  storage: StorageService
+  storage: StorageService,
+  connectionStatus: ConnectionStatusController
 ): void {
   context.subscriptions.push(
     vscode.commands.registerCommand(
       "sshKit.connectHostInCurrentWindow",
-      (arg: HostItem | SSHHost) =>
-        connectHostInCurrentWindow(unwrapHost(arg), storage)
+      async (arg: HostItem | SSHHost) => {
+        await connectHostInCurrentWindow(unwrapHost(arg), storage);
+        connectionStatus.refresh();
+      }
     ),
     vscode.commands.registerCommand(
       "sshKit.connectHostInNewWindow",
-      (arg: HostItem | SSHHost) =>
-        connectHostInNewWindow(unwrapHost(arg), storage)
+      async (arg: HostItem | SSHHost) => {
+        await connectHostInNewWindow(unwrapHost(arg), storage);
+        connectionStatus.refresh();
+      }
     ),
     vscode.commands.registerCommand(
       "sshKit.testConnection",
@@ -530,6 +689,9 @@ function registerConnectCommands(
     ),
     vscode.commands.registerCommand("sshKit.searchHosts", () =>
       searchHosts(storage)
+    ),
+    vscode.commands.registerCommand("sshKit.showCurrentConnection", () =>
+      connectionStatus.showDetails()
     )
   );
 }

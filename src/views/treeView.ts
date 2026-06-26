@@ -56,14 +56,17 @@ export class HostDetailItem extends vscode.TreeItem {
 export class HostItem extends vscode.TreeItem {
   constructor(
     public readonly host: SSHHost,
-    itemScope: string
+    itemScope: string,
+    public readonly connected = false
   ) {
     super(host.name, vscode.TreeItemCollapsibleState.Collapsed);
     this.id = `host:${itemScope}:${host.id}`;
-    this.description = `${host.hostname}:${host.port}`;
-    this.iconPath = new vscode.ThemeIcon("server");
+    this.description = connected ? "已连接" : `${host.hostname}:${host.port}`;
+    this.iconPath = connected
+      ? new vscode.ThemeIcon("remote", new vscode.ThemeColor("testing.iconPassed"))
+      : new vscode.ThemeIcon("server");
     this.contextValue = "host";
-    this.tooltip = `${host.username}@${host.hostname}:${host.port}` +
+    this.tooltip = `${connected ? "已连接\n" : ""}${host.username}@${host.hostname}:${host.port}` +
       (host.identityFile ? `\n🔑 ${host.identityFile}` : "");
   }
 }
@@ -79,11 +82,19 @@ export class HostTreeDataProvider implements vscode.TreeDataProvider<vscode.Tree
   >();
   readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
 
+  private connectedHostId: string | undefined;
+
   constructor(private storage: StorageService) {}
 
   /** Refresh the entire tree */
   refresh(): void {
     this._onDidChangeTreeData.fire();
+  }
+
+  setConnectedHostId(hostId: string | undefined): void {
+    if (this.connectedHostId === hostId) {return;}
+    this.connectedHostId = hostId;
+    this.refresh();
   }
 
   getTreeItem(element: vscode.TreeItem): vscode.TreeItem {
@@ -122,6 +133,7 @@ export class HostTreeDataProvider implements vscode.TreeDataProvider<vscode.Tree
     children.push(new HostDetailItem("地址", h.hostname, "globe", true, parentItemId));
     children.push(new HostDetailItem("端口", String(h.port), "remote", true, parentItemId));
     children.push(new HostDetailItem("用户", h.username, "person", true, parentItemId));
+    children.push(new HostDetailItem("状态", hostItem.connected ? "已连接" : "未连接", "pulse", false, parentItemId));
 
     if (h.identityFile) {
       children.push(new HostDetailItem("密钥", h.identityFile, "key", true, parentItemId));
@@ -151,7 +163,7 @@ export class HostTreeDataProvider implements vscode.TreeDataProvider<vscode.Tree
 
   /** Build recent connection host nodes */
   private buildRecentHostNodes(): HostItem[] {
-    return this.storage.getRecentHosts().map((h) => new HostItem(h, "recent"));
+    return this.storage.getRecentHosts().map((h) => this.createHostItem(h, "recent"));
   }
 
   /** Build group nodes from storage */
@@ -169,7 +181,11 @@ export class HostTreeDataProvider implements vscode.TreeDataProvider<vscode.Tree
     const itemScope = groupId ? `group:${groupId}` : "ungrouped";
     return this.storage.getHostsByGroup(groupId)
       .sort((a, b) => a.name.localeCompare(b.name))
-      .map((h) => new HostItem(h, itemScope));
+      .map((h) => this.createHostItem(h, itemScope));
+  }
+
+  private createHostItem(host: SSHHost, itemScope: string): HostItem {
+    return new HostItem(host, itemScope, host.id === this.connectedHostId);
   }
 }
 

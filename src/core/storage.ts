@@ -174,6 +174,28 @@ export class StorageService {
       .filter((h): h is SSHHost => h !== undefined);
   }
 
+  async setCurrentConnection(hostId: string, alias: string): Promise<void> {
+    const data = this.getData();
+    data.currentConnection = {
+      hostId,
+      alias,
+      connectedAt: new Date().toISOString(),
+    };
+    await this.saveData(data);
+  }
+
+  getCurrentConnection(): SSHKitData["currentConnection"] {
+    return this.getData().currentConnection;
+  }
+
+  async clearCurrentConnection(hostId?: string): Promise<void> {
+    const data = this.getData();
+    if (!data.currentConnection) {return;}
+    if (hostId && data.currentConnection.hostId !== hostId) {return;}
+    delete data.currentConnection;
+    await this.saveData(data);
+  }
+
   // ─── Backup / restore ───────────────────────────────────────────────
 
   /** Export all data as JSON (including base64-encoded associated key files) */

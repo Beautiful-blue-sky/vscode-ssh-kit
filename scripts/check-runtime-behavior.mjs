@@ -20,7 +20,7 @@ try {
   await runCheck("SSH Config import ignores SSH Kit connect aliases and preserves repeated directives", checkSSHConfigImport);
   await runCheck("Backup restore preview deduplicates hosts and reports key failures", checkBackupRestore);
   await runCheck("Key discovery detects generated keys and can regenerate missing public keys", checkKeyManagement);
-  await runCheck("Remote-SSH alias uses the display label and is accepted by OpenSSH config parsing", checkRemoteAlias);
+  await runCheck("Remote-SSH alias preserves native host names and is accepted by OpenSSH config parsing", checkRemoteAlias);
   console.log("\nRuntime behavior checks passed.");
 } finally {
   restoreHome();
@@ -253,42 +253,164 @@ async function checkRemoteAlias() {
   checkCommandExists("ssh", ["-V"]);
   const home = makeTempHome("remote");
   const vscode = createVSCodeMock();
-  const { connectHostInNewWindow } = loadTsModule("src/commands/connectCommands.ts", { vscode });
+  const { connectHostInNewWindow, connectInVSCodeTerminal } = loadTsModule("src/commands/connectCommands.ts", { vscode });
   const host = {
     id: "h-remote",
-    name: "103.184.47.185_dev",
-    hostname: "103.184.47.185",
-    port: 27488,
+    name: "10.0.1.11_nginx+redis+safeline",
+    hostname: "211.154.20.113",
+    port: 15578,
     username: "root",
     tags: [],
   };
+  const hosts = [host];
   const storage = {
     async addRecentConnection(hostId) {
-      assert(hostId === host.id, "Expected recent connection to use the host id");
+      assert(hosts.some((item) => item.id === hostId), "Expected recent connection to use the host id");
     },
     getAllHosts() {
-      return [host];
+      return hosts;
+    },
+    async setCurrentConnection(hostId, alias) {
+      assert(hosts.some((item) => item.id === hostId), "Expected current connection to use the host id");
+      assert(alias, "Expected current connection alias to be recorded");
+      vscode.__events.push(`current:${alias}`);
+    },
+    async clearCurrentConnection(hostId) {
+      assert(hosts.some((item) => item.id === hostId), "Expected current connection cleanup to use the host id");
+      vscode.__events.push(`clear:${hostId}`);
     },
   };
 
   await connectHostInNewWindow(host, storage);
-  const command = vscode.__commands.find((entry) => entry.command === "vscode.newWindow");
-  assert(command, "Expected vscode.newWindow to be called");
-  const alias = "SSH Kit: 103.184.47.185_dev | 103.184.47.185:27488";
-  assert(command.args.remoteAuthority === `ssh-remote+${alias}`, `Unexpected remoteAuthority: ${command.args.remoteAuthority}`);
+  const command = lastCommand(vscode, "opensshremotes.openEmptyWindow");
+  assert(command, "Expected Remote-SSH openEmptyWindow to be called");
+  const alias = "10.0.1.11_nginx+redis+safeline";
+  assert(command.args.host === alias, `Unexpected Remote-SSH host argument: ${command.args.host}`);
+  assert(
+    vscode.__events.indexOf(`current:${alias}`) < vscode.__events.indexOf("command:opensshremotes.openEmptyWindow"),
+    "Expected current connection to be recorded before opening Remote-SSH"
+  );
+  assertRemoteAliasScpSafe(alias);
+  assert(`${alias}:/root/.vscode-server`.indexOf(":") === alias.length, "scp target parsing must see only the host/path separator colon");
 
   const configPath = join(home, ".ssh", "config");
   const config = readFileSync(configPath, "utf8");
-  assert(config.includes(`Host "${alias}"`), "Expected quoted SSH Kit alias Host block in SSH config");
+  assert(config.includes(`Host ${alias}`), "Expected SSH Kit alias Host block in SSH config");
 
   const result = spawnSync("ssh", ["-G", "-F", configPath, alias], {
     encoding: "utf8",
   });
   assert(result.status === 0, result.stderr || "ssh -G failed");
   const settings = result.stdout.toLowerCase();
-  assert(settings.includes("hostname 103.184.47.185"), "Expected OpenSSH to resolve HostName from the alias block");
-  assert(settings.includes("port 27488"), "Expected OpenSSH to resolve Port from the alias block");
+  assert(settings.includes("hostname 211.154.20.113"), "Expected OpenSSH to resolve HostName from the alias block");
+  assert(settings.includes("port 15578"), "Expected OpenSSH to resolve Port from the alias block");
   assert(settings.includes("user root"), "Expected OpenSSH to resolve User from the alias block");
+
+  const ipv6Host = {
+    id: "h-remote-ipv6",
+    name: "prod/api#1 \"blue\"+root",
+    hostname: "2001:db8::1",
+    port: 2222,
+    username: "deploy",
+    tags: [],
+  };
+  hosts.push(ipv6Host);
+  await connectHostInNewWindow(ipv6Host, storage);
+  const ipv6Command = lastCommand(vscode, "opensshremotes.openEmptyWindow");
+  const ipv6Alias = "prod api 1 blue +root";
+  assert(ipv6Command, "Expected Remote-SSH openEmptyWindow to be called for IPv6 host");
+  assert(ipv6Command.args.host === ipv6Alias, `Unexpected IPv6 Remote-SSH host argument: ${ipv6Command.args.host}`);
+  assertRemoteAliasScpSafe(ipv6Alias);
+
+  const ipv6Result = spawnSync("ssh", ["-G", "-F", configPath, ipv6Alias], {
+    encoding: "utf8",
+  });
+  assert(ipv6Result.status === 0, ipv6Result.stderr || "ssh -G failed for IPv6 alias");
+  const ipv6Settings = ipv6Result.stdout.toLowerCase();
+  assert(ipv6Settings.includes("hostname 2001:db8::1"), "Expected OpenSSH to resolve IPv6 HostName from the alias block");
+  assert(ipv6Settings.includes("port 2222"), "Expected OpenSSH to resolve IPv6 Port from the alias block");
+  assert(ipv6Settings.includes("user deploy"), "Expected OpenSSH to resolve IPv6 User from the alias block");
+
+  const duplicateNameHost = {
+    id: "h-remote-duplicate",
+    name: host.name,
+    hostname: "211.154.20.114",
+    port: 10274,
+    username: "root",
+    tags: [],
+  };
+  hosts.push(duplicateNameHost);
+  await connectHostInNewWindow(duplicateNameHost, storage);
+  const duplicateCommand = lastCommand(vscode, "opensshremotes.openEmptyWindow");
+  const duplicateAlias = "10.0.1.11_nginx+redis+safeline｜211.154.20.114：10274";
+  assert(duplicateCommand, "Expected Remote-SSH openEmptyWindow to be called for duplicate-name host");
+  assert(duplicateCommand.args.host === duplicateAlias, `Unexpected duplicate Remote-SSH host argument: ${duplicateCommand.args.host}`);
+  assertRemoteAliasScpSafe(duplicateAlias);
+
+  const terminalKeyPath = join(home, ".ssh", "id_terminal");
+  writeFileSync(terminalKeyPath, "placeholder");
+  const terminalHost = {
+    id: "h-terminal",
+    name: "terminal-host",
+    hostname: "203.0.113.10",
+    port: 2222,
+    username: "deploy",
+    identityFile: "id_terminal",
+    tags: [],
+  };
+  hosts.push(terminalHost);
+  await connectInVSCodeTerminal(terminalHost, storage);
+  const terminal = lastTerminal(vscode);
+  assert(terminal, "Expected VS Code terminal to be created");
+  assertIncludesSequence(terminal.shellArgs, ["-o", "StrictHostKeyChecking=accept-new"], "Expected integrated terminal SSH to auto-accept new host keys");
+  assertIncludesSequence(terminal.shellArgs, ["-i", terminalKeyPath], "Expected relative identity files to resolve under ~/.ssh");
+
+  const missingKeyHost = {
+    ...terminalHost,
+    id: "h-terminal-missing-key",
+    name: "terminal-missing-key",
+    identityFile: "missing_key",
+  };
+  hosts.push(missingKeyHost);
+  vscode.__warningChoice = "继续连接";
+  await connectInVSCodeTerminal(missingKeyHost, storage);
+  const missingKeyTerminal = lastTerminal(vscode);
+  assert(missingKeyTerminal, "Expected terminal to be created after confirming missing key");
+  assert(!missingKeyTerminal.shellArgs.includes("-i"), "Expected missing identity file to be skipped for terminal SSH");
+
+  vscode.env.remoteName = "ssh-remote";
+  vscode.__warningChoice = "在本机 VS Code 终端打开";
+  await connectInVSCodeTerminal(terminalHost, storage);
+  const localTerminalCommand = lastCommand(vscode, "workbench.action.terminal.newLocal");
+  const sendSequenceCommand = lastCommand(vscode, "workbench.action.terminal.sendSequence");
+  assert(localTerminalCommand, "Expected remote windows to create a local VS Code terminal");
+  assert(sendSequenceCommand, "Expected SSH command to be sent to the local VS Code terminal");
+  assert(sendSequenceCommand.args.text.includes("ssh "), "Expected local terminal command text to contain ssh");
+  assert(sendSequenceCommand.args.text.includes("StrictHostKeyChecking=accept-new"), "Expected local VS Code terminal SSH to auto-accept new host keys");
+  assert(sendSequenceCommand.args.text.includes("deploy@203.0.113.10"), "Expected local VS Code terminal SSH target");
+  vscode.env.remoteName = undefined;
+  vscode.__warningChoice = undefined;
+}
+
+function assertRemoteAliasScpSafe(alias) {
+  assert(!/[:/\\#"'<>|*?%]/.test(alias), `Remote-SSH alias contains unsafe ASCII separators: ${alias}`);
+}
+
+function lastCommand(vscode, command) {
+  return vscode.__commands.filter((entry) => entry.command === command).at(-1);
+}
+
+function lastTerminal(vscode) {
+  return vscode.__terminals.at(-1);
+}
+
+function assertIncludesSequence(values, sequence, message) {
+  assert(
+    values.some((value, index) =>
+      sequence.every((part, offset) => values[index + offset] === part)
+    ),
+    message
+  );
 }
 
 function createExtensionContext(initialData) {
@@ -307,12 +429,25 @@ function createExtensionContext(initialData) {
 
 function createVSCodeMock() {
   const commands = [];
+  const events = [];
   const messages = [];
-  return {
+  const terminals = [];
+  const mock = {
     __commands: commands,
+    __events: events,
     __messages: messages,
+    __terminals: terminals,
+    __warningChoice: undefined,
     window: {
       terminals: [],
+      createTerminal(options) {
+        terminals.push(options);
+        return {
+          show() {
+            events.push("terminal.show");
+          },
+        };
+      },
       setStatusBarMessage(message, timeout) {
         messages.push({ type: "status", message, timeout });
         return { dispose() {} };
@@ -323,7 +458,7 @@ function createVSCodeMock() {
       },
       async showWarningMessage(message, ...items) {
         messages.push({ type: "warning", message, items });
-        return undefined;
+        return mock.__warningChoice;
       },
       async showErrorMessage(message, ...items) {
         messages.push({ type: "error", message, items });
@@ -333,10 +468,15 @@ function createVSCodeMock() {
     workspace: {
       workspaceFolders: undefined,
     },
+    env: {
+      remoteName: undefined,
+    },
     commands: {
       async executeCommand(command, args) {
         commands.push({ command, args });
+        events.push(`command:${command}`);
       },
     },
   };
+  return mock;
 }

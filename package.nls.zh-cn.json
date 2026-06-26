@@ -34,6 +34,7 @@
   "commands.showKeyDetail": "查看密钥详情",
   "commands.openKeyFile": "打开密钥文件",
   "commands.openPrivateKey": "查看私钥",
+  "commands.showCurrentConnection": "查看当前连接",
   "commands.deduplicateHosts": "清理重复主机",
   "commands.batchDeleteHosts": "批量删除主机",
   "commands.backupData": "备份数据",

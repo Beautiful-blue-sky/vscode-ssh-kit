@@ -26,6 +26,14 @@ export interface SSHKitData {
   hosts: SSHHost[];
   groupCollapsedState: Record<string, boolean>; // Group ID → collapsed
   recentConnections: string[];                   // Recently connected host IDs
+  currentConnection?: SSHKitCurrentConnection;   // Last SSH Kit Remote-SSH connection context
+}
+
+/** Last known SSH Kit Remote-SSH connection */
+export interface SSHKitCurrentConnection {
+  hostId: string;
+  alias: string;
+  connectedAt: string;
 }
 
 /** Create default empty storage data */

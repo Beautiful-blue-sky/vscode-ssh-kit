@@ -49,23 +49,34 @@ async function doConnect(
     );
   }
 
-  await storage.addRecentConnection(host.id);
-
+  let alias: string | undefined;
   try {
-    if (!openInNewWindow) {
-      await prepareCurrentWindowForRemoteReuse();
-    }
-    await openVSCodeRemoteEmptyWindow(host, openInNewWindow);
-    showRemoteOpenSuccess(remoteDisplayLabel, windowLabel);
-  } catch {
+    alias = ensureRemoteSshAlias(host, storage.getAllHosts());
+    await storage.addRecentConnection(host.id);
+    await storage.setCurrentConnection(host.id, alias);
+
     try {
-      await openRemoteSSHEmptyWindow(host, openInNewWindow);
+      if (!openInNewWindow) {
+        await prepareCurrentWindowForRemoteReuse();
+      }
+      await openRemoteSSHEmptyWindow(host, alias, openInNewWindow);
       showRemoteOpenSuccess(remoteDisplayLabel, windowLabel);
     } catch {
-      vscode.window.showErrorMessage(
-        "无法调起 Remote-SSH 连接。请确认已安装 Remote-SSH 扩展。"
-      );
+      try {
+        await openVSCodeRemoteEmptyWindow(alias, openInNewWindow);
+        showRemoteOpenSuccess(remoteDisplayLabel, windowLabel);
+      } catch {
+        await storage.clearCurrentConnection(host.id);
+        vscode.window.showErrorMessage(
+          "无法调起 Remote-SSH 连接。请确认已安装 Remote-SSH 扩展。"
+        );
+      }
     }
+  } catch (err: unknown) {
+    if (alias) {
+      await storage.clearCurrentConnection(host.id);
+    }
+    vscode.window.showErrorMessage(`无法准备 Remote-SSH 连接：${getErrorMessage(err)}`);
   } finally {
     status.dispose();
   }
@@ -163,10 +174,11 @@ function showRemoteOpenSuccess(hostName: string, windowLabel: string): void {
  */
 export async function testConnection(host: SSHHost): Promise<void> {
   const args = [
-    "-o", "ConnectTimeout=5",
-    "-o", "StrictHostKeyChecking=no",
-    "-o", "BatchMode=yes",
-    ...buildSSHArgs(host),
+    ...buildSSHArgs(host, {
+      batchMode: true,
+      connectTimeoutSeconds: 5,
+      strictHostKeyChecking: "no",
+    }),
     "exit",
   ];
 
@@ -270,12 +282,19 @@ export async function connectInExternalTerminal(
   host: SSHHost,
   storage: StorageService
 ): Promise<void> {
+  const missingIdentity = getMissingIdentityFile(host);
+  const skipMissingIdentityFile = Boolean(missingIdentity);
+  if (missingIdentity) {
+    const shouldContinue = await confirmMissingIdentityFile(host, missingIdentity);
+    if (!shouldContinue) {return;}
+  }
+
   vscode.window.showInformationMessage(
     `正在外部终端连接 ${host.name} (${host.username}@${host.hostname}:${host.port})...`
   );
 
   try {
-    await launchExternalTerminal(host);
+    await launchExternalTerminal(host, { skipMissingIdentityFile });
     await storage.addRecentConnection(host.id);
   } catch (err: unknown) {
     vscode.window.showErrorMessage(
@@ -284,15 +303,19 @@ export async function connectInExternalTerminal(
   }
 }
 
-/** Open an empty Remote-SSH window via the extension command as a fallback. */
-async function openRemoteSSHEmptyWindow(host: SSHHost, openInNewWindow: boolean): Promise<void> {
+/** Open an empty Remote-SSH window via the Remote-SSH extension command. */
+async function openRemoteSSHEmptyWindow(
+  host: SSHHost,
+  alias: string,
+  openInNewWindow: boolean
+): Promise<void> {
   const command = openInNewWindow
     ? "opensshremotes.openEmptyWindow"
     : "opensshremotes.openEmptyWindowInCurrentWindow";
 
   try {
     await vscode.commands.executeCommand(command, {
-      host: ensureRemoteSshAlias(host),
+      host: alias,
     });
   } catch {
     await vscode.commands.executeCommand(command, {
@@ -304,8 +327,10 @@ async function openRemoteSSHEmptyWindow(host: SSHHost, openInNewWindow: boolean)
 }
 
 /** Open a remote empty window without invoking Remote-SSH's host picker UI. */
-async function openVSCodeRemoteEmptyWindow(host: SSHHost, openInNewWindow: boolean): Promise<void> {
-  const alias = ensureRemoteSshAlias(host);
+async function openVSCodeRemoteEmptyWindow(
+  alias: string,
+  openInNewWindow: boolean
+): Promise<void> {
   await vscode.commands.executeCommand("vscode.newWindow", {
     remoteAuthority: `ssh-remote+${alias}`,
     reuseWindow: !openInNewWindow,
@@ -317,11 +342,10 @@ function formatHostSpec(host: SSHHost): string {
 }
 
 function buildRemoteDisplayLabel(host: SSHHost): string {
-  return buildRemoteSshAlias(host);
+  return `SSH Kit: ${sanitizeRemoteDisplayText(host.name) || "host"} | ${formatDisplayEndpoint(host)}`;
 }
 
-function ensureRemoteSshAlias(host: SSHHost): string {
-  const alias = buildRemoteSshAlias(host);
+function ensureRemoteSshAlias(host: SSHHost, allHosts: SSHHost[] = [host]): string {
   const configPath = getSSHConfigPath();
   const dir = path.dirname(configPath);
   if (!fs.existsSync(dir)) {
@@ -331,14 +355,13 @@ function ensureRemoteSshAlias(host: SSHHost): string {
   const existing = fs.existsSync(configPath)
     ? fs.readFileSync(configPath, "utf-8")
     : "";
+  const markerPattern = remoteAliasMarkerPattern(host.id);
+  const existingWithoutOwnBlock = existing.replace(markerPattern, "");
+  const alias = buildAvailableRemoteSshAlias(host, allHosts, existingWithoutOwnBlock);
   const block = formatRemoteSshAliasBlock(host, alias);
-  const markerPattern = new RegExp(
-    `^${escapeRegExp(aliasBlockBegin(host.id))}\\r?\\n[\\s\\S]*?^${escapeRegExp(aliasBlockEnd(host.id))}\\r?\\n?`,
-    "m"
-  );
-  const updated = markerPattern.test(existing)
-    ? existing.replace(markerPattern, block + "\n")
-    : joinConfigText(existing, block);
+  const updated = configAliasMatchesHost(existingWithoutOwnBlock, alias, host)
+    ? existingWithoutOwnBlock
+    : joinConfigText(existingWithoutOwnBlock, block);
 
   if (updated !== existing) {
     fs.writeFileSync(configPath, updated, "utf-8");
@@ -346,17 +369,52 @@ function ensureRemoteSshAlias(host: SSHHost): string {
   return alias;
 }
 
-function buildRemoteSshAlias(host: SSHHost): string {
-  const prefix = "SSH Kit: ";
-  const separator = " | ";
-  const endpoint = formatDisplayEndpoint(host);
-  const maxLength = 120;
-  const maxNameLength = Math.max(8, maxLength - prefix.length - separator.length - endpoint.length);
-  const name = truncateText(sanitizeRemoteAliasText(host.name), maxNameLength) || "host";
-  return `${prefix}${name}${separator}${endpoint}`;
+export function buildRemoteSshAlias(host: SSHHost, allHosts: SSHHost[] = [host]): string {
+  const candidates = buildRemoteAliasCandidates(host);
+  return candidates.find((candidate) => isRemoteAliasUnique(host, candidate, allHosts))
+    ?? candidates[candidates.length - 1];
+}
+
+function buildAvailableRemoteSshAlias(
+  host: SSHHost,
+  allHosts: SSHHost[],
+  existingConfig: string
+): string {
+  const candidates = buildRemoteAliasCandidates(host);
+  return candidates.find((candidate) =>
+    isRemoteAliasUnique(host, candidate, allHosts) &&
+    (!configHasHostAlias(existingConfig, candidate) || configAliasMatchesHost(existingConfig, candidate, host))
+  ) ?? candidates[candidates.length - 1];
 }
 
 function sanitizeRemoteAliasText(value: string): string {
+  return value
+    .trim()
+    .replace(/[\r\n\t]+/g, " ")
+    .replace(/[^\p{L}\p{N} ._+-]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .replace(/^[ ._+-]+|[ ._+-]+$/g, "");
+}
+
+function isRemoteAliasUnique(host: SSHHost, alias: string, allHosts: SSHHost[]): boolean {
+  return !allHosts.some((other) =>
+    other.id !== host.id && buildRemoteAliasCandidates(other).includes(alias)
+  );
+}
+
+function buildRemoteAliasCandidates(host: SSHHost): string[] {
+  const maxLength = 120;
+  const endpoint = `｜${formatRemoteAliasEndpoint(host)}`;
+  const idSuffix = `｜${host.id.slice(-6)}`;
+  const fullIdSuffix = `｜${host.id}`;
+  const name = truncateText(sanitizeRemoteAliasText(host.name), maxLength) || formatRemoteAliasEndpoint(host);
+  const nameWithEndpoint = `${truncateText(name, Math.max(8, maxLength - endpoint.length))}${endpoint}`;
+  const nameWithEndpointAndId = `${truncateText(name, Math.max(8, maxLength - endpoint.length - idSuffix.length))}${endpoint}${idSuffix}`;
+  const nameWithEndpointAndFullId = `${truncateText(name, Math.max(8, maxLength - endpoint.length - fullIdSuffix.length))}${endpoint}${fullIdSuffix}`;
+  return [name, nameWithEndpoint, nameWithEndpointAndId, nameWithEndpointAndFullId];
+}
+
+function sanitizeRemoteDisplayText(value: string): string {
   return value
     .trim()
     .replace(/[\r\n\t]+/g, " ")
@@ -374,6 +432,79 @@ function formatDisplayEndpoint(host: SSHHost): string {
     ? `[${host.hostname}]`
     : host.hostname;
   return `${hostname}:${host.port}`;
+}
+
+function formatRemoteAliasEndpoint(host: SSHHost): string {
+  const hostname = host.hostname
+    .replace(/[^A-Za-z0-9._-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "") || "host";
+  return `${hostname}：${host.port}`;
+}
+
+function configHasHostAlias(rawText: string, alias: string): boolean {
+  return Boolean(findHostConfig(rawText, alias));
+}
+
+function configAliasMatchesHost(rawText: string, alias: string, host: SSHHost): boolean {
+  const props = findHostConfig(rawText, alias);
+  if (!props) {return false;}
+
+  const hostname = getLastConfigValue(props, "hostname") ?? alias;
+  const port = Number.parseInt(getLastConfigValue(props, "port") ?? "22", 10);
+  const user = getLastConfigValue(props, "user") ?? "";
+  return hostname === host.hostname &&
+    port === host.port &&
+    (!host.username || user === host.username);
+}
+
+function findHostConfig(rawText: string, alias: string): Record<string, string[]> | undefined {
+  let currentAliases: string[] = [];
+  let currentProps: Record<string, string[]> = {};
+
+  const flush = (): Record<string, string[]> | undefined =>
+    currentAliases.includes(alias) ? currentProps : undefined;
+
+  for (const line of rawText.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) {continue;}
+
+    const sectionMatch = /^(Host|Match)\s+(.+)$/i.exec(trimmed);
+    if (sectionMatch) {
+      const found = flush();
+      if (found) {return found;}
+      currentAliases = sectionMatch[1].toLowerCase() === "host"
+        ? splitSSHWords(sectionMatch[2])
+        : [];
+      currentProps = {};
+      continue;
+    }
+
+    if (currentAliases.length === 0) {continue;}
+    const directiveMatch = /^(\S+)\s+(.+)$/.exec(trimmed);
+    if (!directiveMatch) {continue;}
+    const key = directiveMatch[1].toLowerCase();
+    currentProps[key] = [...(currentProps[key] ?? []), directiveMatch[2].trim()];
+  }
+
+  return flush();
+}
+
+function getLastConfigValue(props: Record<string, string[]>, key: string): string | undefined {
+  const values = props[key.toLowerCase()];
+  return values?.[values.length - 1];
+}
+
+function splitSSHWords(value: string): string[] {
+  const words: string[] = [];
+  const tokenRegex = /"([^"]+)"|'([^']+)'|(\S+)/g;
+  let match: RegExpExecArray | null;
+
+  while ((match = tokenRegex.exec(value)) !== null) {
+    words.push(match[1] ?? match[2] ?? match[3]);
+  }
+
+  return words;
 }
 
 function getSSHConfigPath(): string {
@@ -446,6 +577,13 @@ function aliasBlockEnd(hostId: string): string {
   return `# SSH Kit connect alias ${hostId} end`;
 }
 
+function remoteAliasMarkerPattern(hostId: string): RegExp {
+  return new RegExp(
+    `^${escapeRegExp(aliasBlockBegin(hostId))}\\r?\\n[\\s\\S]*?^${escapeRegExp(aliasBlockEnd(hostId))}\\r?\\n?`,
+    "m"
+  );
+}
+
 function joinConfigText(existing: string, block: string): string {
   const prefix = existing.trimEnd();
   return prefix ? `${prefix}\n\n${block}\n` : `${block}\n`;
@@ -501,10 +639,28 @@ export async function connectInVSCodeTerminal(
   host: SSHHost,
   storage: StorageService
 ): Promise<void> {
+  const remoteTerminalMode = await resolveRemoteWindowTerminalMode(host, storage);
+  if (remoteTerminalMode === "localVSCodeTerminal") {
+    await connectInLocalVSCodeTerminal(host, storage);
+    return;
+  }
+  if (remoteTerminalMode === "external") {return;}
+  if (remoteTerminalMode === "cancel") {return;}
+
+  const skipMissingIdentityFile = remoteTerminalMode === "remoteTerminal";
+  const missingIdentity = skipMissingIdentityFile ? undefined : getMissingIdentityFile(host);
+  if (missingIdentity) {
+    const shouldContinue = await confirmMissingIdentityFile(host, missingIdentity);
+    if (!shouldContinue) {return;}
+  }
+
   const terminal = vscode.window.createTerminal({
     name: `SSH: ${host.name}`,
     shellPath: "ssh",
-    shellArgs: buildSSHArgs(host),
+    shellArgs: buildSSHArgs(host, {
+      acceptNewHostKey: true,
+      skipMissingIdentityFile: skipMissingIdentityFile || Boolean(missingIdentity),
+    }),
     hideFromUser: false,
   });
   terminal.show();
@@ -514,6 +670,45 @@ export async function connectInVSCodeTerminal(
   );
 
   await storage.addRecentConnection(host.id);
+}
+
+type RemoteWindowTerminalMode =
+  | "localWindow"
+  | "localVSCodeTerminal"
+  | "remoteTerminal"
+  | "external"
+  | "cancel";
+
+async function resolveRemoteWindowTerminalMode(
+  host: SSHHost,
+  storage: StorageService
+): Promise<RemoteWindowTerminalMode> {
+  if (!vscode.env.remoteName) {
+    return "localWindow";
+  }
+
+  const choice = await vscode.window.showWarningMessage(
+    [
+      "当前 VS Code 窗口已经连接到远程环境，内置终端会在当前远程服务器上执行 ssh。",
+      "如果要使用本机 SSH 配置和本机密钥，建议改用本机 VS Code 终端或本机外部终端。",
+    ].join("\n"),
+    "在本机 VS Code 终端打开",
+    "打开本机外部终端",
+    "仍在当前远程终端打开",
+    "取消"
+  );
+
+  if (choice === "在本机 VS Code 终端打开") {
+    return "localVSCodeTerminal";
+  }
+  if (choice === "打开本机外部终端") {
+    await connectInExternalTerminal(host, storage);
+    return "external";
+  }
+  if (choice === "仍在当前远程终端打开") {
+    return "remoteTerminal";
+  }
+  return "cancel";
 }
 
 // ─── Terminal connection entry point (choose type) ─────────────────────────
@@ -526,8 +721,25 @@ export async function promptTerminalConnect(
   host: SSHHost,
   storage: StorageService
 ): Promise<void> {
+  const isRemoteWindow = Boolean(vscode.env.remoteName);
   const picked = await vscode.window.showQuickPick(
-    [
+    isRemoteWindow ? [
+      {
+        label: "$(terminal) 在本机 VS Code 终端打开",
+        description: "推荐：当前是远程窗口，使用本机 SSH 和本机密钥",
+        key: "localVscode",
+      },
+      {
+        label: "$(remote-explorer) 在本机外部终端打开",
+        description: "使用系统原生终端窗口",
+        key: "external",
+      },
+      {
+        label: "$(terminal) 在当前远程 VS Code 终端打开",
+        description: "会在当前远程服务器上执行 ssh，不使用本机密钥文件",
+        key: "vscode",
+      },
+    ] : [
       {
         label: "$(terminal) 在 VS Code 终端打开",
         description: "使用内置终端，保持在编辑器内",
@@ -544,21 +756,134 @@ export async function promptTerminalConnect(
 
   if (!picked) {return;}
 
-  if (picked.key === "external") {
+  if (picked.key === "localVscode") {
+    await connectInLocalVSCodeTerminal(host, storage);
+  } else if (picked.key === "external") {
     await connectInExternalTerminal(host, storage);
   } else {
     await connectInVSCodeTerminal(host, storage);
   }
 }
 
+interface BuildSSHArgsOptions {
+  acceptNewHostKey?: boolean;
+  batchMode?: boolean;
+  connectTimeoutSeconds?: number;
+  skipMissingIdentityFile?: boolean;
+  strictHostKeyChecking?: "accept-new" | "no" | "yes";
+}
+
+interface MissingIdentityFile {
+  originalPath: string;
+  resolvedPath: string;
+}
+
 /** Build raw ssh arguments shared by test, integrated terminal, and launchers. */
-function buildSSHArgs(host: SSHHost): string[] {
-  const args = ["-p", String(host.port)];
-  if (host.identityFile) {
+function buildSSHArgs(host: SSHHost, options: BuildSSHArgsOptions = {}): string[] {
+  const args: string[] = [];
+  if (options.connectTimeoutSeconds) {
+    args.push("-o", `ConnectTimeout=${options.connectTimeoutSeconds}`);
+  }
+  if (options.strictHostKeyChecking) {
+    args.push("-o", `StrictHostKeyChecking=${options.strictHostKeyChecking}`);
+  } else if (options.acceptNewHostKey) {
+    args.push("-o", "StrictHostKeyChecking=accept-new");
+  }
+  if (options.batchMode) {
+    args.push("-o", "BatchMode=yes");
+  }
+
+  args.push("-p", String(host.port));
+  if (host.identityFile && !options.skipMissingIdentityFile) {
     args.push("-i", resolveIdentityFileForSSHArg(host.identityFile));
   }
   args.push(`${host.username}@${host.hostname}`);
   return args;
+}
+
+async function connectInLocalVSCodeTerminal(
+  host: SSHHost,
+  storage: StorageService
+): Promise<void> {
+  const missingIdentity = getMissingIdentityFile(host);
+  if (missingIdentity) {
+    const shouldContinue = await confirmMissingIdentityFile(host, missingIdentity);
+    if (!shouldContinue) {return;}
+  }
+
+  const commandLine = buildSSHCommandLine(host, {
+    acceptNewHostKey: true,
+    skipMissingIdentityFile: Boolean(missingIdentity),
+  });
+
+  try {
+    await vscode.commands.executeCommand("workbench.action.terminal.newLocal");
+    await new Promise((resolve) => globalThis.setTimeout(resolve, 100));
+    await vscode.commands.executeCommand("workbench.action.terminal.sendSequence", {
+      text: `${commandLine}\r`,
+    });
+    vscode.window.showInformationMessage(
+      `已在本机 VS Code 终端连接 ${host.name} (${host.username}@${host.hostname}:${host.port})`
+    );
+    await storage.addRecentConnection(host.id);
+  } catch (err: unknown) {
+    const choice = await vscode.window.showWarningMessage(
+      [
+        "当前 VS Code 未能创建本机集成终端。",
+        `原因：${getErrorMessage(err)}`,
+        "可以改用本机外部终端继续连接。",
+      ].join("\n"),
+      "打开本机外部终端",
+      "取消"
+    );
+    if (choice === "打开本机外部终端") {
+      await connectInExternalTerminal(host, storage);
+    }
+  }
+}
+
+function buildSSHCommandLine(host: SSHHost, options: BuildSSHArgsOptions = {}): string {
+  return ["ssh", ...buildSSHArgs(host, options)]
+    .map((arg, index) => index === 0 ? arg : quoteForLocalShellArg(arg))
+    .join(" ");
+}
+
+async function confirmMissingIdentityFile(
+  host: SSHHost,
+  missing: MissingIdentityFile
+): Promise<boolean> {
+  const choice = await vscode.window.showWarningMessage(
+    [
+      `主机「${host.name}」配置的认证文件不存在：`,
+      missing.resolvedPath,
+      "继续连接时将不传递 -i 参数，SSH 会改用默认密钥、ssh-agent 或密码认证。",
+    ].join("\n"),
+    "继续连接",
+    "编辑主机",
+    "取消"
+  );
+
+  if (choice === "编辑主机") {
+    await vscode.commands.executeCommand("sshKit.editHost", host);
+    return false;
+  }
+  return choice === "继续连接";
+}
+
+function quoteForLocalShellArg(value: string): string {
+  if (process.platform === "win32") {
+    return quoteForCmdArg(value);
+  }
+  return quoteForPosixShell(value);
+}
+
+function getMissingIdentityFile(host: SSHHost): MissingIdentityFile | undefined {
+  if (!host.identityFile) {return undefined;}
+  const resolvedPath = resolveIdentityFileForSSHArg(host.identityFile);
+  if (resolvedPath.includes("%")) {return undefined;}
+  return fs.existsSync(resolvedPath)
+    ? undefined
+    : { originalPath: host.identityFile, resolvedPath };
 }
 
 /** Resolve user-friendly IdentityFile forms before passing them as raw process args. */
@@ -579,7 +904,7 @@ function resolveIdentityFileForSSHArg(identityFile: string): string {
   }
 
   const homeCandidate = path.resolve(os.homedir(), cleaned);
-  return fs.existsSync(homeCandidate) ? homeCandidate : cleaned;
+  return fs.existsSync(homeCandidate) ? homeCandidate : sshDirCandidate;
 }
 
 function stripWrappingQuotes(value: string): string {
@@ -593,13 +918,19 @@ function stripWrappingQuotes(value: string): string {
 }
 
 /** Launch the platform-native terminal with an ssh command. */
-async function launchExternalTerminal(host: SSHHost): Promise<void> {
+async function launchExternalTerminal(
+  host: SSHHost,
+  options: BuildSSHArgsOptions = {}
+): Promise<void> {
   if (process.platform === "win32") {
-    await launchWindowsTerminal(host);
+    await launchWindowsTerminal(host, options);
     return;
   }
 
-  const sshCommand = ["ssh", ...buildSSHArgs(host)].map(quoteForPosixShell).join(" ");
+  const sshCommand = ["ssh", ...buildSSHArgs(host, {
+    ...options,
+    acceptNewHostKey: true,
+  })].map(quoteForPosixShell).join(" ");
   if (process.platform === "darwin") {
     const script = `tell application "Terminal" to do script "${escapeAppleScriptString(sshCommand)}"`;
     await spawnDetached("osascript", ["-e", script]);
@@ -610,8 +941,14 @@ async function launchExternalTerminal(host: SSHHost): Promise<void> {
 }
 
 /** Launch cmd.exe in its own console window and keep it open after ssh exits. */
-async function launchWindowsTerminal(host: SSHHost): Promise<void> {
-  const commandLine = ["ssh", ...buildSSHArgs(host)]
+async function launchWindowsTerminal(
+  host: SSHHost,
+  options: BuildSSHArgsOptions = {}
+): Promise<void> {
+  const commandLine = ["ssh", ...buildSSHArgs(host, {
+    ...options,
+    acceptNewHostKey: true,
+  })]
     .map((arg, index) => index === 0 ? arg : quoteForCmdArg(arg))
     .join(" ");
 

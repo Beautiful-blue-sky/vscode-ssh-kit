@@ -34,6 +34,7 @@
   "commands.showKeyDetail": "Show Key Details",
   "commands.openKeyFile": "Open Key File",
   "commands.openPrivateKey": "Open Private Key",
+  "commands.showCurrentConnection": "Show Current Connection",
   "commands.deduplicateHosts": "Remove Duplicate Hosts",
   "commands.batchDeleteHosts": "Batch Delete Hosts",
   "commands.backupData": "Backup Data",

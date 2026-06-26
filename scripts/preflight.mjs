@@ -51,6 +51,7 @@ addCheck("Marketplace identity", "extension id", "lixiaoyu.ssh-kit", `${manifest
 addCheck("Marketplace identity", "version", "semver x.y.z", manifest.version, /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(manifest.version ?? ""));
 addCheck("Marketplace identity", "category", "Other", (manifest.categories ?? []).join(", "));
 addCheck("Marketplace identity", "repository", "github.com/Beautiful-blue-sky/vscode-ssh-kit", manifest.repository?.url ?? "", (manifest.repository?.url ?? "").includes("github.com/Beautiful-blue-sky/vscode-ssh-kit"));
+addCheck("Marketplace identity", "extension kind", "ui", (manifest.extensionKind ?? []).join(", "), (manifest.extensionKind ?? []).includes("ui"));
 
 addCheck("Localized manifest", "displayName placeholder", "%displayName%", manifest.displayName);
 addCheck("Localized manifest", "description placeholder", "%description%", manifest.description);
@@ -74,6 +75,9 @@ addCheck(
 );
 
 const contributedCommands = manifest.contributes?.commands ?? [];
+const contributedCommandIds = new Set(contributedCommands.map((command) => command.command));
+const undefinedMenuCommands = menuCommandReferences()
+  .filter((command) => command.startsWith("sshKit.") && !contributedCommandIds.has(command));
 const hiddenCommandPaletteCommands = new Set(
   (manifest.contributes?.menus?.commandPalette ?? [])
     .filter((item) => item.when === "false")
@@ -121,6 +125,13 @@ const extraReadmeCommandsEn = [...readmeCommandsEn]
 const extraReadmeCommandsZh = [...readmeCommandsZh]
   .filter((label) => !visibleCommandLabelsZh.has(label) && !allowedInlineReadmeCommandsZh.has(label));
 addCheck("Contribution surface", "commands", "non-empty", String(contributedCommands.length), contributedCommands.length > 0);
+addCheck(
+  "Contribution surface",
+  "menu command references",
+  "defined commands",
+  undefinedMenuCommands.length > 0 ? [...new Set(undefinedMenuCommands)].join(", ") : "defined commands",
+  undefinedMenuCommands.length === 0,
+);
 addCheck(
   "Contribution surface",
   "command category",
@@ -241,6 +252,13 @@ function viewIds() {
   return Object.values(manifest.contributes?.views ?? {})
     .flat()
     .map((view) => view.id);
+}
+
+function menuCommandReferences() {
+  return Object.values(manifest.contributes?.menus ?? {})
+    .flat()
+    .map((item) => item.command)
+    .filter(Boolean);
 }
 
 function commandLabelsFromReadme(content) {

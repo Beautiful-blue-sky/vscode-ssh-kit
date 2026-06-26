@@ -2,7 +2,7 @@
   "name": "ssh-kit",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "publisher": "lixiaoyu",
   "license": "MIT",
   "icon": "icon.png",
@@ -24,6 +24,12 @@
   },
   "categories": [
     "Other"
+  ],
+  "extensionKind": [
+    "ui"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -241,6 +247,12 @@
         "title": "%commands.openPrivateKey%",
         "category": "%commands.category%",
         "icon": "$(lock)"
+      },
+      {
+        "command": "sshKit.showCurrentConnection",
+        "title": "%commands.showCurrentConnection%",
+        "category": "%commands.category%",
+        "icon": "$(remote)"
       }
     ],
     "viewsWelcome": [
@@ -410,18 +422,6 @@
       ],
       "commandPalette": [
         {
-          "command": "workbench.view.extension.sshKit",
-          "when": "false"
-        },
-        {
-          "command": "sshKit.hosts.focus",
-          "when": "false"
-        },
-        {
-          "command": "sshKit.keys.focus",
-          "when": "false"
-        },
-        {
           "command": "sshKit.connectHostInCurrentWindow",
           "when": "false"
         },
@@ -487,6 +487,10 @@
         },
         {
           "command": "sshKit.openPrivateKey",
+          "when": "false"
+        },
+        {
+          "command": "sshKit.showCurrentConnection",
           "when": "false"
         }
       ]
