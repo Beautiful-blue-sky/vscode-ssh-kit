@@ -2,6 +2,17 @@
 
 [![en](https://img.shields.io/badge/CHANGELOG-English-blue)](CHANGELOG.md)
 
+## 0.0.4 — 2026-06-29
+
+### 修复
+- 当前 SSH Kit 连接标记改为按 VS Code 窗口隔离，从一个远程窗口再打开第二个 Remote-SSH 窗口时，不再覆盖第一个窗口的当前主机显示。
+- SSH Config 写回时按 Host alias 或相同 `HostName` / `Port` / `User` 连接目标覆盖已有 SSH Kit 托管块，避免同一主机因为不同 Host 名称重复写入。
+- 写回托管主机时单独保留 SSH Kit 的 Remote-SSH 连接别名块，避免把临时连接别名误当成普通主机块覆盖。
+
+### 调整
+- Marketplace README 补充窗口级当前连接标记和同连接目标写回行为。
+- 允许本地发布工具链所需的 pnpm 构建脚本，保证 preflight 与 VSIX 打包可复现。
+
 ## 0.0.3 — 2026-06-26
 
 ### 修复

@@ -54,6 +54,11 @@ async function doConnect(
     alias = ensureRemoteSshAlias(host, storage.getAllHosts());
     await storage.addRecentConnection(host.id);
     await storage.setCurrentConnection(host.id, alias);
+    if (openInNewWindow) {
+      await storage.addPendingWindowConnection(host.id, alias);
+    } else {
+      await storage.setWindowConnection(host.id, alias);
+    }
 
     try {
       if (!openInNewWindow) {
@@ -67,6 +72,8 @@ async function doConnect(
         showRemoteOpenSuccess(remoteDisplayLabel, windowLabel);
       } catch {
         await storage.clearCurrentConnection(host.id);
+        await storage.clearWindowConnection(host.id);
+        await storage.clearPendingWindowConnection(host.id, alias);
         vscode.window.showErrorMessage(
           "无法调起 Remote-SSH 连接。请确认已安装 Remote-SSH 扩展。"
         );
@@ -75,6 +82,8 @@ async function doConnect(
   } catch (err: unknown) {
     if (alias) {
       await storage.clearCurrentConnection(host.id);
+      await storage.clearWindowConnection(host.id);
+      await storage.clearPendingWindowConnection(host.id, alias);
     }
     vscode.window.showErrorMessage(`无法准备 Remote-SSH 连接：${getErrorMessage(err)}`);
   } finally {

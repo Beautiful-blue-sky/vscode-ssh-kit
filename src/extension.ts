@@ -398,13 +398,13 @@ class ConnectionStatusController implements vscode.Disposable {
     this.statusItem.name = "SSH Kit Connection";
     this.disposables.push(
       this.statusItem,
-      vscode.workspace.onDidChangeWorkspaceFolders(() => this.refresh())
+      vscode.workspace.onDidChangeWorkspaceFolders(() => { void this.refresh(); })
     );
-    this.refresh();
+    void this.refresh();
   }
 
-  refresh(): void {
-    this.current = this.resolveCurrentConnection();
+  async refresh(): Promise<void> {
+    this.current = await this.resolveCurrentConnection();
     this.tree.setConnectedHostId(this.current?.host.id);
     this.updateStatusItem();
   }
@@ -464,21 +464,30 @@ class ConnectionStatusController implements vscode.Disposable {
     ].filter(Boolean).join("\n");
   }
 
-  private resolveCurrentConnection(): CurrentConnectionInfo | undefined {
+  private async resolveCurrentConnection(): Promise<CurrentConnectionInfo | undefined> {
     const hosts = this.storage.getAllHosts();
     const authority = getCurrentRemoteSshAuthority();
     if (authority) {
       const matchedByAuthority = findHostByRemoteAuthority(authority, hosts);
       if (matchedByAuthority) {
+        await this.storage.setWindowConnection(matchedByAuthority.host.id, matchedByAuthority.alias);
         return matchedByAuthority;
       }
     }
 
+    const windowConnection = this.storage.getWindowConnection();
+    const windowHost = windowConnection
+      ? hosts.find((item) => item.id === windowConnection.hostId)
+      : undefined;
+    if (windowHost && windowConnection) {
+      return { host: windowHost, alias: windowConnection.alias };
+    }
+
     if (vscode.env.remoteName === "ssh-remote") {
-      const saved = this.storage.getCurrentConnection();
-      const host = saved ? hosts.find((item) => item.id === saved.hostId) : undefined;
-      if (host && saved) {
-        return { host, alias: saved.alias };
+      const claimed = await this.storage.claimPendingWindowConnection();
+      const claimedHost = claimed ? hosts.find((item) => item.id === claimed.hostId) : undefined;
+      if (claimedHost && claimed) {
+        return { host: claimedHost, alias: claimed.alias };
       }
     }
 
@@ -586,7 +595,7 @@ function registerCoreCommands(
 ): void {
   context.subscriptions.push(
     vscode.commands.registerCommand("sshKit.refresh", () => {
-      connectionStatus.refresh();
+      void connectionStatus.refresh();
       tree.refresh();
       keyTree.refresh();
     })
@@ -668,14 +677,14 @@ function registerConnectCommands(
       "sshKit.connectHostInCurrentWindow",
       async (arg: HostItem | SSHHost) => {
         await connectHostInCurrentWindow(unwrapHost(arg), storage);
-        connectionStatus.refresh();
+        await connectionStatus.refresh();
       }
     ),
     vscode.commands.registerCommand(
       "sshKit.connectHostInNewWindow",
       async (arg: HostItem | SSHHost) => {
         await connectHostInNewWindow(unwrapHost(arg), storage);
-        connectionStatus.refresh();
+        await connectionStatus.refresh();
       }
     ),
     vscode.commands.registerCommand(

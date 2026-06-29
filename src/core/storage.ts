@@ -12,6 +12,8 @@ import { findDuplicateEndpointGroups, findImportMatch } from "./hostMatching";
 
 /** Key used in globalState storage */
 const DATA_KEY = "sshKit.data";
+const WINDOW_CONNECTION_KEY = "sshKit.windowConnection";
+const PENDING_CONNECTIONS_KEY = "sshKit.pendingConnections";
 
 /**
  * Storage service — wraps read/write operations on VS Code globalState.
@@ -194,6 +196,58 @@ export class StorageService {
     if (hostId && data.currentConnection.hostId !== hostId) {return;}
     delete data.currentConnection;
     await this.saveData(data);
+  }
+
+  async setWindowConnection(hostId: string, alias: string): Promise<void> {
+    await this.context.workspaceState.update(WINDOW_CONNECTION_KEY, {
+      hostId,
+      alias,
+      connectedAt: new Date().toISOString(),
+    });
+  }
+
+  getWindowConnection(): SSHKitData["currentConnection"] {
+    return this.context.workspaceState.get<SSHKitData["currentConnection"]>(WINDOW_CONNECTION_KEY);
+  }
+
+  async clearWindowConnection(hostId?: string): Promise<void> {
+    const current = this.getWindowConnection();
+    if (!current) {return;}
+    if (hostId && current.hostId !== hostId) {return;}
+    await this.context.workspaceState.update(WINDOW_CONNECTION_KEY, undefined);
+  }
+
+  async addPendingWindowConnection(hostId: string, alias: string): Promise<void> {
+    const pending = this.getPendingWindowConnections()
+      .filter((item) => !(item.hostId === hostId && item.alias === alias));
+    pending.push({
+      hostId,
+      alias,
+      connectedAt: new Date().toISOString(),
+    });
+    await this.context.globalState.update(PENDING_CONNECTIONS_KEY, pending.slice(-10));
+  }
+
+  async claimPendingWindowConnection(): Promise<SSHKitData["currentConnection"]> {
+    const pending = this.getPendingWindowConnections();
+    const claimed = pending[0];
+    if (!claimed) {return undefined;}
+    await this.context.globalState.update(PENDING_CONNECTIONS_KEY, pending.slice(1));
+    await this.setWindowConnection(claimed.hostId, claimed.alias);
+    return claimed;
+  }
+
+  async clearPendingWindowConnection(hostId: string, alias?: string): Promise<void> {
+    const pending = this.getPendingWindowConnections()
+      .filter((item) => item.hostId !== hostId || (alias !== undefined && item.alias !== alias));
+    await this.context.globalState.update(PENDING_CONNECTIONS_KEY, pending);
+  }
+
+  private getPendingWindowConnections(): NonNullable<SSHKitData["currentConnection"]>[] {
+    return this.context.globalState.get<NonNullable<SSHKitData["currentConnection"]>[]>(
+      PENDING_CONNECTIONS_KEY,
+      []
+    );
   }
 
   // ─── Backup / restore ───────────────────────────────────────────────

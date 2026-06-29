@@ -2,6 +2,17 @@
 
 [![zh-CN](https://img.shields.io/badge/CHANGELOG-中文-red)](CHANGELOG.zh-CN.md)
 
+## 0.0.4 — 2026-06-29
+
+### Fixed
+- Keep the SSH Kit active connection marker scoped to each VS Code window, so opening a second Remote-SSH window no longer overwrites the first window's current host display.
+- Update SSH Config export matching to replace existing SSH Kit managed blocks by Host alias or by the same `HostName` / `Port` / `User` endpoint, preventing duplicate managed Host blocks with different aliases.
+- Preserve SSH Kit Remote-SSH connection alias blocks separately while exporting managed hosts back to SSH Config.
+
+### Changed
+- Document the per-window connection marker and same-endpoint SSH Config write-back behavior in the Marketplace README.
+- Allow the required pnpm build scripts for the local release toolchain so preflight and VSIX packaging remain reproducible.
+
 ## 0.0.3 — 2026-06-26
 
 ### Fixed

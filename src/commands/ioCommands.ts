@@ -209,10 +209,10 @@ export async function exportConfig(storage: StorageService): Promise<void> {
       const more = stats.conflicts.length > 8 ? ` 等 ${stats.conflicts.length} 个` : "";
       const takeover = await vscode.window.showWarningMessage(
         [
-          `发现 ${stats.conflicts.length} 个同名 Host 已存在，但不是 SSH Kit 托管：`,
+          `发现 ${stats.conflicts.length} 个同名或同连接目标 Host 已存在，但不是 SSH Kit 托管：`,
           `${preview}${more}`,
           "",
-          "SSH Kit 按 Host 别名判断同一配置，不按 HostName/IP 判断。",
+          "SSH Kit 会按 Host 别名和 HostName/Port/User 判断同一配置。",
           "接管后这些 Host 块会被 SSH Kit 生成内容覆盖，原文件仍会先备份。",
         ].join("\n"),
         { modal: true },
@@ -226,7 +226,7 @@ export async function exportConfig(storage: StorageService): Promise<void> {
       `即将写入 ${hosts.length} 台主机到 ~/.ssh/config：`,
       stats.added > 0 ? `  新增 ${stats.added} 台` : "",
       stats.synced > 0 ? `  同步 ${stats.synced} 台（已存在，将更新）` : "",
-      stats.conflicts.length > 0 ? `  接管 ${stats.conflicts.length} 个同名 Host` : "",
+      stats.conflicts.length > 0 ? `  接管 ${stats.conflicts.length} 个同名或同连接目标 Host` : "",
       stats.preserved > 0 ? `  保留 ${stats.preserved} 个现有主机不动` : "",
       "",
       "原文件将备份为 config.bak.YYYYMMDD-HHmmss",

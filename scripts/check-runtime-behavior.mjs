@@ -122,7 +122,7 @@ function checkSSHConfigImport() {
     "",
   ].join("\n"));
 
-  const { importFromSSHConfig, stringifyHosts } = loadTsModule("src/ssh/sshConfig.ts");
+  const { analyzeExport, exportToSSHConfig, importFromSSHConfig, stringifyHosts } = loadTsModule("src/ssh/sshConfig.ts");
   const { hosts } = importFromSSHConfig(configPath);
   assert(hosts.length === 1, `Expected one imported host, got ${hosts.length}`);
   assert(hosts[0].name === "multi", `Expected host "multi", got "${hosts[0].name}"`);
@@ -136,6 +136,48 @@ function checkSSHConfigImport() {
 
   const exportedWithSpace = stringifyHosts([{ ...hosts[0], id: "space-id", name: "space host" }]);
   assert(exportedWithSpace.includes('Host "space host"'), "Expected Host aliases with spaces to be quoted");
+
+  const exportPath = join(home, ".ssh", "export_config");
+  writeFileSync(exportPath, [
+    "Host 175.27.233.248_AIMS010-Nginx_10.100.1.4",
+    "  HostName 175.27.233.248",
+    "  Port 35264",
+    "  User root",
+    "  IdentityFile ~/.ssh/id_rsa",
+    "  # SSH Kit managed",
+    "",
+    "Host AIMS010-Nginx_10.100.1.4",
+    "  HostName 175.27.233.248",
+    "  Port 35264",
+    "  User root",
+    "  IdentityFile ~/.ssh/id_rsa",
+    "  # SSH Kit managed",
+    "",
+    "# SSH Kit connect alias mqggfb9qc991lz begin",
+    "Host AIMS010-Nginx_10.100.1.4｜175.27.233.248：35264",
+    "  HostName 175.27.233.248",
+    "  Port 35264",
+    "  User root",
+    "# SSH Kit connect alias mqggfb9qc991lz end",
+    "",
+  ].join("\n"));
+  const managedHost = {
+    id: "managed-endpoint",
+    name: "AIMS010-Nginx_10.100.1.4",
+    hostname: "175.27.233.248",
+    port: 35264,
+    username: "root",
+    identityFile: "~/.ssh/id_rsa",
+    tags: [],
+  };
+  const exportStats = analyzeExport([managedHost], exportPath);
+  assert(exportStats.synced === 1, `Expected endpoint-matched managed blocks to count as one sync, got ${exportStats.synced}`);
+  assert(exportStats.conflicts.length === 0, "Expected managed endpoint duplicates not to be reported as conflicts");
+  exportToSSHConfig([managedHost], exportPath);
+  const merged = readFileSync(exportPath, "utf8");
+  assert(!merged.includes("Host 175.27.233.248_AIMS010-Nginx_10.100.1.4"), "Expected old same-endpoint managed alias to be replaced");
+  assert((merged.match(/^Host AIMS010-Nginx_10\.100\.1\.4$/gm) ?? []).length === 1, "Expected one generated managed Host block");
+  assert(merged.includes("# SSH Kit connect alias mqggfb9qc991lz begin"), "Expected connection alias blocks to be preserved separately");
 }
 
 async function checkBackupRestore() {
@@ -275,9 +317,33 @@ async function checkRemoteAlias() {
       assert(alias, "Expected current connection alias to be recorded");
       vscode.__events.push(`current:${alias}`);
     },
+    async setWindowConnection(hostId, alias) {
+      assert(hosts.some((item) => item.id === hostId), "Expected window connection to use the host id");
+      assert(alias, "Expected window connection alias to be recorded");
+      vscode.__events.push(`window:${alias}`);
+    },
+    getWindowConnection() {
+      return undefined;
+    },
+    async addPendingWindowConnection(hostId, alias) {
+      assert(hosts.some((item) => item.id === hostId), "Expected pending connection to use the host id");
+      assert(alias, "Expected pending connection alias to be recorded");
+      vscode.__events.push(`pending:${alias}`);
+    },
+    async claimPendingWindowConnection() {
+      return undefined;
+    },
     async clearCurrentConnection(hostId) {
       assert(hosts.some((item) => item.id === hostId), "Expected current connection cleanup to use the host id");
       vscode.__events.push(`clear:${hostId}`);
+    },
+    async clearWindowConnection(hostId) {
+      assert(hosts.some((item) => item.id === hostId), "Expected window connection cleanup to use the host id");
+      vscode.__events.push(`clear-window:${hostId}`);
+    },
+    async clearPendingWindowConnection(hostId) {
+      assert(hosts.some((item) => item.id === hostId), "Expected pending connection cleanup to use the host id");
+      vscode.__events.push(`clear-pending:${hostId}`);
     },
   };
 
@@ -290,6 +356,11 @@ async function checkRemoteAlias() {
     vscode.__events.indexOf(`current:${alias}`) < vscode.__events.indexOf("command:opensshremotes.openEmptyWindow"),
     "Expected current connection to be recorded before opening Remote-SSH"
   );
+  assert(
+    vscode.__events.indexOf(`pending:${alias}`) < vscode.__events.indexOf("command:opensshremotes.openEmptyWindow"),
+    "Expected new-window connection context to be queued before opening Remote-SSH"
+  );
+  assert(!vscode.__events.includes(`window:${alias}`), "Expected new-window connections not to overwrite the current window state");
   assertRemoteAliasScpSafe(alias);
   assert(`${alias}:/root/.vscode-server`.indexOf(":") === alias.length, "scp target parsing must see only the host/path separator colon");
 

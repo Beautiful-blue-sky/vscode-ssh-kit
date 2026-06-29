@@ -24,6 +24,8 @@ interface HostBlock {
   start: number;
   end: number;
   managed: boolean;
+  connectAlias: boolean;
+  endpointKey?: string;
 }
 
 // ─── Parser ───────────────────────────────────────────────────────────────
@@ -326,6 +328,7 @@ export function analyzeExport(
 ): ExportStats | null {
   const resolvedPath = configPath ?? defaultConfigPath();
   const kitNames = new Set(hosts.map((h) => h.name));
+  const kitEndpoints = buildHostEndpointMap(hosts);
   const syncedNames = new Set<string>();
   const conflictNames = new Set<string>();
   let preserved = 0;
@@ -334,11 +337,16 @@ export function analyzeExport(
     const existing = fs.readFileSync(resolvedPath, "utf-8");
     const blocks = findHostBlocks(existing);
     for (const block of blocks) {
-      const matchedAliases = block.aliases.filter((alias) => kitNames.has(alias));
-      if (matchedAliases.length > 0) {
+      if (block.connectAlias) {
+        preserved++;
+        continue;
+      }
+
+      const matchedNames = getMatchedKitHostNames(block, kitNames, kitEndpoints);
+      if (matchedNames.length > 0) {
         const targetSet = block.managed ? syncedNames : conflictNames;
-        for (const alias of matchedAliases) {
-          targetSet.add(alias);
+        for (const name of matchedNames) {
+          targetSet.add(name);
         }
       } else {
         preserved++;
@@ -392,10 +400,11 @@ export function exportToSSHConfig(
     : "";
   const existingBlocks = findHostBlocks(existing);
   const kitNames = new Set(hosts.map((h) => h.name));
-  const conflicts = findUnmanagedConflicts(existingBlocks, kitNames);
+  const kitEndpoints = buildHostEndpointMap(hosts);
+  const conflicts = findUnmanagedConflicts(existingBlocks, kitNames, kitEndpoints);
   if (conflicts.length > 0 && !options.overwriteUnmanaged) {
     throw new Error(
-      `发现同名但非 SSH Kit 托管的 Host：${conflicts.join(", ")}。请确认接管后再写入。`
+      `发现同名或同连接目标但非 SSH Kit 托管的 Host：${conflicts.join(", ")}。请确认接管后再写入。`
     );
   }
   let preservedText = "";
@@ -406,7 +415,8 @@ export function exportToSSHConfig(
     let cursor = 0;
     for (const block of existingBlocks) {
       preservedText += existing.slice(cursor, block.start);
-      const matchesKitHost = block.aliases.some((alias) => kitNames.has(alias));
+      const matchesKitHost = !block.connectAlias &&
+        getMatchedKitHostNames(block, kitNames, kitEndpoints).length > 0;
       if (matchesKitHost && (block.managed || options.overwriteUnmanaged)) {
         // Matching blocks are replaced by the generated SSH Kit block below.
       } else {
@@ -443,10 +453,11 @@ function findHostBlocks(rawText: string): HostBlock[] {
   let match: RegExpExecArray | null;
 
   while ((match = sectionRegex.exec(rawText)) !== null) {
+    const kind = match[1].toLowerCase();
     sections.push({
-      kind: match[1].toLowerCase(),
+      kind,
       value: match[2].trim(),
-      start: match.index,
+      start: kind === "host" ? getConnectAliasBlockStart(rawText, match.index) : match.index,
     });
   }
 
@@ -457,30 +468,103 @@ function findHostBlocks(rawText: string): HostBlock[] {
 
     const end = sections[index + 1]?.start ?? rawText.length;
     const text = rawText.slice(section.start, end);
+    const aliases = splitSSHWords(section.value);
     blocks.push({
-      aliases: splitSSHWords(section.value),
+      aliases,
       text,
       start: section.start,
       end,
       managed: text.includes(MANAGED_MARKER),
+      connectAlias: isConnectAliasBlock(text),
+      endpointKey: getHostBlockEndpointKey(text, aliases),
     });
   }
 
   return blocks;
 }
 
-/** Find same-name Host aliases that exist but are not managed by SSH Kit. */
-function findUnmanagedConflicts(blocks: HostBlock[], kitNames: Set<string>): string[] {
+function isConnectAliasBlock(text: string): boolean {
+  return /^# SSH Kit connect alias [^\r\n]+ end\s*$/m.test(text);
+}
+
+function getConnectAliasBlockStart(rawText: string, hostStart: number): number {
+  const prefix = rawText.slice(0, hostStart);
+  const previousLineEnd = prefix.endsWith("\r\n")
+    ? prefix.length - 2
+    : prefix.endsWith("\n")
+      ? prefix.length - 1
+      : prefix.length;
+  const previousLineStart = prefix.lastIndexOf("\n", Math.max(0, previousLineEnd - 1)) + 1;
+  const previousLine = rawText.slice(previousLineStart, previousLineEnd).trim();
+  return /^# SSH Kit connect alias [^\r\n]+ begin$/.test(previousLine)
+    ? previousLineStart
+    : hostStart;
+}
+
+/** Find same-name or same-endpoint Host aliases that exist but are not managed by SSH Kit. */
+function findUnmanagedConflicts(
+  blocks: HostBlock[],
+  kitNames: Set<string>,
+  kitEndpoints: Map<string, string[]>
+): string[] {
   const conflicts = new Set<string>();
   for (const block of blocks) {
-    if (block.managed) {continue;}
-    for (const alias of block.aliases) {
-      if (kitNames.has(alias)) {
-        conflicts.add(alias);
-      }
+    if (block.managed || block.connectAlias) {continue;}
+    const matchedNames = getMatchedKitHostNames(block, kitNames, kitEndpoints);
+    if (matchedNames.length > 0) {
+      conflicts.add(block.aliases.join(" "));
     }
   }
   return [...conflicts].sort();
+}
+
+function getMatchedKitHostNames(
+  block: HostBlock,
+  kitNames: Set<string>,
+  kitEndpoints: Map<string, string[]>
+): string[] {
+  const matchedNames = new Set<string>();
+  for (const alias of block.aliases) {
+    if (kitNames.has(alias)) {
+      matchedNames.add(alias);
+    }
+  }
+  if (block.endpointKey) {
+    for (const name of kitEndpoints.get(block.endpointKey) ?? []) {
+      matchedNames.add(name);
+    }
+  }
+  return [...matchedNames];
+}
+
+function buildHostEndpointMap(hosts: SSHHost[]): Map<string, string[]> {
+  const endpointMap = new Map<string, string[]>();
+  for (const host of hosts) {
+    const key = getHostEndpointKey(host);
+    endpointMap.set(key, [...(endpointMap.get(key) ?? []), host.name]);
+  }
+  return endpointMap;
+}
+
+function getHostEndpointKey(host: SSHHost): string {
+  return formatEndpointKey(host.hostname, host.port, host.username);
+}
+
+function getHostBlockEndpointKey(text: string, aliases: string[]): string | undefined {
+  const section = parseSections(text)[0];
+  if (!section) {return undefined;}
+  const hostname = getLastDirective(section.props, "hostname") ?? aliases[0];
+  const port = parseInt(getLastDirective(section.props, "port") ?? "22", 10);
+  const username = getLastDirective(section.props, "user") ?? "";
+  return formatEndpointKey(hostname, Number.isFinite(port) ? port : 22, username);
+}
+
+function formatEndpointKey(hostname: string, port: number, username: string): string {
+  return [
+    hostname.trim().toLowerCase(),
+    String(port || 22),
+    username.trim().toLowerCase(),
+  ].join("\u0000");
 }
 
 /** Join preserved user config and generated SSH Kit blocks with stable spacing. */
