@@ -2,6 +2,14 @@
 
 [![zh-CN](https://img.shields.io/badge/CHANGELOG-中文-red)](CHANGELOG.zh-CN.md)
 
+## 0.0.6 — 2026-07-02
+
+### Added
+- Add a separate host context menu command for changing only the clicked host's associated key.
+
+### Fixed
+- Keep the batch host key command in multi-select mode even when VS Code passes the currently focused tree item to the view title command.
+
 ## 0.0.5 — 2026-07-02
 
 ### Added

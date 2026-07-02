@@ -9,7 +9,7 @@ import { KeyTreeDataProvider, KeyItem, KeyDetailItem } from "./views/keyTreeView
 import { readPublicKey, deleteKeyPair, renameKeyPair, regeneratePublicKey, listKeys, populateFingerprints } from "./keys/keyManager";
 import { getErrorMessage } from "./core/utils";
 import { findHostByRemoteSshAlias, connectHostInCurrentWindow, connectHostInNewWindow, promptTerminalConnect, testConnection, searchHosts, cleanupRemoteSshAliases } from "./commands/connectCommands";
-import { addHost, editHost, deleteHost, copyHostName, copyHostDetail, deduplicateHosts, batchDeleteHosts, batchChangeHostKey } from "./commands/hostCommands";
+import { addHost, editHost, deleteHost, copyHostName, copyHostDetail, deduplicateHosts, batchDeleteHosts, batchChangeHostKey, changeHostKey } from "./commands/hostCommands";
 import { addGroup, renameGroup, deleteGroup } from "./commands/groupCommands";
 import { importConfig, exportConfig, openSshConfig, backupKitData, restoreKitData } from "./commands/ioCommands";
 import { showKeyList, generateKey } from "./commands/keyCommands";
@@ -632,10 +632,18 @@ function registerHostCommands(
     vscode.commands.registerCommand("sshKit.batchDeleteHosts", () =>
       batchDeleteHosts(storage, tree)
     ),
+    vscode.commands.registerCommand("sshKit.batchChangeHostKey", () =>
+      batchChangeHostKey(storage, tree)
+    ),
     vscode.commands.registerCommand(
-      "sshKit.batchChangeHostKey",
-      (arg?: HostItem | SSHHost) =>
-        batchChangeHostKey(storage, tree, arg ? unwrapHost(arg) : undefined)
+      "sshKit.changeHostKey",
+      (arg?: HostItem | SSHHost) => {
+        if (!arg) {
+          vscode.window.showInformationMessage("请在主机上使用此命令，或使用批量修改主机关联密钥。");
+          return;
+        }
+        return changeHostKey(unwrapHost(arg), storage, tree);
+      }
     )
   );
 }

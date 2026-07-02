@@ -645,7 +645,7 @@ async function checkBatchHostKeyChange() {
 
   const vscode = createVSCodeMock();
   const { StorageService } = loadTsModule("src/core/storage.ts", { vscode });
-  const { batchChangeHostKey } = loadTsModule("src/commands/hostCommands.ts", { vscode });
+  const { batchChangeHostKey, changeHostKey } = loadTsModule("src/commands/hostCommands.ts", { vscode });
   const context = createExtensionContext({
     groups: [{ id: "g-prod", name: "prod", order: 0 }],
     hosts: [
@@ -702,8 +702,23 @@ async function checkBatchHostKeyChange() {
   assert(saved.hosts.find((host) => host.id === "h-batch-3")?.identityFile === undefined, "Expected unselected host key to remain unchanged");
   assert(refreshCount === 1, `Expected one tree refresh after batch change, got ${refreshCount}`);
 
-  vscode.__quickPickHandler = (items) => items.find((item) => item.action === "clear");
+  let accidentalArgSelectionPickCount = 0;
+  vscode.__quickPickHandler = (items, options) => {
+    if (options?.canPickMany) {
+      accidentalArgSelectionPickCount++;
+      return items.filter((item) => item._hostId === "h-batch-3");
+    }
+    return items.find((item) => item.action === "clear");
+  };
   await batchChangeHostKey(storage, tree, saved.hosts.find((host) => host.id === "h-batch-1"));
+  saved = context.globalState.get("sshKit.data");
+  assert(accidentalArgSelectionPickCount === 1, "Expected batch key change to open host picker even if VS Code passes a focused tree item");
+  assert(saved.hosts.find((host) => host.id === "h-batch-1")?.identityFile === keyPath, "Expected accidental focused host argument not to make batch change single-host only");
+  assert(saved.hosts.find((host) => host.id === "h-batch-2")?.identityFile === keyPath, "Expected other selected host key to remain unchanged after accidental argument");
+  assert(saved.hosts.find((host) => host.id === "h-batch-3")?.identityFile === undefined, "Expected explicitly selected host to be the only host affected by accidental-argument batch flow");
+
+  vscode.__quickPickHandler = (items) => items.find((item) => item.action === "clear");
+  await changeHostKey(saved.hosts.find((host) => host.id === "h-batch-1"), storage, tree);
   saved = context.globalState.get("sshKit.data");
   assert(saved.hosts.find((host) => host.id === "h-batch-1")?.identityFile === undefined, "Expected single-host key change to clear identity file");
   assert(saved.hosts.find((host) => host.id === "h-batch-2")?.identityFile === keyPath, "Expected other selected host key to remain unchanged");

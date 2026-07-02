@@ -249,11 +249,10 @@ export async function batchDeleteHosts(
   vscode.window.showInformationMessage(`已批量删除 ${toDelete.length} 台主机。`);
 }
 
-/** Change one host or multiple selected hosts to a new associated identity file. */
+/** Change selected hosts to a new associated identity file. */
 export async function batchChangeHostKey(
   storage: StorageService,
-  tree: HostTreeDataProvider,
-  initialHost?: SSHHost
+  tree: HostTreeDataProvider
 ): Promise<void> {
   const hosts = storage.getAllHosts();
   if (hosts.length === 0) {
@@ -261,11 +260,32 @@ export async function batchChangeHostKey(
     return;
   }
 
-  const targets = initialHost
-    ? hosts.filter((host) => host.id === initialHost.id)
-    : await pickHostsForKeyChange(storage, hosts);
+  const targets = await pickHostsForKeyChange(storage, hosts);
   if (!targets || targets.length === 0) {return;}
 
+  await applyHostKeyChange(storage, tree, targets);
+}
+
+/** Change one host to a new associated identity file. */
+export async function changeHostKey(
+  host: SSHHost,
+  storage: StorageService,
+  tree: HostTreeDataProvider
+): Promise<void> {
+  const target = storage.getAllHosts().find((item) => item.id === host.id);
+  if (!target) {
+    vscode.window.showInformationMessage("该主机不存在或已被删除。");
+    return;
+  }
+
+  await applyHostKeyChange(storage, tree, [target]);
+}
+
+async function applyHostKeyChange(
+  storage: StorageService,
+  tree: HostTreeDataProvider,
+  targets: SSHHost[]
+): Promise<void> {
   const identityFile = await pickIdentityFileForHosts(targets);
   if (identityFile === null) {return;}
 

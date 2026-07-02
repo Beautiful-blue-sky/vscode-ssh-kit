@@ -36,6 +36,7 @@ SSH Kit is a focused SSH host manager for VS Code. It gives you one place to org
 - Search by host name, address, or tag.
 - Batch delete and endpoint-based duplicate cleanup.
 - Batch change the associated key path for selected hosts, including clearing the key or entering a custom path.
+- Right-click a host to change only that host's associated key.
 
 ### Remote-SSH Connections
 

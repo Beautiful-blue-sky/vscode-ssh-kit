@@ -38,6 +38,7 @@
   "commands.deduplicateHosts": "Remove Duplicate Hosts",
   "commands.batchDeleteHosts": "Batch Delete Hosts",
   "commands.batchChangeHostKey": "Batch Change Host Key",
+  "commands.changeHostKey": "Change This Host Key",
   "commands.backupData": "Backup Data",
   "commands.restoreData": "Restore Data",
   "viewsWelcome.hosts": "No SSH hosts yet.\n\n[Add Host](command:sshKit.addHost)  |  [Import from SSH Config](command:sshKit.importConfig)\n[Open SSH Config](command:sshKit.openSshConfig)",
