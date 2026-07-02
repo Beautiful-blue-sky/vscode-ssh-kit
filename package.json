@@ -2,7 +2,7 @@
   "name": "ssh-kit",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.0.4",
+  "version": "0.0.5",
   "publisher": "lixiaoyu",
   "license": "MIT",
   "icon": "icon.png",
@@ -189,6 +189,12 @@
         "icon": "$(trash)"
       },
       {
+        "command": "sshKit.batchChangeHostKey",
+        "title": "%commands.batchChangeHostKey%",
+        "category": "%commands.category%",
+        "icon": "$(key)"
+      },
+      {
         "command": "sshKit.backupData",
         "title": "%commands.backupData%",
         "category": "%commands.category%",
@@ -308,19 +314,24 @@
           "group": "2_io@2"
         },
         {
-          "command": "sshKit.backupData",
+          "command": "sshKit.batchChangeHostKey",
           "when": "view == sshKit.hosts",
           "group": "2_io@3"
         },
         {
-          "command": "sshKit.restoreData",
+          "command": "sshKit.backupData",
           "when": "view == sshKit.hosts",
           "group": "2_io@4"
         },
         {
-          "command": "sshKit.cleanupAliases",
+          "command": "sshKit.restoreData",
           "when": "view == sshKit.hosts",
           "group": "2_io@5"
+        },
+        {
+          "command": "sshKit.cleanupAliases",
+          "when": "view == sshKit.hosts",
+          "group": "2_io@6"
         },
         {
           "command": "sshKit.generateKey",
@@ -352,12 +363,17 @@
         {
           "command": "sshKit.editHost",
           "when": "view == sshKit.hosts && viewItem == host",
-          "group": "1_modify"
+          "group": "1_modify@1"
+        },
+        {
+          "command": "sshKit.batchChangeHostKey",
+          "when": "view == sshKit.hosts && viewItem == host",
+          "group": "1_modify@2"
         },
         {
           "command": "sshKit.deleteHost",
           "when": "view == sshKit.hosts && viewItem == host",
-          "group": "1_modify"
+          "group": "1_modify@3"
         },
         {
           "command": "sshKit.copyHostName",

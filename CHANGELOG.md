@@ -2,6 +2,20 @@
 
 [![zh-CN](https://img.shields.io/badge/CHANGELOG-中文-red)](CHANGELOG.zh-CN.md)
 
+## 0.0.5 — 2026-07-02
+
+### Added
+- Add a Batch Change Host Key command from the host view title, host context menu, and Command Palette. It can update selected hosts to a scanned key, a custom key path, or no associated key.
+- Add restore-time handling for same-name key conflicts, with automatic rename, custom rename, skip, or cancel choices.
+
+### Fixed
+- Rewrite restored host `IdentityFile` paths from source-machine absolute paths to the actual local key path after backup restore, whether the key was newly written, renamed, or reused.
+- Reuse an existing local key with the same SSH public-key identity during restore, even if it has a different file name, instead of importing a duplicate key.
+- Clear restored host key associations when the referenced key is skipped or fails to restore, so imported hosts do not keep unusable source-machine paths.
+- Refresh SSH Kit-managed Remote-SSH Host blocks before connecting, so imported hosts do not keep using stale source-machine `IdentityFile` paths from SSH Config.
+- Avoid overwriting the source window's current connection context when opening a Remote-SSH connection in a new window.
+- Resolve current connection status from all SSH Kit generated alias candidates, so status bars keep working when a host needs an endpoint-qualified alias.
+
 ## 0.0.4 — 2026-06-29
 
 ### Fixed

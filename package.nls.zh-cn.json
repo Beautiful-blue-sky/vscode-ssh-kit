@@ -37,6 +37,7 @@
   "commands.showCurrentConnection": "查看当前连接",
   "commands.deduplicateHosts": "清理重复主机",
   "commands.batchDeleteHosts": "批量删除主机",
+  "commands.batchChangeHostKey": "批量修改主机关联密钥",
   "commands.backupData": "备份数据",
   "commands.restoreData": "恢复数据",
   "viewsWelcome.hosts": "还没有 SSH 主机。\n\n[添加主机](command:sshKit.addHost)  |  [从 SSH Config 导入](command:sshKit.importConfig)\n[打开 SSH Config 文件](command:sshKit.openSshConfig)",

@@ -53,10 +53,10 @@ async function doConnect(
   try {
     alias = ensureRemoteSshAlias(host, storage.getAllHosts());
     await storage.addRecentConnection(host.id);
-    await storage.setCurrentConnection(host.id, alias);
     if (openInNewWindow) {
       await storage.addPendingWindowConnection(host.id, alias);
     } else {
+      await storage.setCurrentConnection(host.id, alias);
       await storage.setWindowConnection(host.id, alias);
     }
 
@@ -71,9 +71,7 @@ async function doConnect(
         await openVSCodeRemoteEmptyWindow(alias, openInNewWindow);
         showRemoteOpenSuccess(remoteDisplayLabel, windowLabel);
       } catch {
-        await storage.clearCurrentConnection(host.id);
-        await storage.clearWindowConnection(host.id);
-        await storage.clearPendingWindowConnection(host.id, alias);
+        await clearConnectionLaunchContext(storage, host.id, alias, openInNewWindow);
         vscode.window.showErrorMessage(
           "无法调起 Remote-SSH 连接。请确认已安装 Remote-SSH 扩展。"
         );
@@ -81,14 +79,27 @@ async function doConnect(
     }
   } catch (err: unknown) {
     if (alias) {
-      await storage.clearCurrentConnection(host.id);
-      await storage.clearWindowConnection(host.id);
-      await storage.clearPendingWindowConnection(host.id, alias);
+      await clearConnectionLaunchContext(storage, host.id, alias, openInNewWindow);
     }
     vscode.window.showErrorMessage(`无法准备 Remote-SSH 连接：${getErrorMessage(err)}`);
   } finally {
     status.dispose();
   }
+}
+
+async function clearConnectionLaunchContext(
+  storage: StorageService,
+  hostId: string,
+  alias: string,
+  openInNewWindow: boolean
+): Promise<void> {
+  if (openInNewWindow) {
+    await storage.clearPendingWindowConnection(hostId, alias);
+    return;
+  }
+
+  await storage.clearCurrentConnection(hostId);
+  await storage.clearWindowConnection(hostId);
 }
 
 interface WindowTarget {
@@ -364,8 +375,10 @@ function ensureRemoteSshAlias(host: SSHHost, allHosts: SSHHost[] = [host]): stri
   const existing = fs.existsSync(configPath)
     ? fs.readFileSync(configPath, "utf-8")
     : "";
+  const activeHostIds = new Set(allHosts.map((item) => item.id));
+  const existingWithoutStaleBlocks = stripStaleRemoteAliasBlocks(existing, activeHostIds);
   const markerPattern = remoteAliasMarkerPattern(host.id);
-  const existingWithoutOwnBlock = existing.replace(markerPattern, "");
+  const existingWithoutOwnBlock = existingWithoutStaleBlocks.replace(markerPattern, "");
   const alias = buildAvailableRemoteSshAlias(host, allHosts, existingWithoutOwnBlock);
   const block = formatRemoteSshAliasBlock(host, alias);
   const updated = configAliasMatchesHost(existingWithoutOwnBlock, alias, host)
@@ -382,6 +395,19 @@ export function buildRemoteSshAlias(host: SSHHost, allHosts: SSHHost[] = [host])
   const candidates = buildRemoteAliasCandidates(host);
   return candidates.find((candidate) => isRemoteAliasUnique(host, candidate, allHosts))
     ?? candidates[candidates.length - 1];
+}
+
+/** Find the SSH Kit host that owns a Remote-SSH authority alias. */
+export function findHostByRemoteSshAlias(alias: string, allHosts: SSHHost[]): SSHHost | undefined {
+  const exactName = allHosts.filter((host) => host.name === alias);
+  if (exactName.length === 1) {
+    return exactName[0];
+  }
+
+  const candidateMatches = allHosts.filter((host) =>
+    buildRemoteAliasCandidates(host).includes(alias)
+  );
+  return candidateMatches.length === 1 ? candidateMatches[0] : undefined;
 }
 
 function buildAvailableRemoteSshAlias(
@@ -462,9 +488,45 @@ function configAliasMatchesHost(rawText: string, alias: string, host: SSHHost): 
   const hostname = getLastConfigValue(props, "hostname") ?? alias;
   const port = Number.parseInt(getLastConfigValue(props, "port") ?? "22", 10);
   const user = getLastConfigValue(props, "user") ?? "";
+  const identityFiles = props.identityfile ?? [];
   return hostname === host.hostname &&
     port === host.port &&
-    (!host.username || user === host.username);
+    (!host.username || user === host.username) &&
+    configIdentityFilesMatchHost(identityFiles, host);
+}
+
+function configIdentityFilesMatchHost(identityFiles: string[], host: SSHHost): boolean {
+  if (!host.identityFile) {
+    return identityFiles.length === 0;
+  }
+  return identityFiles.length === 1 &&
+    identityPathsEquivalentForConnect(identityFiles[0], host.identityFile);
+}
+
+function identityPathsEquivalentForConnect(left: string, right: string): boolean {
+  const leftCandidates = identityPathCompareCandidatesForConnect(left);
+  const rightCandidates = identityPathCompareCandidatesForConnect(right);
+  return leftCandidates.some((candidate) => rightCandidates.includes(candidate));
+}
+
+function identityPathCompareCandidatesForConnect(filePath: string): string[] {
+  const cleaned = stripWrappingQuotes(filePath.trim());
+  if (!cleaned) {return [];}
+
+  const candidates = new Set<string>();
+  if (cleaned.startsWith("~/") || cleaned.startsWith("~\\")) {
+    candidates.add(path.join(os.homedir(), cleaned.slice(2)));
+  } else if (path.isAbsolute(cleaned)) {
+    candidates.add(cleaned);
+  } else {
+    candidates.add(path.resolve(os.homedir(), cleaned));
+    candidates.add(path.resolve(os.homedir(), ".ssh", cleaned));
+  }
+
+  return [...candidates].map((candidate) => {
+    const normalized = path.normalize(candidate);
+    return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+  });
 }
 
 function findHostConfig(rawText: string, alias: string): Record<string, string[]> | undefined {
@@ -590,6 +652,13 @@ function remoteAliasMarkerPattern(hostId: string): RegExp {
   return new RegExp(
     `^${escapeRegExp(aliasBlockBegin(hostId))}\\r?\\n[\\s\\S]*?^${escapeRegExp(aliasBlockEnd(hostId))}\\r?\\n?`,
     "m"
+  );
+}
+
+function stripStaleRemoteAliasBlocks(rawText: string, activeHostIds: Set<string>): string {
+  const aliasBlockPattern = /^# SSH Kit connect alias ([^\r\n]+) begin\r?\n[\s\S]*?^# SSH Kit connect alias \1 end\r?\n?/gm;
+  return rawText.replace(aliasBlockPattern, (block, hostId: string) =>
+    activeHostIds.has(hostId) ? block : ""
   );
 }
 

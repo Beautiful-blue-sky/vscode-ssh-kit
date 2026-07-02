@@ -1,13 +1,23 @@
-// SSH Kit — Host CRUD commands (add, edit, delete, copy, deduplicate, batch delete)
+// SSH Kit — Host CRUD commands (add, edit, delete, copy, deduplicate, batch operations)
 import * as vscode from "vscode";
 import { SSHHost, PromptNewHostFn, PromptEditHostFn } from "../core/types";
 import { DuplicateHostGroup, findDuplicateEndpointGroups } from "../core/hostMatching";
 import { StorageService } from "../core/storage";
 import { HostTreeDataProvider } from "../views/treeView";
+import { listKeys } from "../keys/keyManager";
 
 type KeepDuplicatePick = vscode.QuickPickItem & {
   host?: SSHHost;
   skip?: boolean;
+};
+
+type HostPickItem = vscode.QuickPickItem & {
+  _hostId?: string;
+};
+
+type IdentityPickItem = vscode.QuickPickItem & {
+  action: "key" | "custom" | "clear";
+  path?: string;
 };
 
 /** Add a host */
@@ -237,4 +247,135 @@ export async function batchDeleteHosts(
   }
   tree.refresh();
   vscode.window.showInformationMessage(`已批量删除 ${toDelete.length} 台主机。`);
+}
+
+/** Change one host or multiple selected hosts to a new associated identity file. */
+export async function batchChangeHostKey(
+  storage: StorageService,
+  tree: HostTreeDataProvider,
+  initialHost?: SSHHost
+): Promise<void> {
+  const hosts = storage.getAllHosts();
+  if (hosts.length === 0) {
+    vscode.window.showInformationMessage("暂无主机。");
+    return;
+  }
+
+  const targets = initialHost
+    ? hosts.filter((host) => host.id === initialHost.id)
+    : await pickHostsForKeyChange(storage, hosts);
+  if (!targets || targets.length === 0) {return;}
+
+  const identityFile = await pickIdentityFileForHosts(targets);
+  if (identityFile === null) {return;}
+
+  const label = identityFile || "不关联密钥";
+  const preview = targets.slice(0, 8).map((host) => `「${host.name}」`).join("、");
+  const more = targets.length > 8 ? ` 等 ${targets.length} 台` : "";
+  const confirmed = await vscode.window.showWarningMessage(
+    `将把 ${targets.length} 台主机的关联密钥改为「${label}」：${preview}${more}。`,
+    { modal: true },
+    "确认修改"
+  );
+  if (confirmed !== "确认修改") {return;}
+
+  const updated = await storage.updateHostsIdentityFile(
+    targets.map((host) => host.id),
+    identityFile || undefined
+  );
+  tree.refresh();
+  vscode.window.showInformationMessage(`已更新 ${updated} 台主机的关联密钥。`);
+}
+
+async function pickHostsForKeyChange(
+  storage: StorageService,
+  hosts: SSHHost[]
+): Promise<SSHHost[] | undefined> {
+  const groups = storage.getGroups();
+  const items: HostPickItem[] = [];
+  const pushed = new Set<string>();
+
+  for (const group of groups) {
+    for (const host of storage.getHostsByGroup(group.id)) {
+      items.push(hostToPickItem(host, group.name));
+      pushed.add(host.id);
+    }
+  }
+
+  for (const host of hosts.filter((item) => !pushed.has(item.id))) {
+    items.push(hostToPickItem(host, "未分组"));
+  }
+
+  const picked = await vscode.window.showQuickPick(items, {
+    canPickMany: true,
+    matchOnDescription: true,
+    matchOnDetail: true,
+    placeHolder: "选择要修改关联密钥的主机（可多选）...",
+  });
+  if (!picked || picked.length === 0) {return undefined;}
+
+  const ids = new Set(picked.map((item) => item._hostId).filter(Boolean) as string[]);
+  return hosts.filter((host) => ids.has(host.id));
+}
+
+function hostToPickItem(host: SSHHost, groupName: string): HostPickItem {
+  return {
+    label: host.name,
+    description: `[${groupName}] ${formatEndpoint(host)}`,
+    detail: host.identityFile ? `当前密钥：${host.identityFile}` : "当前未关联密钥",
+    _hostId: host.id,
+  };
+}
+
+async function pickIdentityFileForHosts(hosts: SSHHost[]): Promise<string | null> {
+  const currentValues = [...new Set(hosts.map((host) => host.identityFile || "").filter(Boolean))];
+  const currentSummary = currentValues.length === 0
+    ? "当前所选主机均未关联密钥"
+    : currentValues.length === 1
+      ? `当前：${currentValues[0]}`
+      : `当前包含 ${currentValues.length} 个不同密钥`;
+
+  const items: IdentityPickItem[] = [
+    {
+      label: "$(circle-slash) 不关联密钥",
+      description: currentSummary,
+      action: "clear",
+      path: "",
+    },
+    {
+      label: "$(edit) 输入自定义路径",
+      description: "例如 ~/.ssh/id_ed25519 或迁移后的绝对路径",
+      action: "custom",
+    },
+    ...listKeys().map((key) => ({
+      label: `$(key) ${key.name}`,
+      description: key.type,
+      detail: key.privateKeyPath,
+      action: "key" as const,
+      path: key.privateKeyPath,
+    })),
+  ];
+
+  const picked = await vscode.window.showQuickPick(items, {
+    matchOnDescription: true,
+    matchOnDetail: true,
+    placeHolder: `选择新的关联密钥（${hosts.length} 台主机）`,
+  });
+  if (!picked) {return null;}
+
+  if (picked.action === "custom") {
+    const value = await vscode.window.showInputBox({
+      prompt: "输入新的私钥路径",
+      placeHolder: "~/.ssh/id_ed25519",
+      validateInput: (input) => {
+        const trimmed = input.trim();
+        if (!trimmed) {return "路径不能为空";}
+        if (/[\r\n]/.test(trimmed)) {return "路径不能包含换行";}
+        return undefined;
+      },
+    });
+    return value === undefined ? null : value.trim();
+  }
+
+  return picked.path ?? "";
 }

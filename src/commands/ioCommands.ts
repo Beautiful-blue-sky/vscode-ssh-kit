@@ -9,6 +9,13 @@ import { StorageService } from "../core/storage";
 import { getErrorMessage } from "../core/utils";
 import { importFromSSHConfig, exportToSSHConfig, analyzeExport } from "../ssh/sshConfig";
 import { HostTreeDataProvider } from "../views/treeView";
+import {
+  KeyFileEntry,
+  KeyFileImportPlan,
+  findExistingKeyFilePath,
+  getImportKeyTargetPath,
+  sanitizeKeyFileName,
+} from "../keys/keyManager";
 
 /** Import hosts from SSH config */
 export async function importConfig(
@@ -304,12 +311,19 @@ export async function restoreKitData(
   try {
     const json = fs.readFileSync(uris[0].fsPath, "utf-8");
     const preview = storage.previewImport(json);
+    const keyPlan = await resolveRestoreKeyPlan(json);
+    if (!keyPlan) {return;}
 
     const lines = [
       `即将导入 ${preview.importedHosts} 台主机、${preview.importedGroups} 个分组`,
       preview.skippedHosts > 0 ? `跳过 ${preview.skippedHosts} 台已存在主机` : "",
-      preview.keyCount > 0 ? `含 ${preview.keyCount} 个密钥文件（将尝试写入 ~/.ssh/）` : "",
-      formatRestoreKeyTargets(preview.keyTargets),
+      formatRestoreKeyOverview(preview.keyCount, keyPlan),
+      formatRestoreKeyPlanSummary(keyPlan),
+      formatRestoreKeyTargets("将写入密钥文件：", keyPlan.writeTargets),
+      formatRestoreKeyTargets("匹配到本机已有密钥（不会写入/覆盖）：", keyPlan.reuseTargets),
+      keyPlan.entries.length === 0 && keyPlan.writeTargets.length === 0 && keyPlan.reuseTargets.length === 0
+        ? formatRestoreKeyTargets("备份中记录的密钥名称：", preview.keyTargets)
+        : "",
       "已存在的项目将跳过（不覆盖）",
       "",
       "⚠ 请确认备份文件来源可信，其中可能包含私钥",
@@ -322,7 +336,7 @@ export async function restoreKitData(
     );
     if (confirmed !== "确认导入") {return;}
 
-    const result = await storage.commitImport(json);
+    const result = await storage.commitImport(json, keyPlan.entries);
     tree.refresh();
     keyTree?.refresh();
 
@@ -332,6 +346,9 @@ export async function restoreKitData(
     }
     if (result.keyFilesRestored > 0) {
       parts.push(`恢复 ${result.keyFilesRestored} 个密钥文件到 ~/.ssh/`);
+    }
+    if (result.keyFilesReused > 0) {
+      parts.push(`复用 ${result.keyFilesReused} 个已存在密钥`);
     }
     if (result.keyFilesSkipped > 0) {
       parts.push(`跳过 ${result.keyFilesSkipped} 个已存在密钥`);
@@ -357,9 +374,181 @@ export async function restoreKitData(
   }
 }
 
-function formatRestoreKeyTargets(targets: string[]): string {
+interface RestoreKeyPlan {
+  entries: KeyFileImportPlan[];
+  writeTargets: string[];
+  reuseTargets: string[];
+  conflicts: number;
+  renamed: number;
+  customRenamed: number;
+  reused: number;
+  skipped: number;
+}
+
+async function resolveRestoreKeyPlan(json: string): Promise<RestoreKeyPlan | undefined> {
+  const source = JSON.parse(json) as { keyFiles?: unknown[] };
+  const keyFiles = (source.keyFiles ?? []).filter(isKeyFileEntry);
+  const plan: RestoreKeyPlan = {
+    entries: [],
+    writeTargets: [],
+    reuseTargets: [],
+    conflicts: 0,
+    renamed: 0,
+    customRenamed: 0,
+    reused: 0,
+    skipped: 0,
+  };
+
+  for (const entry of keyFiles) {
+    const originalTarget = getImportKeyTargetPath(entry.name);
+    if (!originalTarget) {
+      plan.entries.push({ sourceName: entry.name, skip: true });
+      plan.skipped++;
+      continue;
+    }
+
+    const existingSameKeyPath = findExistingKeyFilePath(entry, originalTarget);
+    if (existingSameKeyPath) {
+      plan.entries.push({ sourceName: entry.name, reusePath: existingSameKeyPath });
+      plan.reuseTargets.push(formatKeyTargetPath(existingSameKeyPath));
+      plan.reused++;
+      continue;
+    }
+
+    if (!fs.existsSync(originalTarget)) {
+      plan.entries.push({ sourceName: entry.name, targetName: entry.name });
+      plan.writeTargets.push(formatHomeRelativeKeyTarget(entry.name));
+      continue;
+    }
+
+    plan.conflicts++;
+    const targetName = await resolveConflictingRestoreKeyName(entry.name);
+    if (targetName === undefined) {
+      return undefined;
+    }
+    if (targetName === null) {
+      plan.entries.push({ sourceName: entry.name, skip: true });
+      plan.skipped++;
+      continue;
+    }
+
+    plan.entries.push({ sourceName: entry.name, targetName });
+    plan.writeTargets.push(formatHomeRelativeKeyTarget(targetName));
+    if (targetName === makeAvailableRestoreKeyName(entry.name)) {
+      plan.renamed++;
+    } else {
+      plan.customRenamed++;
+    }
+  }
+
+  return plan;
+}
+
+function isKeyFileEntry(entry: unknown): entry is KeyFileEntry {
+  if (!entry || typeof entry !== "object") {return false;}
+  const value = entry as Partial<KeyFileEntry>;
+  return typeof value.name === "string" &&
+    typeof value.type === "string" &&
+    typeof value.privateKey === "string" &&
+    (value.publicKey === undefined || typeof value.publicKey === "string");
+}
+
+async function resolveConflictingRestoreKeyName(sourceName: string): Promise<string | null | undefined> {
+  const autoName = makeAvailableRestoreKeyName(sourceName);
+  const choice = await vscode.window.showWarningMessage(
+    [
+      `备份中的密钥「${sourceName}」与本机 ~/.ssh/ 下同名文件不是同一把 SSH 密钥。`,
+      "为避免覆盖本机已有密钥，可以改名导入，并自动更新本次导入主机的关联密钥路径。",
+      "如果跳过该密钥，本次导入中使用它的主机将不关联密钥，避免误用本机同名但不同的密钥。",
+      `自动改名目标：~/.ssh/${autoName}`,
+    ].join("\n"),
+    { modal: true },
+    "自动重命名",
+    "自定义名称",
+    "跳过密钥",
+    "取消导入"
+  );
+
+  if (choice === "自动重命名") {return autoName;}
+  if (choice === "跳过密钥") {return null;}
+  if (choice === "自定义名称") {
+    return promptCustomRestoreKeyName(sourceName);
+  }
+  return undefined;
+}
+
+async function promptCustomRestoreKeyName(sourceName: string): Promise<string | undefined> {
+  const value = await vscode.window.showInputBox({
+    prompt: `输入「${sourceName}」导入后的新密钥文件名（写入 ~/.ssh/）`,
+    placeHolder: makeAvailableRestoreKeyName(sourceName),
+    validateInput: (input) => {
+      const trimmed = input.trim();
+      if (!trimmed) {return "文件名不能为空";}
+      const safeName = sanitizeKeyFileName(trimmed);
+      if (safeName !== trimmed) {return "只能输入文件名，不能包含路径、空格或特殊字符";}
+      const targetPath = getImportKeyTargetPath(safeName);
+      if (!targetPath) {return "文件名无效";}
+      if (fs.existsSync(targetPath)) {return `目标文件已存在：~/.ssh/${safeName}`;}
+      return undefined;
+    },
+  });
+  return value?.trim();
+}
+
+function makeAvailableRestoreKeyName(sourceName: string): string {
+  const safeName = sanitizeKeyFileName(sourceName) || "id_imported";
+  const baseName = `${safeName}.ssh-kit-imported`;
+  for (let index = 1; index <= 999; index++) {
+    const candidate = index === 1 ? baseName : `${baseName}-${index}`;
+    const targetPath = getImportKeyTargetPath(candidate);
+    if (targetPath && !fs.existsSync(targetPath)) {
+      return candidate;
+    }
+  }
+  return `${baseName}-${Date.now()}`;
+}
+
+function formatHomeRelativeKeyTarget(name: string): string {
+  return `~/.ssh/${sanitizeKeyFileName(name)}`;
+}
+
+function formatKeyTargetPath(filePath: string): string {
+  const sshDir = path.resolve(os.homedir(), ".ssh");
+  const resolved = path.resolve(filePath);
+  const normalizedSshDir = process.platform === "win32" ? sshDir.toLowerCase() : sshDir;
+  const normalizedResolved = process.platform === "win32" ? resolved.toLowerCase() : resolved;
+  if (normalizedResolved.startsWith(normalizedSshDir + path.sep)) {
+    return `~/.ssh/${path.relative(sshDir, resolved).replace(/\\/g, "/")}`;
+  }
+  return filePath;
+}
+
+function formatRestoreKeyPlanSummary(plan: RestoreKeyPlan): string {
+  const parts = [
+    plan.conflicts > 0 ? `检测到 ${plan.conflicts} 个同名但不是同一把的密钥` : "",
+    plan.renamed > 0 ? `自动改名 ${plan.renamed} 个` : "",
+    plan.customRenamed > 0 ? `自定义改名 ${plan.customRenamed} 个` : "",
+    plan.reused > 0 ? `复用本机已有密钥 ${plan.reused} 个` : "",
+    plan.skipped > 0 ? `跳过密钥 ${plan.skipped} 个` : "",
+  ].filter(Boolean);
+  return parts.length > 0 ? parts.join("，") : "";
+}
+
+function formatRestoreKeyOverview(keyCount: number, plan: RestoreKeyPlan): string {
+  if (keyCount === 0) {return "";}
+  const parts = [
+    plan.writeTargets.length > 0 ? `将写入 ${plan.writeTargets.length} 个` : "",
+    plan.reuseTargets.length > 0 ? `复用本机已有 ${plan.reuseTargets.length} 个` : "",
+    plan.skipped > 0 ? `跳过 ${plan.skipped} 个` : "",
+  ].filter(Boolean);
+  return parts.length > 0
+    ? `含 ${keyCount} 个备份密钥（${parts.join("，")}）`
+    : `含 ${keyCount} 个密钥记录（备份中没有可恢复的私钥内容）`;
+}
+
+function formatRestoreKeyTargets(title: string, targets: string[]): string {
   if (targets.length === 0) {return "";}
   const visible = targets.slice(0, 8).map((target) => `  - ${target}`);
   const suffix = targets.length > visible.length ? `  ... 另有 ${targets.length - visible.length} 个` : "";
-  return ["密钥恢复目标：", ...visible, suffix].filter(Boolean).join("\n");
+  return [title, ...visible, suffix].filter(Boolean).join("\n");
 }

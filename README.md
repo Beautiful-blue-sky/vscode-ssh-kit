@@ -35,13 +35,16 @@ SSH Kit is a focused SSH host manager for VS Code. It gives you one place to org
 - Recently connected hosts at the top of the list.
 - Search by host name, address, or tag.
 - Batch delete and endpoint-based duplicate cleanup.
+- Batch change the associated key path for selected hosts, including clearing the key or entering a custom path.
 
 ### Remote-SSH Connections
 
 - Open the selected host in a current or new empty Remote-SSH window.
 - Keep the native Remote-SSH status label readable by using the Host alias directly.
 - Show the active SSH Kit connection per VS Code window in the host tree and status bar; hover the SSH Kit status item to select and copy name, endpoint, user, group, key, and tag details.
+- Keep new-window connection context separate from the source window, so opening several Remote-SSH windows does not overwrite the current window marker.
 - Use generated SSH Kit connection aliases without polluting imported host data.
+- Refresh SSH Kit-managed Remote-SSH Host blocks before connecting, so restored or edited key paths are used without manually writing SSH Config.
 - Open a regular SSH shell in the VS Code terminal or a native external terminal. In Remote-SSH windows, SSH Kit can open a local VS Code terminal so local SSH config and local key files still work.
 
 ### SSH Config Import and Export
@@ -64,8 +67,10 @@ SSH Kit is a focused SSH host manager for VS Code. It gives you one place to org
 
 - Export host data and associated key files to JSON.
 - Preview restore targets before writing key files.
-- Skip existing hosts and existing key files instead of overwriting them.
+- Reuse matching SSH keys by public-key identity even when the local file has a different name, and prompt before handling same-name key conflicts.
+- Rewrite restored host key paths to the local key that was written, renamed, or reused; skipped or failed keys leave the imported host without a key association instead of keeping source-machine paths.
 - Show failed key restore details when a backup contains invalid key data.
+- Use batch key changes after restore to fix migrated or renamed key paths without editing hosts one by one.
 
 ## Command Palette
 
@@ -86,6 +91,7 @@ Available from `Ctrl+Shift+P`:
 | `SSH Kit: Regenerate Public Key` | Recreate a `.pub` file from a private key |
 | `SSH Kit: Remove Duplicate Hosts` | Find duplicate endpoints and choose which entry to keep |
 | `SSH Kit: Batch Delete Hosts` | Delete selected hosts in one flow |
+| `SSH Kit: Batch Change Host Key` | Change the associated key for selected hosts |
 | `SSH Kit: Backup Data` | Export host data and associated key files |
 | `SSH Kit: Restore Data` | Restore from a previous backup |
 

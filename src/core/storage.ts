@@ -7,7 +7,17 @@ import {
   createDefaultData,
   generateId,
 } from "./types";
-import { listKeys, populateFingerprints, exportKeyFiles, importKeyFiles, sanitizeKeyFileName } from "../keys/keyManager";
+import {
+  areIdentityPathsEquivalent,
+  KeyFileImportPlan,
+  KeyFileEntry,
+  getImportKeyTargetPath,
+  listKeys,
+  populateFingerprints,
+  exportKeyFiles,
+  importKeyFiles,
+  sanitizeKeyFileName,
+} from "../keys/keyManager";
 import { findDuplicateEndpointGroups, findImportMatch } from "./hostMatching";
 
 /** Key used in globalState storage */
@@ -131,6 +141,29 @@ export class StorageService {
       Object.assign(host, updates);
       await this.saveData(data);
     }
+  }
+
+  /** Update the associated identity file for multiple hosts in one save. */
+  async updateHostsIdentityFile(hostIds: string[], identityFile?: string): Promise<number> {
+    const ids = new Set(hostIds);
+    if (ids.size === 0) {return 0;}
+
+    const data = this.getData();
+    let updated = 0;
+    for (const host of data.hosts) {
+      if (!ids.has(host.id)) {continue;}
+      if (identityFile) {
+        host.identityFile = identityFile;
+      } else {
+        delete host.identityFile;
+      }
+      updated++;
+    }
+
+    if (updated > 0) {
+      await this.saveData(data);
+    }
+    return updated;
   }
 
   /** Delete a host */
@@ -330,16 +363,17 @@ export class StorageService {
   }
 
   /** Execute import (write to storage + restore key files) */
-  async commitImport(json: string): Promise<{
+  async commitImport(json: string, keyFilePlan: KeyFileImportPlan[] = []): Promise<{
     importedHosts: number;
     importedGroups: number;
     skippedHosts: number;
     keyFilesRestored: number;
+    keyFilesReused: number;
     keyFilesSkipped: number;
     keyFilesFailed: number;
     keyFileFailures: Array<{ name: string; reason: string }>;
   }> {
-    let source: SSHKitData & { keyFiles?: Array<{ name: string; type: string; privateKey: string; publicKey?: string }> };
+    let source: SSHKitData & { keyFiles?: KeyFileEntry[] };
     try {
       source = JSON.parse(json);
     } catch {
@@ -354,6 +388,26 @@ export class StorageService {
     let importedGroups = 0;
     let skippedHosts = 0;
     const groupIdMap = new Map<string, string>();
+    let keyFilesRestored = 0;
+    let keyFilesReused = 0;
+    let keyFilesSkipped = 0;
+    let keyFilesFailed = 0;
+    let keyFileFailures: Array<{ name: string; reason: string }> = [];
+    const identityRewriteTargets: Array<{ sourceName: string; targetPath?: string; clear?: boolean }> = [];
+
+    if (source.keyFiles && source.keyFiles.length > 0) {
+      const keyResult = importKeyFiles(source.keyFiles, keyFilePlan);
+      keyFilesRestored = keyResult.written;
+      keyFilesReused = keyResult.reused;
+      keyFilesSkipped = keyResult.skipped;
+      keyFilesFailed = keyResult.failed.length;
+      keyFileFailures = keyResult.failed;
+      identityRewriteTargets.push(...keyResult.restoredPaths);
+      identityRewriteTargets.push(
+        ...[...keyResult.skippedSourceNames, ...keyResult.failedSourceNames]
+          .map((sourceName) => ({ sourceName, clear: true }))
+      );
+    }
 
     const existingGroupsByName = new Map(data.groups.map((g) => [g.name, g]));
     for (const g of source.groups) {
@@ -389,6 +443,7 @@ export class StorageService {
         ...h,
         id: generateId(),
         groupId: h.groupId ? groupIdMap.get(h.groupId) : undefined,
+        identityFile: rewriteImportedIdentityFile(h.identityFile, identityRewriteTargets),
         tags: h.tags ?? [],
       };
       data.hosts.push(host);
@@ -398,28 +453,57 @@ export class StorageService {
 
     await this.saveData(data);
 
-    let keyFilesRestored = 0;
-    let keyFilesSkipped = 0;
-    let keyFilesFailed = 0;
-    let keyFileFailures: Array<{ name: string; reason: string }> = [];
-    if (source.keyFiles && source.keyFiles.length > 0) {
-      const keyResult = importKeyFiles(source.keyFiles);
-      keyFilesRestored = keyResult.written;
-      keyFilesSkipped = keyResult.skipped;
-      keyFilesFailed = keyResult.failed.length;
-      keyFileFailures = keyResult.failed;
-    }
-
     return {
       importedHosts,
       importedGroups,
       skippedHosts,
       keyFilesRestored,
+      keyFilesReused,
       keyFilesSkipped,
       keyFilesFailed,
       keyFileFailures,
     };
   }
+}
+
+function rewriteImportedIdentityFile(
+  identityFile: string | undefined,
+  targets: Array<{ sourceName: string; targetPath?: string; clear?: boolean }>
+): string | undefined {
+  if (!identityFile) {return undefined;}
+
+  const matched = targets.find((target) =>
+    isIdentityFileForImportedKey(identityFile, target.sourceName)
+  );
+  if (matched?.clear) {return undefined;}
+  return matched?.targetPath ?? identityFile;
+}
+
+function isIdentityFileForImportedKey(identityFile: string, keyName: string): boolean {
+  if (identityFile === keyName || identityFile === `~/.ssh/${keyName}` || identityFile === `~\\.ssh\\${keyName}`) {
+    return true;
+  }
+  if (getPortablePathBasename(identityFile) === keyName) {
+    return true;
+  }
+
+  const originalTarget = getImportKeyTargetPath(keyName);
+  return originalTarget ? areIdentityPathsEquivalent(identityFile, originalTarget) : false;
+}
+
+function getPortablePathBasename(filePath: string): string {
+  const cleaned = stripWrappingQuotes(filePath.trim()).replace(/\\/g, "/");
+  return cleaned.split("/").filter(Boolean).pop() ?? cleaned;
+}
+
+function stripWrappingQuotes(value: string): string {
+  if (
+    (value.startsWith("\"") && value.endsWith("\"")) ||
+    (value.startsWith("'") && value.endsWith("'"))
+  ) {
+    return value.slice(1, -1);
+  }
+  return value;
 }
 
 function extractKeyNames(source: {

@@ -8,8 +8,8 @@ import { GroupItem, HostDetailItem, HostItem, HostTreeDataProvider, HostDragAndD
 import { KeyTreeDataProvider, KeyItem, KeyDetailItem } from "./views/keyTreeView";
 import { readPublicKey, deleteKeyPair, renameKeyPair, regeneratePublicKey, listKeys, populateFingerprints } from "./keys/keyManager";
 import { getErrorMessage } from "./core/utils";
-import { buildRemoteSshAlias, connectHostInCurrentWindow, connectHostInNewWindow, promptTerminalConnect, testConnection, searchHosts, cleanupRemoteSshAliases } from "./commands/connectCommands";
-import { addHost, editHost, deleteHost, copyHostName, copyHostDetail, deduplicateHosts, batchDeleteHosts } from "./commands/hostCommands";
+import { findHostByRemoteSshAlias, connectHostInCurrentWindow, connectHostInNewWindow, promptTerminalConnect, testConnection, searchHosts, cleanupRemoteSshAliases } from "./commands/connectCommands";
+import { addHost, editHost, deleteHost, copyHostName, copyHostDetail, deduplicateHosts, batchDeleteHosts, batchChangeHostKey } from "./commands/hostCommands";
 import { addGroup, renameGroup, deleteGroup } from "./commands/groupCommands";
 import { importConfig, exportConfig, openSshConfig, backupKitData, restoreKitData } from "./commands/ioCommands";
 import { showKeyList, generateKey } from "./commands/keyCommands";
@@ -403,8 +403,8 @@ class ConnectionStatusController implements vscode.Disposable {
     void this.refresh();
   }
 
-  async refresh(): Promise<void> {
-    this.current = await this.resolveCurrentConnection();
+  async refresh(options: { claimPending?: boolean } = {}): Promise<void> {
+    this.current = await this.resolveCurrentConnection(options.claimPending ?? true);
     this.tree.setConnectedHostId(this.current?.host.id);
     this.updateStatusItem();
   }
@@ -464,14 +464,23 @@ class ConnectionStatusController implements vscode.Disposable {
     ].filter(Boolean).join("\n");
   }
 
-  private async resolveCurrentConnection(): Promise<CurrentConnectionInfo | undefined> {
+  private async resolveCurrentConnection(claimPending: boolean): Promise<CurrentConnectionInfo | undefined> {
     const hosts = this.storage.getAllHosts();
     const authority = getCurrentRemoteSshAuthority();
     if (authority) {
       const matchedByAuthority = findHostByRemoteAuthority(authority, hosts);
       if (matchedByAuthority) {
         await this.storage.setWindowConnection(matchedByAuthority.host.id, matchedByAuthority.alias);
+        await this.storage.clearPendingWindowConnection(matchedByAuthority.host.id, matchedByAuthority.alias);
         return matchedByAuthority;
+      }
+    }
+
+    if (claimPending && vscode.env.remoteName === "ssh-remote") {
+      const claimed = await this.storage.claimPendingWindowConnection();
+      const claimedHost = claimed ? hosts.find((item) => item.id === claimed.hostId) : undefined;
+      if (claimedHost && claimed) {
+        return { host: claimedHost, alias: claimed.alias };
       }
     }
 
@@ -481,14 +490,6 @@ class ConnectionStatusController implements vscode.Disposable {
       : undefined;
     if (windowHost && windowConnection) {
       return { host: windowHost, alias: windowConnection.alias };
-    }
-
-    if (vscode.env.remoteName === "ssh-remote") {
-      const claimed = await this.storage.claimPendingWindowConnection();
-      const claimedHost = claimed ? hosts.find((item) => item.id === claimed.hostId) : undefined;
-      if (claimedHost && claimed) {
-        return { host: claimedHost, alias: claimed.alias };
-      }
     }
 
     return undefined;
@@ -524,19 +525,8 @@ function findHostByRemoteAuthority(
   alias: string,
   hosts: SSHHost[]
 ): CurrentConnectionInfo | undefined {
-  const exactName = hosts.find((host) => host.name === alias);
-  if (exactName) {
-    return { host: exactName, alias };
-  }
-
-  for (const host of hosts) {
-    const generatedAlias = buildRemoteSshAlias(host, hosts);
-    if (generatedAlias === alias) {
-      return { host, alias };
-    }
-  }
-
-  return undefined;
+  const host = findHostByRemoteSshAlias(alias, hosts);
+  return host ? { host, alias } : undefined;
 }
 
 // ─── Extension activation ─────────────────────────────────────────────────
@@ -641,6 +631,11 @@ function registerHostCommands(
     ),
     vscode.commands.registerCommand("sshKit.batchDeleteHosts", () =>
       batchDeleteHosts(storage, tree)
+    ),
+    vscode.commands.registerCommand(
+      "sshKit.batchChangeHostKey",
+      (arg?: HostItem | SSHHost) =>
+        batchChangeHostKey(storage, tree, arg ? unwrapHost(arg) : undefined)
     )
   );
 }
@@ -684,7 +679,7 @@ function registerConnectCommands(
       "sshKit.connectHostInNewWindow",
       async (arg: HostItem | SSHHost) => {
         await connectHostInNewWindow(unwrapHost(arg), storage);
-        await connectionStatus.refresh();
+        await connectionStatus.refresh({ claimPending: false });
       }
     ),
     vscode.commands.registerCommand(

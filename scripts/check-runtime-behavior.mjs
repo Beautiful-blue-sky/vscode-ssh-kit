@@ -19,7 +19,12 @@ const tempHomes = [];
 try {
   await runCheck("SSH Config import ignores SSH Kit connect aliases and preserves repeated directives", checkSSHConfigImport);
   await runCheck("Backup restore preview deduplicates hosts and reports key failures", checkBackupRestore);
+  await runCheck("Backup restore rewrites hosts to renamed or reused key files", checkBackupRestoreKeyConflicts);
+  await runCheck("Backup restore clears host key links when conflicting keys are skipped", checkBackupRestoreSkippedKeyClearsHostLink);
+  await runCheck("Restore command prompts for key conflicts and rewrites imported hosts", checkRestoreCommandKeyConflictFlow);
   await runCheck("Key discovery detects generated keys and can regenerate missing public keys", checkKeyManagement);
+  await runCheck("Batch host key changes update selected hosts only", checkBatchHostKeyChange);
+  await runCheck("Remote-SSH alias refreshes stale identity files before connecting", checkRemoteAliasRefreshesIdentityFile);
   await runCheck("Remote-SSH alias preserves native host names and is accepted by OpenSSH config parsing", checkRemoteAlias);
   console.log("\nRuntime behavior checks passed.");
 } finally {
@@ -221,6 +226,7 @@ async function checkBackupRestore() {
         port: 2222,
         username: "deploy",
         groupId: "g-source-stage",
+        identityFile: "C:\\Users\\22073\\.ssh\\id_restore",
         tags: ["stage"],
       },
     ],
@@ -252,7 +258,348 @@ async function checkBackupRestore() {
   const addedHost = saved.hosts.find((host) => host.name === "stage-box");
   assert(staging, "Expected staging group to be saved");
   assert(addedHost?.groupId === staging.id, "Expected imported host groupId to map to the restored group");
+  assert(addedHost?.identityFile === undefined, "Expected failed key restore to clear imported host source-machine identity path");
   assert(!existsSync(join(home, ".ssh", "id_restore")), "Invalid private key should not be written");
+}
+
+async function checkBackupRestoreKeyConflicts() {
+  const home = makeTempHome("restore-conflict");
+  const vscode = createVSCodeMock();
+  const { StorageService } = loadTsModule("src/core/storage.ts", { vscode });
+  const existingPrivate = fakePrivateKey("existing");
+  const importedPrivate = fakePrivateKey("imported");
+  const aliasedPrivate = fakePrivateKey("aliased-existing");
+  const writtenPrivate = fakePrivateKey("written-absolute");
+  writeFileSync(join(home, ".ssh", "id_conflict"), existingPrivate);
+  writeFileSync(join(home, ".ssh", "id_same"), importedPrivate);
+  writeFileSync(join(home, ".ssh", "id_existing_reuse"), aliasedPrivate);
+
+  const context = createExtensionContext({
+    groups: [],
+    hosts: [],
+    groupCollapsedState: {},
+    recentConnections: [],
+  });
+  const storage = new StorageService(context);
+  const backup = JSON.stringify({
+    groups: [],
+    hosts: [
+      {
+        id: "h-conflict",
+        name: "conflict-host",
+        hostname: "10.20.0.1",
+        port: 22,
+        username: "root",
+        identityFile: "~/.ssh/id_conflict",
+        tags: [],
+      },
+      {
+        id: "h-existing-reuse",
+        name: "existing-reuse-host",
+        hostname: "10.20.0.3",
+        port: 22,
+        username: "root",
+        identityFile: "~/.ssh/id_reuse_alias",
+        tags: [],
+      },
+      {
+        id: "h-same",
+        name: "same-host",
+        hostname: "10.20.0.2",
+        port: 22,
+        username: "root",
+        identityFile: "id_same",
+        tags: [],
+      },
+      {
+        id: "h-written-absolute",
+        name: "written-absolute-host",
+        hostname: "10.20.0.4",
+        port: 22,
+        username: "root",
+        identityFile: "C:\\Users\\22073\\.ssh\\id_written_abs",
+        tags: [],
+      },
+    ],
+    groupCollapsedState: {},
+    recentConnections: [],
+    keyFiles: [
+      {
+        name: "id_reuse_alias",
+        type: "unknown",
+        privateKey: Buffer.from(aliasedPrivate).toString("base64"),
+      },
+      {
+        name: "id_conflict",
+        type: "unknown",
+        privateKey: Buffer.from(importedPrivate).toString("base64"),
+      },
+      {
+        name: "id_same",
+        type: "unknown",
+        privateKey: Buffer.from(importedPrivate).toString("base64"),
+      },
+      {
+        name: "id_written_abs",
+        type: "unknown",
+        privateKey: Buffer.from(writtenPrivate).toString("base64"),
+      },
+    ],
+  });
+
+  const result = await storage.commitImport(backup, [{
+    sourceName: "id_conflict",
+    targetName: "id_conflict.ssh-kit-imported",
+  }]);
+  const conflictTarget = join(home, ".ssh", "id_conflict.ssh-kit-imported");
+  const existingReuseTarget = join(home, ".ssh", "id_existing_reuse");
+  const duplicateReuseTarget = join(home, ".ssh", "id_reuse_alias");
+  const sameTarget = join(home, ".ssh", "id_same");
+  const writtenTarget = join(home, ".ssh", "id_written_abs");
+  assert(result.keyFilesRestored === 2, `Expected one renamed key and one new key restore, got ${result.keyFilesRestored}`);
+  assert(result.keyFilesReused === 2, `Expected two same-content key reuses, got ${result.keyFilesReused}`);
+  assert(readFileSync(join(home, ".ssh", "id_conflict"), "utf8") === existingPrivate, "Expected existing conflicting key to remain unchanged");
+  assert(readFileSync(conflictTarget, "utf8") === importedPrivate, "Expected conflicting key to be restored under the planned new name");
+  assert(!existsSync(duplicateReuseTarget), "Expected restore to reuse same-content key under a different name instead of writing a duplicate");
+
+  const saved = context.globalState.get("sshKit.data");
+  assert(saved.hosts.find((host) => host.name === "conflict-host")?.identityFile === conflictTarget, "Expected conflict host to point at renamed key path");
+  assert(saved.hosts.find((host) => host.name === "existing-reuse-host")?.identityFile === existingReuseTarget, "Expected host to point at existing same-content key with a different name");
+  assert(saved.hosts.find((host) => host.name === "same-host")?.identityFile === sameTarget, "Expected same-content host to point at reused key path");
+  assert(saved.hosts.find((host) => host.name === "written-absolute-host")?.identityFile === writtenTarget, "Expected imported host source-machine absolute identity path to point at newly written local key path");
+
+  const aliasHome = makeTempHome("restore-conflict-reuse-alias");
+  const sourceIdRsaPrivate = fakePrivateKey("source-id-rsa");
+  const localIdRsaPrivate = fakePrivateKey("local-id-rsa-different");
+  const samePublicKey = fakePublicKey("source-id-rsa");
+  const sourceWindowsIdRsaPath = "C:\\Users\\22073\\.ssh\\id_rsa";
+  writeFileSync(join(aliasHome, ".ssh", "id_rsa"), localIdRsaPrivate);
+  writeFileSync(join(aliasHome, ".ssh", "id_rsa_ivy"), fakePrivateKey("same-public-different-private-bytes"));
+  writeFileSync(join(aliasHome, ".ssh", "id_rsa_ivy.pub"), samePublicKey);
+  const aliasContext = createExtensionContext({
+    groups: [],
+    hosts: [],
+    groupCollapsedState: {},
+    recentConnections: [],
+  });
+  const aliasStorage = new StorageService(aliasContext);
+  const aliasBackup = JSON.stringify({
+    groups: [],
+    hosts: [{
+      id: "h-id-ras",
+      name: "id-rsa-host",
+      hostname: "10.20.1.1",
+      port: 22,
+      username: "root",
+      identityFile: sourceWindowsIdRsaPath,
+      tags: [],
+    }],
+    groupCollapsedState: {},
+    recentConnections: [],
+    keyFiles: [{
+      name: "id_rsa",
+      type: "unknown",
+      privateKey: Buffer.from(sourceIdRsaPrivate).toString("base64"),
+      publicKey: Buffer.from(samePublicKey).toString("base64"),
+    }],
+  });
+  const aliasResult = await aliasStorage.commitImport(aliasBackup);
+  const aliasTarget = join(aliasHome, ".ssh", "id_rsa_ivy");
+  const aliasSaved = aliasContext.globalState.get("sshKit.data");
+  assert(aliasResult.keyFilesReused === 1, `Expected id_rsa backup to reuse id_rsa_ivy, got ${aliasResult.keyFilesReused}`);
+  assert(readFileSync(join(aliasHome, ".ssh", "id_rsa"), "utf8") === localIdRsaPrivate, "Expected local same-name id_rsa to remain unchanged when content differs");
+  assert(aliasSaved.hosts.find((host) => host.name === "id-rsa-host")?.identityFile === aliasTarget, "Expected imported host source-machine absolute identity path to be rewritten from id_rsa to id_rsa_ivy");
+}
+
+async function checkBackupRestoreSkippedKeyClearsHostLink() {
+  const home = makeTempHome("restore-skip-conflict");
+  const vscode = createVSCodeMock();
+  const { StorageService } = loadTsModule("src/core/storage.ts", { vscode });
+  writeFileSync(join(home, ".ssh", "id_conflict"), fakePrivateKey("existing-skip"));
+
+  const context = createExtensionContext({
+    groups: [],
+    hosts: [],
+    groupCollapsedState: {},
+    recentConnections: [],
+  });
+  const storage = new StorageService(context);
+  const backup = JSON.stringify({
+    groups: [],
+    hosts: [{
+      id: "h-skip-conflict",
+      name: "skip-conflict-host",
+      hostname: "10.25.0.1",
+      port: 22,
+      username: "root",
+      identityFile: "~/.ssh/id_conflict",
+      tags: [],
+    }],
+    groupCollapsedState: {},
+    recentConnections: [],
+    keyFiles: [{
+      name: "id_conflict",
+      type: "unknown",
+      privateKey: Buffer.from(fakePrivateKey("imported-skip")).toString("base64"),
+    }],
+  });
+
+  const result = await storage.commitImport(backup, [{
+    sourceName: "id_conflict",
+    skip: true,
+  }]);
+  const saved = context.globalState.get("sshKit.data");
+  assert(result.keyFilesSkipped === 1, `Expected one skipped conflicting key, got ${result.keyFilesSkipped}`);
+  assert(saved.hosts.find((host) => host.name === "skip-conflict-host")?.identityFile === undefined, "Expected skipped conflicting key to clear imported host identity path");
+
+  const defaultSkipHome = makeTempHome("restore-default-skip-conflict");
+  writeFileSync(join(defaultSkipHome, ".ssh", "id_conflict"), fakePrivateKey("existing-default-skip"));
+  const defaultSkipContext = createExtensionContext({
+    groups: [],
+    hosts: [],
+    groupCollapsedState: {},
+    recentConnections: [],
+  });
+  const defaultSkipStorage = new StorageService(defaultSkipContext);
+  const defaultSkipResult = await defaultSkipStorage.commitImport(backup);
+  const defaultSkipSaved = defaultSkipContext.globalState.get("sshKit.data");
+  assert(defaultSkipResult.keyFilesSkipped === 1, `Expected default conflict skip to count one skipped key, got ${defaultSkipResult.keyFilesSkipped}`);
+  assert(defaultSkipSaved.hosts.find((host) => host.name === "skip-conflict-host")?.identityFile === undefined, "Expected default conflicting key skip to clear imported host identity path");
+}
+
+async function checkRestoreCommandKeyConflictFlow() {
+  const home = makeTempHome("restore-command-conflict");
+  const vscode = createVSCodeMock();
+  const { StorageService } = loadTsModule("src/core/storage.ts", { vscode });
+  const { restoreKitData } = loadTsModule("src/commands/ioCommands.ts", { vscode });
+  const existingPrivate = fakePrivateKey("existing-command");
+  const importedPrivate = fakePrivateKey("imported-command");
+  const aliasedPrivate = fakePrivateKey("aliased-command");
+  const sourceIdRsaPrivate = fakePrivateKey("source-id-rsa-command");
+  const sourceIdRsaPublic = fakePublicKey("source-id-rsa-command");
+  writeFileSync(join(home, ".ssh", "id_conflict"), existingPrivate);
+  writeFileSync(join(home, ".ssh", "id_existing_reuse"), aliasedPrivate);
+  writeFileSync(join(home, ".ssh", "id_rsa"), fakePrivateKey("local-id-rsa-command-different"));
+  writeFileSync(join(home, ".ssh", "id_rsa_ivy"), fakePrivateKey("source-id-rsa-command-different-private-bytes"));
+  writeFileSync(join(home, ".ssh", "id_rsa_ivy.pub"), sourceIdRsaPublic);
+
+  const context = createExtensionContext({
+    groups: [],
+    hosts: [],
+    groupCollapsedState: {},
+    recentConnections: [],
+  });
+  const storage = new StorageService(context);
+  const backupPath = join(home, "ssh-kit-backup.json");
+  writeFileSync(backupPath, JSON.stringify({
+    groups: [],
+    hosts: [
+      {
+        id: "h-command-conflict",
+        name: "command-conflict-host",
+        hostname: "10.30.0.1",
+        port: 22,
+        username: "root",
+        identityFile: "~/.ssh/id_conflict",
+        tags: [],
+      },
+      {
+        id: "h-command-reuse",
+        name: "command-reuse-host",
+        hostname: "10.30.0.2",
+        port: 22,
+        username: "root",
+        identityFile: "~/.ssh/id_reuse_alias",
+        tags: [],
+      },
+      {
+        id: "h-command-public-reuse",
+        name: "command-public-reuse-host",
+        hostname: "10.30.0.3",
+        port: 22,
+        username: "root",
+        identityFile: "~/.ssh/id_rsa",
+        tags: [],
+      },
+    ],
+    groupCollapsedState: {},
+    recentConnections: [],
+    keyFiles: [
+      {
+        name: "id_conflict",
+        type: "unknown",
+        privateKey: Buffer.from(importedPrivate).toString("base64"),
+      },
+      {
+        name: "id_reuse_alias",
+        type: "unknown",
+        privateKey: Buffer.from(aliasedPrivate).toString("base64"),
+      },
+      {
+        name: "id_rsa",
+        type: "unknown",
+        privateKey: Buffer.from(sourceIdRsaPrivate).toString("base64"),
+        publicKey: Buffer.from(sourceIdRsaPublic).toString("base64"),
+      },
+    ],
+  }));
+
+  let treeRefreshes = 0;
+  let keyRefreshes = 0;
+  let restoreConfirmMessage = "";
+  vscode.__openDialogUris = [{ fsPath: backupPath }];
+  vscode.__warningHandler = (message) => {
+    const text = String(message);
+    if (text.includes("id_rsa")) {
+      throw new Error("Expected id_rsa to reuse id_rsa_ivy by public key instead of prompting for a same-name conflict");
+    }
+    return text.includes("id_conflict") ? "自动重命名" : undefined;
+  };
+  vscode.__infoHandler = (message) => {
+    const text = String(message);
+    if (text.includes("即将导入")) {
+      restoreConfirmMessage = text;
+      return "确认导入";
+    }
+    return undefined;
+  };
+
+  await restoreKitData(
+    storage,
+    { refresh() { treeRefreshes++; } },
+    { refresh() { keyRefreshes++; } },
+  );
+
+  const expectedTarget = join(home, ".ssh", "id_conflict.ssh-kit-imported");
+  const expectedReuseTarget = join(home, ".ssh", "id_existing_reuse");
+  const expectedPublicReuseTarget = join(home, ".ssh", "id_rsa_ivy");
+  const saved = context.globalState.get("sshKit.data");
+  assert(restoreConfirmMessage.includes("含 3 个备份密钥（将写入 1 个，复用本机已有 2 个）"), "Expected restore confirmation to summarize written and reused keys separately");
+  assert(!restoreConfirmMessage.includes("密钥恢复目标"), "Expected restore confirmation not to call existing reused keys restore targets");
+  assert(restoreConfirmMessage.includes("将写入密钥文件："), "Expected restore confirmation to label keys that will be written");
+  assert(restoreConfirmMessage.includes("匹配到本机已有密钥（不会写入/覆盖）："), "Expected restore confirmation to label reused local keys clearly");
+  assert(restoreConfirmMessage.includes("~/.ssh/id_rsa_ivy"), "Expected restore confirmation to list reused id_rsa_ivy as an existing local key");
+  assert(readFileSync(join(home, ".ssh", "id_conflict"), "utf8") === existingPrivate, "Expected restore command to preserve existing conflicting key");
+  assert(readFileSync(expectedTarget, "utf8") === importedPrivate, "Expected restore command to write renamed conflicting key");
+  assert(!existsSync(join(home, ".ssh", "id_reuse_alias")), "Expected restore command to reuse same-content key with a different name instead of writing a duplicate");
+  assert(saved.hosts.find((host) => host.name === "command-conflict-host")?.identityFile === expectedTarget, "Expected restore command to rewrite imported host identity path");
+  assert(saved.hosts.find((host) => host.name === "command-reuse-host")?.identityFile === expectedReuseTarget, "Expected restore command to rewrite imported host to existing same-content key path");
+  assert(saved.hosts.find((host) => host.name === "command-public-reuse-host")?.identityFile === expectedPublicReuseTarget, "Expected restore command to rewrite imported id_rsa host to existing id_rsa_ivy with matching public key");
+  assert(treeRefreshes === 1, `Expected host tree to refresh once, got ${treeRefreshes}`);
+  assert(keyRefreshes === 1, `Expected key tree to refresh once, got ${keyRefreshes}`);
+}
+
+function fakePrivateKey(label) {
+  return [
+    "-----BEGIN OPENSSH PRIVATE KEY-----",
+    label,
+    "-----END OPENSSH PRIVATE KEY-----",
+    "",
+  ].join("\n");
+}
+
+function fakePublicKey(label) {
+  return `ssh-rsa ${Buffer.from(`ssh-kit-public-${label}`).toString("base64")} ${label}\n`;
 }
 
 function checkKeyManagement() {
@@ -291,11 +638,155 @@ function checkKeyManagement() {
   assert(invalidImport.failed.length === 1, "Invalid key import should report a failure");
 }
 
+async function checkBatchHostKeyChange() {
+  const home = makeTempHome("batch-key");
+  const keyPath = join(home, ".ssh", "id_batch");
+  writeFileSync(keyPath, "placeholder");
+
+  const vscode = createVSCodeMock();
+  const { StorageService } = loadTsModule("src/core/storage.ts", { vscode });
+  const { batchChangeHostKey } = loadTsModule("src/commands/hostCommands.ts", { vscode });
+  const context = createExtensionContext({
+    groups: [{ id: "g-prod", name: "prod", order: 0 }],
+    hosts: [
+      {
+        id: "h-batch-1",
+        name: "batch-one",
+        hostname: "10.10.0.1",
+        port: 22,
+        username: "root",
+        groupId: "g-prod",
+        tags: [],
+      },
+      {
+        id: "h-batch-2",
+        name: "batch-two",
+        hostname: "10.10.0.2",
+        port: 22,
+        username: "root",
+        groupId: "g-prod",
+        tags: [],
+      },
+      {
+        id: "h-batch-3",
+        name: "batch-three",
+        hostname: "10.10.0.3",
+        port: 22,
+        username: "root",
+        tags: [],
+      },
+    ],
+    groupCollapsedState: {},
+    recentConnections: [],
+  });
+  const storage = new StorageService(context);
+  let refreshCount = 0;
+  const tree = {
+    refresh() {
+      refreshCount++;
+    },
+  };
+
+  vscode.__warningChoice = "确认修改";
+  vscode.__quickPickHandler = (items, options) => {
+    if (options?.canPickMany) {
+      return items.filter((item) => item._hostId === "h-batch-1" || item._hostId === "h-batch-2");
+    }
+    return items.find((item) => item.detail === keyPath);
+  };
+  await batchChangeHostKey(storage, tree);
+
+  let saved = context.globalState.get("sshKit.data");
+  assert(saved.hosts.find((host) => host.id === "h-batch-1")?.identityFile === keyPath, "Expected first selected host key to update");
+  assert(saved.hosts.find((host) => host.id === "h-batch-2")?.identityFile === keyPath, "Expected second selected host key to update");
+  assert(saved.hosts.find((host) => host.id === "h-batch-3")?.identityFile === undefined, "Expected unselected host key to remain unchanged");
+  assert(refreshCount === 1, `Expected one tree refresh after batch change, got ${refreshCount}`);
+
+  vscode.__quickPickHandler = (items) => items.find((item) => item.action === "clear");
+  await batchChangeHostKey(storage, tree, saved.hosts.find((host) => host.id === "h-batch-1"));
+  saved = context.globalState.get("sshKit.data");
+  assert(saved.hosts.find((host) => host.id === "h-batch-1")?.identityFile === undefined, "Expected single-host key change to clear identity file");
+  assert(saved.hosts.find((host) => host.id === "h-batch-2")?.identityFile === keyPath, "Expected other selected host key to remain unchanged");
+}
+
+async function checkRemoteAliasRefreshesIdentityFile() {
+  const home = makeTempHome("remote-stale-key");
+  const vscode = createVSCodeMock();
+  const { connectHostInNewWindow } = loadTsModule("src/commands/connectCommands.ts", { vscode });
+  const configPath = join(home, ".ssh", "config");
+  const newKeyPath = join(home, ".ssh", "id_rsa_ivynow");
+  const otherNewKeyPath = join(home, ".ssh", "id_rsa_other_now");
+  const oldSourceKeyPath = "C:\\Users\\source\\.ssh\\id_rsa";
+  writeFileSync(newKeyPath, "placeholder");
+  writeFileSync(otherNewKeyPath, "placeholder");
+  writeFileSync(configPath, [
+    "# SSH Kit connect alias old-source-host begin",
+    "Host 103.184.47.185_dev",
+    "  HostName 103.184.47.185",
+    "  Port 27488",
+    "  User root",
+    `  IdentityFile ${oldSourceKeyPath}`,
+    "# SSH Kit connect alias old-source-host end",
+    "",
+    "Host unmanaged-dev",
+    "  HostName 103.184.47.186",
+    "  Port 27489",
+    "  User root",
+    `  IdentityFile ${oldSourceKeyPath}`,
+    `  IdentityFile ${otherNewKeyPath}`,
+    "",
+  ].join("\n"));
+
+  const restoredHost = {
+    id: "h-restored-dev",
+    name: "103.184.47.185_dev",
+    hostname: "103.184.47.185",
+    port: 27488,
+    username: "root",
+    identityFile: newKeyPath,
+    tags: [],
+  };
+  const unmanagedAliasHost = {
+    id: "h-unmanaged-dev",
+    name: "unmanaged-dev",
+    hostname: "103.184.47.186",
+    port: 27489,
+    username: "root",
+    identityFile: otherNewKeyPath,
+    tags: [],
+  };
+  const hosts = [restoredHost, unmanagedAliasHost];
+  const storage = createConnectionStorageMock(hosts, vscode);
+
+  await connectHostInNewWindow(restoredHost, storage);
+  const restoredCommand = lastCommand(vscode, "opensshremotes.openEmptyWindow");
+  let config = readFileSync(configPath, "utf8");
+  assert(restoredCommand?.args.host === restoredHost.name, `Expected restored host to keep its alias after stale SSH Kit block cleanup, got ${restoredCommand?.args.host}`);
+  assert(!config.includes("old-source-host"), "Expected stale SSH Kit connect alias block from deleted host to be removed before connecting");
+  assert(config.includes("# SSH Kit connect alias h-restored-dev begin"), "Expected current host connect alias block to be written");
+  assert(config.includes(`  IdentityFile ${newKeyPath}`), "Expected current host connect alias to use restored local identity file");
+  assert(!findHostBlockText(config, restoredHost.name)?.includes(oldSourceKeyPath), "Expected restored host alias block not to keep the old source identity file");
+
+  await connectHostInNewWindow(unmanagedAliasHost, storage);
+  const unmanagedCommand = lastCommand(vscode, "opensshremotes.openEmptyWindow");
+  const expectedAlias = "unmanaged-dev｜103.184.47.186：27489";
+  config = readFileSync(configPath, "utf8");
+  assert(unmanagedCommand?.args.host === expectedAlias, `Expected unmanaged stale alias to be avoided, got ${unmanagedCommand?.args.host}`);
+  assert(findHostBlockText(config, "unmanaged-dev")?.includes(oldSourceKeyPath), "Expected unmanaged user Host block to be preserved");
+  assert(findHostBlockText(config, "unmanaged-dev")?.includes(otherNewKeyPath), "Expected unmanaged user Host block with mixed keys to be preserved");
+  assert(findHostBlockText(config, expectedAlias)?.includes(`IdentityFile ${otherNewKeyPath}`), "Expected generated fallback alias to use the current identity file");
+}
+
 async function checkRemoteAlias() {
   checkCommandExists("ssh", ["-V"]);
   const home = makeTempHome("remote");
   const vscode = createVSCodeMock();
-  const { connectHostInNewWindow, connectInVSCodeTerminal } = loadTsModule("src/commands/connectCommands.ts", { vscode });
+  const {
+    connectHostInCurrentWindow,
+    connectHostInNewWindow,
+    connectInVSCodeTerminal,
+    findHostByRemoteSshAlias,
+  } = loadTsModule("src/commands/connectCommands.ts", { vscode });
   const host = {
     id: "h-remote",
     name: "10.0.1.11_nginx+redis+safeline",
@@ -352,10 +843,7 @@ async function checkRemoteAlias() {
   assert(command, "Expected Remote-SSH openEmptyWindow to be called");
   const alias = "10.0.1.11_nginx+redis+safeline";
   assert(command.args.host === alias, `Unexpected Remote-SSH host argument: ${command.args.host}`);
-  assert(
-    vscode.__events.indexOf(`current:${alias}`) < vscode.__events.indexOf("command:opensshremotes.openEmptyWindow"),
-    "Expected current connection to be recorded before opening Remote-SSH"
-  );
+  assert(!vscode.__events.includes(`current:${alias}`), "Expected new-window connections not to overwrite global current connection");
   assert(
     vscode.__events.indexOf(`pending:${alias}`) < vscode.__events.indexOf("command:opensshremotes.openEmptyWindow"),
     "Expected new-window connection context to be queued before opening Remote-SSH"
@@ -416,7 +904,24 @@ async function checkRemoteAlias() {
   const duplicateAlias = "10.0.1.11_nginx+redis+safeline｜211.154.20.114：10274";
   assert(duplicateCommand, "Expected Remote-SSH openEmptyWindow to be called for duplicate-name host");
   assert(duplicateCommand.args.host === duplicateAlias, `Unexpected duplicate Remote-SSH host argument: ${duplicateCommand.args.host}`);
+  assert(findHostByRemoteSshAlias(duplicateAlias, hosts)?.id === duplicateNameHost.id, "Expected duplicate-name authority alias to resolve to the endpoint-qualified host");
   assertRemoteAliasScpSafe(duplicateAlias);
+
+  const currentWindowEventStart = vscode.__events.length;
+  await connectHostInCurrentWindow(host, storage);
+  const currentCommand = lastCommand(vscode, "opensshremotes.openEmptyWindowInCurrentWindow");
+  const currentEvents = vscode.__events.slice(currentWindowEventStart);
+  const currentAlias = "10.0.1.11_nginx+redis+safeline｜211.154.20.113：15578";
+  assert(currentCommand, "Expected Remote-SSH current-window command to be called");
+  assert(currentCommand.args.host === currentAlias, `Unexpected current-window host argument: ${currentCommand.args.host}`);
+  assert(
+    currentEvents.indexOf(`current:${currentAlias}`) < currentEvents.indexOf("command:opensshremotes.openEmptyWindowInCurrentWindow"),
+    "Expected current-window connections to record global current before opening Remote-SSH"
+  );
+  assert(
+    currentEvents.indexOf(`window:${currentAlias}`) < currentEvents.indexOf("command:opensshremotes.openEmptyWindowInCurrentWindow"),
+    "Expected current-window connections to record this window before opening Remote-SSH"
+  );
 
   const terminalKeyPath = join(home, ".ssh", "id_terminal");
   writeFileSync(terminalKeyPath, "placeholder");
@@ -461,6 +966,64 @@ async function checkRemoteAlias() {
   assert(sendSequenceCommand.args.text.includes("deploy@203.0.113.10"), "Expected local VS Code terminal SSH target");
   vscode.env.remoteName = undefined;
   vscode.__warningChoice = undefined;
+}
+
+function createConnectionStorageMock(hosts, vscode) {
+  return {
+    async addRecentConnection(hostId) {
+      assert(hosts.some((item) => item.id === hostId), "Expected recent connection to use the host id");
+    },
+    getAllHosts() {
+      return hosts;
+    },
+    async setCurrentConnection(hostId, alias) {
+      assert(hosts.some((item) => item.id === hostId), "Expected current connection to use the host id");
+      assert(alias, "Expected current connection alias to be recorded");
+      vscode.__events.push(`current:${alias}`);
+    },
+    async setWindowConnection(hostId, alias) {
+      assert(hosts.some((item) => item.id === hostId), "Expected window connection to use the host id");
+      assert(alias, "Expected window connection alias to be recorded");
+      vscode.__events.push(`window:${alias}`);
+    },
+    getWindowConnection() {
+      return undefined;
+    },
+    async addPendingWindowConnection(hostId, alias) {
+      assert(hosts.some((item) => item.id === hostId), "Expected pending connection to use the host id");
+      assert(alias, "Expected pending connection alias to be recorded");
+      vscode.__events.push(`pending:${alias}`);
+    },
+    async claimPendingWindowConnection() {
+      return undefined;
+    },
+    async clearCurrentConnection(hostId) {
+      assert(hosts.some((item) => item.id === hostId), "Expected current connection cleanup to use the host id");
+      vscode.__events.push(`clear:${hostId}`);
+    },
+    async clearWindowConnection(hostId) {
+      assert(hosts.some((item) => item.id === hostId), "Expected window connection cleanup to use the host id");
+      vscode.__events.push(`clear-window:${hostId}`);
+    },
+    async clearPendingWindowConnection(hostId) {
+      assert(hosts.some((item) => item.id === hostId), "Expected pending connection cleanup to use the host id");
+      vscode.__events.push(`clear-pending:${hostId}`);
+    },
+  };
+}
+
+function findHostBlockText(config, alias) {
+  const sectionRegex = /^Host\s+(.+)$/gim;
+  let match;
+  const sections = [];
+  while ((match = sectionRegex.exec(config)) !== null) {
+    sections.push({ alias: match[1].trim().replace(/^"|"$/g, ""), start: match.index });
+  }
+  const index = sections.findIndex((section) => section.alias === alias);
+  if (index < 0) {return undefined;}
+  const start = sections[index].start;
+  const end = sections[index + 1]?.start ?? config.length;
+  return config.slice(start, end);
 }
 
 function assertRemoteAliasScpSafe(alias) {
@@ -508,6 +1071,10 @@ function createVSCodeMock() {
     __events: events,
     __messages: messages,
     __terminals: terminals,
+    __infoHandler: undefined,
+    __openDialogUris: undefined,
+    __quickPickHandler: undefined,
+    __warningHandler: undefined,
     __warningChoice: undefined,
     window: {
       terminals: [],
@@ -525,11 +1092,29 @@ function createVSCodeMock() {
       },
       async showInformationMessage(message, ...items) {
         messages.push({ type: "info", message, items });
+        if (typeof mock.__infoHandler === "function") {
+          return mock.__infoHandler(message, items);
+        }
+        return undefined;
+      },
+      async showOpenDialog() {
+        return mock.__openDialogUris;
+      },
+      async showQuickPick(items, options) {
+        if (typeof mock.__quickPickHandler === "function") {
+          return mock.__quickPickHandler(items, options);
+        }
         return undefined;
       },
       async showWarningMessage(message, ...items) {
         messages.push({ type: "warning", message, items });
+        if (typeof mock.__warningHandler === "function") {
+          return mock.__warningHandler(message, items);
+        }
         return mock.__warningChoice;
+      },
+      async showInputBox() {
+        return undefined;
       },
       async showErrorMessage(message, ...items) {
         messages.push({ type: "error", message, items });

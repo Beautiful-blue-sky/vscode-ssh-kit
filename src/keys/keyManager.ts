@@ -306,7 +306,18 @@ export interface KeyFileEntry {
 export interface ImportKeyFilesResult {
   written: number;
   skipped: number;
+  reused: number;
   failed: Array<{ name: string; reason: string }>;
+  restoredPaths: Array<{ sourceName: string; targetPath: string }>;
+  skippedSourceNames: string[];
+  failedSourceNames: string[];
+}
+
+export interface KeyFileImportPlan {
+  sourceName: string;
+  targetName?: string;
+  reusePath?: string;
+  skip?: boolean;
 }
 
 export function sanitizeKeyFileName(name: string): string {
@@ -316,6 +327,35 @@ export function sanitizeKeyFileName(name: string): string {
 export function getImportKeyTargetPath(name: string): string | undefined {
   const safeName = sanitizeKeyFileName(name);
   return safeName ? path.join(os.homedir(), ".ssh", safeName) : undefined;
+}
+
+export function keyFileEntryMatchesPath(entry: KeyFileEntry, privatePath: string): boolean {
+  const privateKey = decodeBase64(entry.privateKey);
+  if (!privateKey || !fs.existsSync(privatePath)) {return false;}
+
+  if (keyFileEntryMatchesPublicIdentity(entry, privateKey, privatePath)) {
+    return true;
+  }
+
+  try {
+    return fs.readFileSync(privatePath).equals(privateKey);
+  } catch {
+    return false;
+  }
+}
+
+export function findExistingKeyFilePath(entry: KeyFileEntry, preferredPath?: string): string | undefined {
+  const candidates = new Set<string>();
+  if (preferredPath) {
+    candidates.add(preferredPath);
+  }
+  for (const key of listKeys()) {
+    candidates.add(key.privateKeyPath);
+  }
+
+  return [...candidates].find((candidate) =>
+    isPathUnderSshDir(candidate) && keyFileEntryMatchesPath(entry, candidate)
+  );
 }
 
 /** Export referenced key files as base64 for backup. Pass no paths to export all discovered keys. */
@@ -337,8 +377,8 @@ export function exportKeyFiles(identityFiles?: string[]): KeyFileEntry[] {
     }));
 }
 
-/** Restore key files from backup to ~/.ssh/, skipping existing ones */
-export function importKeyFiles(entries: KeyFileEntry[]): ImportKeyFilesResult {
+/** Restore key files from backup to ~/.ssh/ according to an optional conflict plan. */
+export function importKeyFiles(entries: KeyFileEntry[], plan: KeyFileImportPlan[] = []): ImportKeyFilesResult {
   const sshDir = path.join(os.homedir(), ".ssh");
   if (!fs.existsSync(sshDir)) {
     fs.mkdirSync(sshDir, { mode: 0o700 });
@@ -351,29 +391,74 @@ export function importKeyFiles(entries: KeyFileEntry[]): ImportKeyFilesResult {
 
   let written = 0;
   let skipped = 0;
+  let reused = 0;
   const failed: ImportKeyFilesResult["failed"] = [];
+  const restoredPaths: ImportKeyFilesResult["restoredPaths"] = [];
+  const skippedSourceNames: string[] = [];
+  const failedSourceNames: string[] = [];
+  const plansByName = new Map(plan.map((entry) => [entry.sourceName, entry]));
   for (const entry of entries) {
+    const planned = plansByName.get(entry.name);
+    if (planned?.skip) {
+      skipped++;
+      skippedSourceNames.push(entry.name);
+      continue;
+    }
+
+    if (planned?.reusePath) {
+      if (isPathUnderSshDir(planned.reusePath) && keyFileEntryMatchesPath(entry, planned.reusePath)) {
+        reused++;
+        restoredPaths.push({ sourceName: entry.name, targetPath: planned.reusePath });
+      } else {
+        failed.push({ name: entry.name, reason: `计划复用的密钥不存在或不是同一把 SSH 密钥：${planned.reusePath}` });
+        failedSourceNames.push(entry.name);
+      }
+      continue;
+    }
+
     // Sanitize: reject path traversal, replace illegal characters
-    const safeName = sanitizeKeyFileName(entry.name);
+    const targetName = planned?.targetName ?? entry.name;
+    const safeName = sanitizeKeyFileName(targetName);
     if (!safeName) {
       failed.push({ name: entry.name || "(empty)", reason: "文件名无效" });
+      failedSourceNames.push(entry.name);
       continue;
     }
     const privatePath = path.join(sshDir, safeName);
     const publicPath = privatePath + ".pub";
 
+    if (!planned?.targetName) {
+      const existingSameKeyPath = findExistingKeyFilePath(entry, privatePath);
+      if (existingSameKeyPath) {
+        reused++;
+        restoredPaths.push({ sourceName: entry.name, targetPath: existingSameKeyPath });
+        continue;
+      }
+    }
+
     if (fs.existsSync(privatePath)) {
-      skipped++;
+      if (keyFileEntryMatchesPath(entry, privatePath)) {
+        reused++;
+        restoredPaths.push({ sourceName: entry.name, targetPath: privatePath });
+      } else if (planned?.targetName) {
+        failed.push({ name: entry.name, reason: `目标密钥已存在且不是同一把 SSH 密钥：${privatePath}` });
+        failedSourceNames.push(entry.name);
+      } else {
+        skipped++;
+        skippedSourceNames.push(entry.name);
+      }
       continue;
     }
 
     const privateKey = decodeBase64(entry.privateKey);
     if (!privateKey) {
       failed.push({ name: entry.name, reason: "私钥内容不是有效 base64" });
+      failedSourceNames.push(entry.name);
       continue;
     }
     if (!isLikelySSHPrivateKey(privateKey)) {
       failed.push({ name: entry.name, reason: "私钥内容不是支持的 SSH 私钥格式" });
+      failedSourceNames.push(entry.name);
       continue;
     }
 
@@ -382,6 +467,7 @@ export function importKeyFiles(entries: KeyFileEntry[]): ImportKeyFilesResult {
       publicKey = decodeBase64(entry.publicKey);
       if (!publicKey) {
         failed.push({ name: entry.name, reason: "公钥内容不是有效 base64" });
+        failedSourceNames.push(entry.name);
         continue;
       }
     }
@@ -389,6 +475,7 @@ export function importKeyFiles(entries: KeyFileEntry[]): ImportKeyFilesResult {
     try {
       fs.writeFileSync(privatePath, privateKey, { mode: privateMode });
       written++;
+      restoredPaths.push({ sourceName: entry.name, targetPath: privatePath });
 
       if (publicKey) {
         fs.writeFileSync(publicPath, publicKey, { mode: publicMode });
@@ -398,9 +485,10 @@ export function importKeyFiles(entries: KeyFileEntry[]): ImportKeyFilesResult {
         name: entry.name,
         reason: error instanceof Error ? error.message : String(error),
       });
+      failedSourceNames.push(entry.name);
     }
   }
-  return { written, skipped, failed };
+  return { written, skipped, reused, failed, restoredPaths, skippedSourceNames, failedSourceNames };
 }
 
 function decodeBase64(value: string | undefined): Buffer | undefined {
@@ -426,10 +514,137 @@ function isLikelySSHPrivateKey(value: Buffer): boolean {
   ].some((marker) => head.includes(marker));
 }
 
-function areIdentityPathsEquivalent(left: string, right: string): boolean {
+function keyFileEntryMatchesPublicIdentity(
+  entry: KeyFileEntry,
+  privateKey: Buffer,
+  privatePath: string
+): boolean {
+  const sourceIdentities = getKeyFileEntryPublicIdentities(entry, privateKey);
+  if (sourceIdentities.length === 0) {return false;}
+
+  const targetIdentities = getPrivatePathPublicIdentities(privatePath);
+  if (hasAnyPublicIdentityMatch(sourceIdentities, targetIdentities)) {
+    return true;
+  }
+
+  const derivedTargetIdentity = derivePublicKeyIdentityFromPrivateKeyFile(privatePath);
+  return derivedTargetIdentity ? sourceIdentities.includes(derivedTargetIdentity) : false;
+}
+
+function getKeyFileEntryPublicIdentities(entry: KeyFileEntry, privateKey: Buffer): string[] {
+  const identities = new Set<string>();
+  const publicKey = decodeBase64(entry.publicKey);
+  if (publicKey) {
+    addPublicIdentity(identities, publicKey);
+  }
+  if (identities.size === 0) {
+    addPublicIdentity(identities, derivePublicKeyIdentityFromPrivateKey(privateKey));
+  }
+  return [...identities];
+}
+
+function getPrivatePathPublicIdentities(privatePath: string): string[] {
+  const identities = new Set<string>();
+  const publicPath = privatePath + ".pub";
+  if (fs.existsSync(publicPath)) {
+    try {
+      addPublicIdentity(identities, fs.readFileSync(publicPath));
+    } catch {
+      // Fall back to deriving from the private key below.
+    }
+  }
+  if (identities.size === 0) {
+    addPublicIdentity(identities, derivePublicKeyIdentityFromPrivateKeyFile(privatePath));
+  }
+  return [...identities];
+}
+
+function hasAnyPublicIdentityMatch(left: string[], right: string[]): boolean {
+  return left.some((identity) => right.includes(identity));
+}
+
+function addPublicIdentity(identities: Set<string>, value: Buffer | string | undefined): void {
+  const identity = normalizeSSHPublicKeyIdentity(value);
+  if (identity) {
+    identities.add(identity);
+  }
+}
+
+function normalizeSSHPublicKeyIdentity(value: Buffer | string | undefined): string | undefined {
+  if (!value) {return undefined;}
+  const text = Buffer.isBuffer(value) ? value.toString("utf-8") : value;
+  for (const line of text.replace(/\r/g, "\n").split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) {continue;}
+
+    const parts = trimmed.split(/\s+/);
+    const algorithm = parts[0];
+    const keyBlob = parts[1];
+    if (isSupportedPublicKeyAlgorithm(algorithm) && isBase64Token(keyBlob)) {
+      return `${algorithm} ${keyBlob}`;
+    }
+  }
+  return undefined;
+}
+
+function isSupportedPublicKeyAlgorithm(algorithm: string | undefined): boolean {
+  if (!algorithm) {return false;}
+  return (
+    algorithm === "ssh-rsa" ||
+    algorithm === "ssh-dss" ||
+    algorithm === "ssh-ed25519" ||
+    algorithm.startsWith("ecdsa-sha2-") ||
+    algorithm.startsWith("sk-ssh-") ||
+    algorithm.startsWith("sk-ecdsa-")
+  );
+}
+
+function isBase64Token(value: string | undefined): boolean {
+  return value ? /^[A-Za-z0-9+/]+={0,2}$/.test(value) : false;
+}
+
+function derivePublicKeyIdentityFromPrivateKey(value: Buffer): string | undefined {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "ssh-kit-key-"));
+  const privatePath = path.join(tempDir, "id_import");
+  try {
+    fs.writeFileSync(privatePath, value, {
+      mode: process.platform === "win32" ? undefined : 0o600,
+    });
+    return derivePublicKeyIdentityFromPrivateKeyFile(privatePath);
+  } catch {
+    return undefined;
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+function derivePublicKeyIdentityFromPrivateKeyFile(privatePath: string): string | undefined {
+  try {
+    const result = cp.spawnSync("ssh-keygen", ["-y", "-f", privatePath], {
+      encoding: "utf-8",
+      input: "\n",
+      timeout: 5000,
+    });
+    if (result.status !== 0 || !result.stdout.trim()) {return undefined;}
+    return normalizeSSHPublicKeyIdentity(result.stdout);
+  } catch {
+    return undefined;
+  }
+}
+
+export function areIdentityPathsEquivalent(left: string, right: string): boolean {
   const leftCandidates = identityPathCompareCandidates(left);
   const rightCandidates = identityPathCompareCandidates(right);
   return leftCandidates.some((candidate) => rightCandidates.includes(candidate));
+}
+
+function isPathUnderSshDir(filePath: string): boolean {
+  const sshDir = path.resolve(os.homedir(), ".ssh");
+  const resolved = path.resolve(filePath);
+  const normalizedSshDir = process.platform === "win32" ? sshDir.toLowerCase() : sshDir;
+  const normalizedResolved = process.platform === "win32" ? resolved.toLowerCase() : resolved;
+  return normalizedResolved === normalizedSshDir ||
+    normalizedResolved.startsWith(normalizedSshDir + path.sep);
 }
 
 function identityPathCompareCandidates(filePath: string): string[] {
