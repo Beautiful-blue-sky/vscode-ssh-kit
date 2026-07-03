@@ -433,6 +433,10 @@ class ConnectionStatusController implements vscode.Disposable {
 
     const { host, alias } = this.current;
     this.statusItem.text = `$(remote) SSH Kit: ${host.name}`;
+    this.statusItem.command = {
+      command: "sshKit.showCurrentConnection",
+      title: "复制当前连接信息",
+    };
     this.statusItem.tooltip = this.buildTooltip(host, alias);
     this.statusItem.show();
   }
@@ -443,6 +447,7 @@ class ConnectionStatusController implements vscode.Disposable {
     tooltip.supportThemeIcons = true;
     tooltip.appendMarkdown("$(remote) **SSH Kit 当前连接**\n\n");
     tooltip.appendCodeblock(details);
+    tooltip.appendMarkdown("\n\n点击状态栏可复制完整连接信息。");
     return tooltip;
   }
 
@@ -468,20 +473,24 @@ class ConnectionStatusController implements vscode.Disposable {
     const hosts = this.storage.getAllHosts();
     const authority = getCurrentRemoteSshAuthority();
     if (authority) {
-      const matchedByAuthority = findHostByRemoteAuthority(authority, hosts);
+      const matchedByAuthority = findHostByRemoteAuthority(authority, hosts) ??
+        findStoredHostByRemoteAuthority(authority, hosts, this.storage);
       if (matchedByAuthority) {
         await this.storage.setWindowConnection(matchedByAuthority.host.id, matchedByAuthority.alias);
+        await this.storage.setRemoteAuthorityConnection(matchedByAuthority.host.id, matchedByAuthority.alias);
         await this.storage.clearPendingWindowConnection(matchedByAuthority.host.id, matchedByAuthority.alias);
         return matchedByAuthority;
       }
-    }
 
-    if (claimPending && vscode.env.remoteName === "ssh-remote") {
-      const claimed = await this.storage.claimPendingWindowConnection();
-      const claimedHost = claimed ? hosts.find((item) => item.id === claimed.hostId) : undefined;
-      if (claimedHost && claimed) {
-        return { host: claimedHost, alias: claimed.alias };
+      if (claimPending && vscode.env.remoteName === "ssh-remote") {
+        const claimed = await this.storage.claimPendingWindowConnection(authority);
+        const claimedHost = claimed ? hosts.find((item) => item.id === claimed.hostId) : undefined;
+        if (claimedHost && claimed) {
+          return { host: claimedHost, alias: claimed.alias };
+        }
       }
+
+      return undefined;
     }
 
     const windowConnection = this.storage.getWindowConnection();
@@ -490,6 +499,14 @@ class ConnectionStatusController implements vscode.Disposable {
       : undefined;
     if (windowHost && windowConnection) {
       return { host: windowHost, alias: windowConnection.alias };
+    }
+
+    if (claimPending && vscode.env.remoteName === "ssh-remote") {
+      const claimed = await this.storage.claimPendingWindowConnection();
+      const claimedHost = claimed ? hosts.find((item) => item.id === claimed.hostId) : undefined;
+      if (claimedHost && claimed) {
+        return { host: claimedHost, alias: claimed.alias };
+      }
     }
 
     return undefined;
@@ -527,6 +544,16 @@ function findHostByRemoteAuthority(
 ): CurrentConnectionInfo | undefined {
   const host = findHostByRemoteSshAlias(alias, hosts);
   return host ? { host, alias } : undefined;
+}
+
+function findStoredHostByRemoteAuthority(
+  alias: string,
+  hosts: SSHHost[],
+  storage: StorageService
+): CurrentConnectionInfo | undefined {
+  const saved = storage.getRemoteAuthorityConnection(alias);
+  const host = saved ? hosts.find((item) => item.id === saved.hostId) : undefined;
+  return host && saved ? { host, alias: saved.alias } : undefined;
 }
 
 // ─── Extension activation ─────────────────────────────────────────────────

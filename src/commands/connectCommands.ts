@@ -53,9 +53,9 @@ async function doConnect(
   try {
     alias = ensureRemoteSshAlias(host, storage.getAllHosts());
     await storage.addRecentConnection(host.id);
-    if (openInNewWindow) {
-      await storage.addPendingWindowConnection(host.id, alias);
-    } else {
+    await storage.setRemoteAuthorityConnection(host.id, alias);
+    await storage.addPendingWindowConnection(host.id, alias);
+    if (!openInNewWindow) {
       await storage.setCurrentConnection(host.id, alias);
       await storage.setWindowConnection(host.id, alias);
     }
@@ -95,9 +95,12 @@ async function clearConnectionLaunchContext(
 ): Promise<void> {
   if (openInNewWindow) {
     await storage.clearPendingWindowConnection(hostId, alias);
+    await storage.clearRemoteAuthorityConnection(hostId, alias);
     return;
   }
 
+  await storage.clearPendingWindowConnection(hostId, alias);
+  await storage.clearRemoteAuthorityConnection(hostId, alias);
   await storage.clearCurrentConnection(hostId);
   await storage.clearWindowConnection(hostId);
 }

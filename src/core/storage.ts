@@ -24,6 +24,7 @@ import { findDuplicateEndpointGroups, findImportMatch } from "./hostMatching";
 const DATA_KEY = "sshKit.data";
 const WINDOW_CONNECTION_KEY = "sshKit.windowConnection";
 const PENDING_CONNECTIONS_KEY = "sshKit.pendingConnections";
+const REMOTE_AUTHORITY_CONNECTIONS_KEY = "sshKit.remoteAuthorityConnections";
 
 /**
  * Storage service — wraps read/write operations on VS Code globalState.
@@ -250,6 +251,27 @@ export class StorageService {
     await this.context.workspaceState.update(WINDOW_CONNECTION_KEY, undefined);
   }
 
+  async setRemoteAuthorityConnection(hostId: string, alias: string): Promise<void> {
+    const connections = this.getRemoteAuthorityConnections()
+      .filter((item) => item.alias !== alias);
+    connections.push({
+      hostId,
+      alias,
+      connectedAt: new Date().toISOString(),
+    });
+    await this.context.globalState.update(REMOTE_AUTHORITY_CONNECTIONS_KEY, connections.slice(-50));
+  }
+
+  getRemoteAuthorityConnection(alias: string): SSHKitData["currentConnection"] {
+    return this.getRemoteAuthorityConnections().find((item) => item.alias === alias);
+  }
+
+  async clearRemoteAuthorityConnection(hostId: string, alias?: string): Promise<void> {
+    const connections = this.getRemoteAuthorityConnections()
+      .filter((item) => item.hostId !== hostId || (alias !== undefined && item.alias !== alias));
+    await this.context.globalState.update(REMOTE_AUTHORITY_CONNECTIONS_KEY, connections);
+  }
+
   async addPendingWindowConnection(hostId: string, alias: string): Promise<void> {
     const pending = this.getPendingWindowConnections()
       .filter((item) => !(item.hostId === hostId && item.alias === alias));
@@ -261,12 +283,20 @@ export class StorageService {
     await this.context.globalState.update(PENDING_CONNECTIONS_KEY, pending.slice(-10));
   }
 
-  async claimPendingWindowConnection(): Promise<SSHKitData["currentConnection"]> {
+  async claimPendingWindowConnection(alias?: string): Promise<SSHKitData["currentConnection"]> {
     const pending = this.getPendingWindowConnections();
-    const claimed = pending[0];
+    const claimedIndex = alias
+      ? pending.findIndex((item) => item.alias === alias)
+      : 0;
+    if (claimedIndex < 0) {return undefined;}
+    const claimed = pending[claimedIndex];
     if (!claimed) {return undefined;}
-    await this.context.globalState.update(PENDING_CONNECTIONS_KEY, pending.slice(1));
+    await this.context.globalState.update(
+      PENDING_CONNECTIONS_KEY,
+      pending.filter((_, index) => index !== claimedIndex)
+    );
     await this.setWindowConnection(claimed.hostId, claimed.alias);
+    await this.setRemoteAuthorityConnection(claimed.hostId, claimed.alias);
     return claimed;
   }
 
@@ -279,6 +309,13 @@ export class StorageService {
   private getPendingWindowConnections(): NonNullable<SSHKitData["currentConnection"]>[] {
     return this.context.globalState.get<NonNullable<SSHKitData["currentConnection"]>[]>(
       PENDING_CONNECTIONS_KEY,
+      []
+    );
+  }
+
+  private getRemoteAuthorityConnections(): NonNullable<SSHKitData["currentConnection"]>[] {
+    return this.context.globalState.get<NonNullable<SSHKitData["currentConnection"]>[]>(
+      REMOTE_AUTHORITY_CONNECTIONS_KEY,
       []
     );
   }

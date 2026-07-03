@@ -2,6 +2,15 @@
 
 [![zh-CN](https://img.shields.io/badge/CHANGELOG-中文-red)](CHANGELOG.zh-CN.md)
 
+## 0.0.7 — 2026-07-03
+
+### Fixed
+- Keep the active SSH Kit connection visible after reusing the current window for Remote-SSH and after opening a folder in the connected remote window.
+- Resolve Remote-SSH windows from their actual authority alias before falling back to pending connection context, preventing one remote window from showing another host as connected.
+
+### Changed
+- Make the SSH Kit status bar item clickable to copy full connection details, and document the hover-to-view / click-to-copy behavior.
+
 ## 0.0.6 — 2026-07-02
 
 ### Added

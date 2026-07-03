@@ -2,6 +2,15 @@
 
 [![en](https://img.shields.io/badge/CHANGELOG-English-blue)](CHANGELOG.md)
 
+## 0.0.7 — 2026-07-03
+
+### 修复
+- 复用当前窗口连接 Remote-SSH 后，以及在远程窗口中打开文件夹后，SSH Kit 当前连接状态不再消失。
+- 优先按真实 Remote-SSH authority alias 识别当前窗口，再按 pending 连接上下文兜底，避免某个远程窗口误显示另一台主机为已连接。
+
+### 调整
+- SSH Kit 状态栏支持点击复制完整连接信息，并在文档中明确“悬停查看、点击复制”的交互方式。
+
 ## 0.0.6 — 2026-07-02
 
 ### 新增

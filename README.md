@@ -42,7 +42,7 @@ SSH Kit is a focused SSH host manager for VS Code. It gives you one place to org
 
 - Open the selected host in a current or new empty Remote-SSH window.
 - Keep the native Remote-SSH status label readable by using the Host alias directly.
-- Show the active SSH Kit connection per VS Code window in the host tree and status bar; hover the SSH Kit status item to select and copy name, endpoint, user, group, key, and tag details.
+- Show the active SSH Kit connection per VS Code window in the host tree and status bar; hover to view name, endpoint, user, group, key, and tag details, or click the status item to copy the full details.
 - Keep new-window connection context separate from the source window, so opening several Remote-SSH windows does not overwrite the current window marker.
 - Use generated SSH Kit connection aliases without polluting imported host data.
 - Refresh SSH Kit-managed Remote-SSH Host blocks before connecting, so restored or edited key paths are used without manually writing SSH Config.

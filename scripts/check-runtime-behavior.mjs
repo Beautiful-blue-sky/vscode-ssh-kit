@@ -24,6 +24,7 @@ try {
   await runCheck("Restore command prompts for key conflicts and rewrites imported hosts", checkRestoreCommandKeyConflictFlow);
   await runCheck("Key discovery detects generated keys and can regenerate missing public keys", checkKeyManagement);
   await runCheck("Batch host key changes update selected hosts only", checkBatchHostKeyChange);
+  await runCheck("Remote-SSH window context claims matching aliases only", checkRemoteWindowContextStorage);
   await runCheck("Remote-SSH alias refreshes stale identity files before connecting", checkRemoteAliasRefreshesIdentityFile);
   await runCheck("Remote-SSH alias preserves native host names and is accepted by OpenSSH config parsing", checkRemoteAlias);
   console.log("\nRuntime behavior checks passed.");
@@ -724,6 +725,29 @@ async function checkBatchHostKeyChange() {
   assert(saved.hosts.find((host) => host.id === "h-batch-2")?.identityFile === keyPath, "Expected other selected host key to remain unchanged");
 }
 
+async function checkRemoteWindowContextStorage() {
+  const vscode = createVSCodeMock();
+  const { StorageService } = loadTsModule("src/core/storage.ts", { vscode });
+  const context = createExtensionContext({
+    groups: [],
+    hosts: [],
+    groupCollapsedState: {},
+    recentConnections: [],
+  });
+  const storage = new StorageService(context);
+
+  await storage.addPendingWindowConnection("host-one", "host-one-alias");
+  await storage.addPendingWindowConnection("host-two", "host-two-alias");
+  const claimedTwo = await storage.claimPendingWindowConnection("host-two-alias");
+  assert(claimedTwo?.hostId === "host-two", "Expected an authority-scoped claim to pick the matching pending host");
+  assert(storage.getWindowConnection()?.hostId === "host-two", "Expected claimed host to become the window connection");
+  assert(storage.getRemoteAuthorityConnection("host-two-alias")?.hostId === "host-two", "Expected claimed host to be indexed by remote authority");
+
+  const claimedOne = await storage.claimPendingWindowConnection();
+  assert(claimedOne?.hostId === "host-one", "Expected unmatched pending host to remain queued after alias-scoped claim");
+  assert(await storage.claimPendingWindowConnection() === undefined, "Expected pending queue to be empty after both claims");
+}
+
 async function checkRemoteAliasRefreshesIdentityFile() {
   const home = makeTempHome("remote-stale-key");
   const vscode = createVSCodeMock();
@@ -831,6 +855,18 @@ async function checkRemoteAlias() {
     getWindowConnection() {
       return undefined;
     },
+    async setRemoteAuthorityConnection(hostId, alias) {
+      assert(hosts.some((item) => item.id === hostId), "Expected remote authority connection to use the host id");
+      assert(alias, "Expected remote authority alias to be recorded");
+      vscode.__events.push(`authority:${alias}`);
+    },
+    getRemoteAuthorityConnection() {
+      return undefined;
+    },
+    async clearRemoteAuthorityConnection(hostId) {
+      assert(hosts.some((item) => item.id === hostId), "Expected remote authority cleanup to use the host id");
+      vscode.__events.push(`clear-authority:${hostId}`);
+    },
     async addPendingWindowConnection(hostId, alias) {
       assert(hosts.some((item) => item.id === hostId), "Expected pending connection to use the host id");
       assert(alias, "Expected pending connection alias to be recorded");
@@ -862,6 +898,10 @@ async function checkRemoteAlias() {
   assert(
     vscode.__events.indexOf(`pending:${alias}`) < vscode.__events.indexOf("command:opensshremotes.openEmptyWindow"),
     "Expected new-window connection context to be queued before opening Remote-SSH"
+  );
+  assert(
+    vscode.__events.indexOf(`authority:${alias}`) < vscode.__events.indexOf("command:opensshremotes.openEmptyWindow"),
+    "Expected new-window connection authority to be indexed before opening Remote-SSH"
   );
   assert(!vscode.__events.includes(`window:${alias}`), "Expected new-window connections not to overwrite the current window state");
   assertRemoteAliasScpSafe(alias);
@@ -937,6 +977,14 @@ async function checkRemoteAlias() {
     currentEvents.indexOf(`window:${currentAlias}`) < currentEvents.indexOf("command:opensshremotes.openEmptyWindowInCurrentWindow"),
     "Expected current-window connections to record this window before opening Remote-SSH"
   );
+  assert(
+    currentEvents.indexOf(`pending:${currentAlias}`) < currentEvents.indexOf("command:opensshremotes.openEmptyWindowInCurrentWindow"),
+    "Expected current-window connections to queue context before the remote side reloads the window"
+  );
+  assert(
+    currentEvents.indexOf(`authority:${currentAlias}`) < currentEvents.indexOf("command:opensshremotes.openEmptyWindowInCurrentWindow"),
+    "Expected current-window connections to index the Remote-SSH authority before opening"
+  );
 
   const terminalKeyPath = join(home, ".ssh", "id_terminal");
   writeFileSync(terminalKeyPath, "placeholder");
@@ -1004,6 +1052,18 @@ function createConnectionStorageMock(hosts, vscode) {
     getWindowConnection() {
       return undefined;
     },
+    async setRemoteAuthorityConnection(hostId, alias) {
+      assert(hosts.some((item) => item.id === hostId), "Expected remote authority connection to use the host id");
+      assert(alias, "Expected remote authority alias to be recorded");
+      vscode.__events.push(`authority:${alias}`);
+    },
+    getRemoteAuthorityConnection() {
+      return undefined;
+    },
+    async clearRemoteAuthorityConnection(hostId) {
+      assert(hosts.some((item) => item.id === hostId), "Expected remote authority cleanup to use the host id");
+      vscode.__events.push(`clear-authority:${hostId}`);
+    },
     async addPendingWindowConnection(hostId, alias) {
       assert(hosts.some((item) => item.id === hostId), "Expected pending connection to use the host id");
       assert(alias, "Expected pending connection alias to be recorded");
@@ -1064,13 +1124,30 @@ function assertIncludesSequence(values, sequence, message) {
 
 function createExtensionContext(initialData) {
   const values = new Map([["sshKit.data", initialData]]);
+  const workspaceValues = new Map();
   return {
     globalState: {
-      get(key) {
-        return values.get(key);
+      get(key, defaultValue) {
+        return values.has(key) ? values.get(key) : defaultValue;
       },
       async update(key, value) {
-        values.set(key, value);
+        if (value === undefined) {
+          values.delete(key);
+        } else {
+          values.set(key, value);
+        }
+      },
+    },
+    workspaceState: {
+      get(key, defaultValue) {
+        return workspaceValues.has(key) ? workspaceValues.get(key) : defaultValue;
+      },
+      async update(key, value) {
+        if (value === undefined) {
+          workspaceValues.delete(key);
+        } else {
+          workspaceValues.set(key, value);
+        }
       },
     },
   };
