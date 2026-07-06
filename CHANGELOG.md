@@ -2,6 +2,11 @@
 
 [![zh-CN](https://img.shields.io/badge/CHANGELOG-中文-red)](CHANGELOG.zh-CN.md)
 
+## 0.0.8 — 2026-07-06
+
+### Fixed
+- Hide stale SSH Kit connection status in local or non-SSH windows instead of showing the previous Remote-SSH host from cached window state.
+
 ## 0.0.7 — 2026-07-03
 
 ### Fixed

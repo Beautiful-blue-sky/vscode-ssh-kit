@@ -2,6 +2,11 @@
 
 [![en](https://img.shields.io/badge/CHANGELOG-English-blue)](CHANGELOG.md)
 
+## 0.0.8 — 2026-07-06
+
+### 修复
+- 本地窗口或非 SSH 远程窗口不再从旧窗口缓存中显示上一台 Remote-SSH 主机的 SSH Kit 当前连接状态。
+
 ## 0.0.7 — 2026-07-03
 
 ### 修复
