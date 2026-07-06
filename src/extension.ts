@@ -8,6 +8,7 @@ import { GroupItem, HostDetailItem, HostItem, HostTreeDataProvider, HostDragAndD
 import { KeyTreeDataProvider, KeyItem, KeyDetailItem } from "./views/keyTreeView";
 import { readPublicKey, deleteKeyPair, renameKeyPair, regeneratePublicKey, listKeys, populateFingerprints } from "./keys/keyManager";
 import { getErrorMessage } from "./core/utils";
+import { canUseCachedSshKitWindowConnection } from "./core/connectionState";
 import { findHostByRemoteSshAlias, connectHostInCurrentWindow, connectHostInNewWindow, promptTerminalConnect, testConnection, searchHosts, cleanupRemoteSshAliases } from "./commands/connectCommands";
 import { addHost, editHost, deleteHost, copyHostName, copyHostDetail, deduplicateHosts, batchDeleteHosts, batchChangeHostKey, changeHostKey } from "./commands/hostCommands";
 import { addGroup, renameGroup, deleteGroup } from "./commands/groupCommands";
@@ -490,6 +491,11 @@ class ConnectionStatusController implements vscode.Disposable {
         }
       }
 
+      return undefined;
+    }
+
+    if (!canUseCachedSshKitWindowConnection(vscode.env.remoteName)) {
+      await this.storage.clearWindowConnection();
       return undefined;
     }
 

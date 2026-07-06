@@ -24,6 +24,7 @@ try {
   await runCheck("Restore command prompts for key conflicts and rewrites imported hosts", checkRestoreCommandKeyConflictFlow);
   await runCheck("Key discovery detects generated keys and can regenerate missing public keys", checkKeyManagement);
   await runCheck("Batch host key changes update selected hosts only", checkBatchHostKeyChange);
+  await runCheck("Connection status ignores stale window cache outside Remote-SSH", checkConnectionStatusCacheGate);
   await runCheck("Remote-SSH window context claims matching aliases only", checkRemoteWindowContextStorage);
   await runCheck("Remote-SSH alias refreshes stale identity files before connecting", checkRemoteAliasRefreshesIdentityFile);
   await runCheck("Remote-SSH alias preserves native host names and is accepted by OpenSSH config parsing", checkRemoteAlias);
@@ -723,6 +724,13 @@ async function checkBatchHostKeyChange() {
   saved = context.globalState.get("sshKit.data");
   assert(saved.hosts.find((host) => host.id === "h-batch-1")?.identityFile === undefined, "Expected single-host key change to clear identity file");
   assert(saved.hosts.find((host) => host.id === "h-batch-2")?.identityFile === keyPath, "Expected other selected host key to remain unchanged");
+}
+
+function checkConnectionStatusCacheGate() {
+  const { canUseCachedSshKitWindowConnection } = loadTsModule("src/core/connectionState.ts");
+  assert(canUseCachedSshKitWindowConnection("ssh-remote"), "Expected Remote-SSH windows to use cached SSH Kit window state");
+  assert(!canUseCachedSshKitWindowConnection(undefined), "Expected local windows to ignore stale SSH Kit window state");
+  assert(!canUseCachedSshKitWindowConnection("wsl"), "Expected non-SSH remote windows to ignore SSH Kit window state");
 }
 
 async function checkRemoteWindowContextStorage() {
