@@ -2,6 +2,13 @@
 
 [![en](https://img.shields.io/badge/CHANGELOG-English-blue)](CHANGELOG.md)
 
+## 未发布
+
+### 调整
+- README 补充在 Copilot Chat 中通过 `#sshKitHosts` 使用 SSH Kit 的具体步骤、示例提示词、运行要求和隐私边界。
+- 明确区分 SSH Config 写回前的配置文件备份，以及 SSH Kit 数据备份。
+- 在扩展 manifest 中将语言模型工具标记为可在提示词中引用，并补充用户可见描述和图标。
+
 ## 0.0.9 — 2026-07-07
 
 ### 新增

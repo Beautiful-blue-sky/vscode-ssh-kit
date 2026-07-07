@@ -44,6 +44,9 @@
         "toolReferenceName": "sshKitHosts",
         "displayName": "%languageModelTools.listHosts.displayName%",
         "modelDescription": "%languageModelTools.listHosts.modelDescription%",
+        "userDescription": "%languageModelTools.listHosts.userDescription%",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(server)",
         "inputSchema": {
           "type": "object",
           "properties": {

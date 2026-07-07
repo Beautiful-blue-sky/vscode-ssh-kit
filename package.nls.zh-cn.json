@@ -3,6 +3,7 @@
   "description": "SSH 主机分组管理与快捷连接，Remote-SSH 的配置管理前端",
   "languageModelTools.listHosts.displayName": "列出 SSH Kit 主机",
   "languageModelTools.listHosts.modelDescription": "读取 SSH Kit 主机元数据，帮助规划 SSH 或 Remote-SSH 操作。返回主机名称、地址、端口、用户、分组和标签。不返回私钥内容，除非明确请求，否则也不返回密钥文件路径。",
+  "languageModelTools.listHosts.userDescription": "为 Copilot 提示读取 SSH Kit 主机元数据",
   "viewsContainers.title": "SSH Kit",
   "views.hosts": "主机",
   "views.keys": "密钥",

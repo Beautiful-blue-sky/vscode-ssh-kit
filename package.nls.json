@@ -3,6 +3,7 @@
   "description": "SSH host manager with grouping, key management, and quick connect for Remote-SSH",
   "languageModelTools.listHosts.displayName": "List SSH Kit Hosts",
   "languageModelTools.listHosts.modelDescription": "Read SSH Kit host metadata for planning SSH or Remote-SSH work. Returns host names, addresses, ports, users, groups, and tags. It does not return private key contents, and key file paths are hidden unless explicitly requested.",
+  "languageModelTools.listHosts.userDescription": "Read SSH Kit host metadata for Copilot prompts",
   "viewsContainers.title": "SSH Kit",
   "views.hosts": "Hosts",
   "views.keys": "Keys",
