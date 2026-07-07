@@ -2,7 +2,7 @@
   "name": "ssh-kit",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.0.8",
+  "version": "0.0.9",
   "publisher": "lixiaoyu",
   "license": "MIT",
   "icon": "icon.png",
@@ -33,6 +33,39 @@
   ],
   "main": "./dist/extension.js",
   "contributes": {
+    "languageModelTools": [
+      {
+        "name": "sshKit_listHosts",
+        "tags": [
+          "ssh",
+          "remote",
+          "devops"
+        ],
+        "toolReferenceName": "sshKitHosts",
+        "displayName": "%languageModelTools.listHosts.displayName%",
+        "modelDescription": "%languageModelTools.listHosts.modelDescription%",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "query": {
+              "type": "string",
+              "description": "Optional text filter matched against host name, address, username, group, port, and tags."
+            },
+            "limit": {
+              "type": "number",
+              "description": "Maximum number of hosts to return. Defaults to 50 and is capped at 200.",
+              "minimum": 1,
+              "maximum": 200
+            },
+            "includeIdentityFilePath": {
+              "type": "boolean",
+              "description": "Include associated private key file paths. Private key contents are never returned."
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    ],
     "viewsContainers": {
       "activitybar": [
         {

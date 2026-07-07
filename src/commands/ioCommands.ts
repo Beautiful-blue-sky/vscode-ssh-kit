@@ -219,8 +219,8 @@ export async function exportConfig(storage: StorageService): Promise<void> {
           `发现 ${stats.conflicts.length} 个同名或同连接目标 Host 已存在，但不是 SSH Kit 托管：`,
           `${preview}${more}`,
           "",
-          "SSH Kit 会按 Host 别名和 HostName/Port/User 判断同一配置。",
-          "接管后这些 Host 块会被 SSH Kit 生成内容覆盖，原文件仍会先备份。",
+          "SSH Kit 会按 Host 别名或 HostName/Port 判断同一连接目标。",
+          "接管后这些 Host 块会被 SSH Kit 当前主机列表重新生成。",
         ].join("\n"),
         { modal: true },
         "接管并覆盖"
@@ -234,9 +234,10 @@ export async function exportConfig(storage: StorageService): Promise<void> {
       stats.added > 0 ? `  新增 ${stats.added} 台` : "",
       stats.synced > 0 ? `  同步 ${stats.synced} 台（已存在，将更新）` : "",
       stats.conflicts.length > 0 ? `  接管 ${stats.conflicts.length} 个同名或同连接目标 Host` : "",
+      stats.removedAliases > 0 ? `  移除 ${stats.removedAliases} 个 SSH Kit 临时连接别名` : "",
       stats.preserved > 0 ? `  保留 ${stats.preserved} 个现有主机不动` : "",
       "",
-      "原文件将备份为 config.bak.YYYYMMDD-HHmmss",
+      "如果当前 SSH Config 已存在，写入前会让你选择备份保存位置；取消备份将不会写入。",
     ].filter(Boolean);
 
     const confirmed = await vscode.window.showInformationMessage(
@@ -246,13 +247,61 @@ export async function exportConfig(storage: StorageService): Promise<void> {
     );
     if (confirmed !== "确认写入") {return;}
 
+    const backupPath = await backupSSHConfigBeforeWrite();
+    if (backupPath === null) {return;}
+
     const filePath = exportToSSHConfig(hosts, undefined, { overwriteUnmanaged });
     vscode.window.showInformationMessage(
-      `已写入 ${hosts.length} 台主机到 ${filePath}（原文件已备份）`
+      backupPath
+        ? `已写入 ${hosts.length} 台主机到 ${filePath}，备份：${backupPath}`
+        : `已写入 ${hosts.length} 台主机到 ${filePath}`
     );
   } catch (err: unknown) {
     vscode.window.showErrorMessage(`写入失败：${getErrorMessage(err)}`);
   }
+}
+
+async function backupSSHConfigBeforeWrite(): Promise<string | null | undefined> {
+  const configPath = path.join(os.homedir(), ".ssh", "config");
+  if (!fs.existsSync(configPath)) {
+    return undefined;
+  }
+
+  const confirmed = await vscode.window.showWarningMessage(
+    [
+      "写入 SSH Config 前需要先备份当前配置文件。",
+      "请选择一个你能找到的位置保存备份；取消备份则不会写入。",
+    ].join("\n"),
+    { modal: true },
+    "选择备份位置"
+  );
+  if (confirmed !== "选择备份位置") {return null;}
+
+  const uri = await vscode.window.showSaveDialog({
+    defaultUri: vscode.Uri.file(path.join(os.homedir(), `ssh-config-backup-${formatBackupTimestamp()}`)),
+    saveLabel: "备份并继续",
+    title: "保存 SSH Config 备份",
+  });
+  if (!uri) {return null;}
+
+  const normalizedSource = normalizePathForCompare(configPath);
+  const normalizedTarget = normalizePathForCompare(uri.fsPath);
+  if (normalizedSource === normalizedTarget) {
+    vscode.window.showErrorMessage("备份位置不能是当前 SSH Config 文件本身。");
+    return null;
+  }
+
+  fs.copyFileSync(configPath, uri.fsPath);
+  return uri.fsPath;
+}
+
+function formatBackupTimestamp(): string {
+  return new Date().toISOString().slice(0, 19).replace(/[-:]/g, "").replace("T", "-");
+}
+
+function normalizePathForCompare(filePath: string): string {
+  const resolved = path.resolve(filePath);
+  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
 }
 
 /** Open the SSH config file (~/.ssh/config) */

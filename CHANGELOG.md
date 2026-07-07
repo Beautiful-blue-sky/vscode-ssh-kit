@@ -2,6 +2,15 @@
 
 [![zh-CN](https://img.shields.io/badge/CHANGELOG-中文-red)](CHANGELOG.zh-CN.md)
 
+## 0.0.9 — 2026-07-07
+
+### Added
+- Add a read-only VS Code language model tool, `sshKitHosts`, so Copilot and other language model clients can read SSH Kit host metadata without private key contents.
+
+### Changed
+- Ask the user to choose an explicit backup location before writing to `~/.ssh/config` instead of silently creating `config.bak.*` files beside the config.
+- Treat SSH Kit as the source of truth when writing SSH Config: same Host aliases or same `HostName` / `Port` targets are replaced by current SSH Kit entries, and generated SSH Kit connection aliases are removed.
+
 ## 0.0.8 — 2026-07-06
 
 ### Fixed

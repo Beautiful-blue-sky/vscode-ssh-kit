@@ -26,6 +26,7 @@ interface HostBlock {
   managed: boolean;
   connectAlias: boolean;
   endpointKey?: string;
+  addressKey?: string;
 }
 
 // ─── Parser ───────────────────────────────────────────────────────────────
@@ -310,12 +311,13 @@ export interface ExportStats {
   added: number;        // New hosts (not present in config)
   synced: number;       // Existing matching hosts that will be updated
   preserved: number;    // Non-Kit sections left untouched
+  removedAliases: number; // Generated SSH Kit connection alias blocks that will be removed
   conflicts: string[];  // Existing unmanaged Host aliases that need confirmation
 }
 
 /** Export behavior options */
 export interface ExportOptions {
-  overwriteUnmanaged?: boolean; // Allow taking over same-name Host blocks without the marker
+  overwriteUnmanaged?: boolean; // Allow taking over same-name or same-target Host blocks without the marker
 }
 
 /**
@@ -328,25 +330,30 @@ export function analyzeExport(
 ): ExportStats | null {
   const resolvedPath = configPath ?? defaultConfigPath();
   const kitNames = new Set(hosts.map((h) => h.name));
-  const kitEndpoints = buildHostEndpointMap(hosts);
+  const kitTargets = buildHostTargetMaps(hosts);
   const syncedNames = new Set<string>();
-  const conflictNames = new Set<string>();
+  const conflictHostNames = new Set<string>();
+  const conflictAliases = new Set<string>();
   let preserved = 0;
+  let removedAliases = 0;
 
   if (fs.existsSync(resolvedPath)) {
     const existing = fs.readFileSync(resolvedPath, "utf-8");
     const blocks = findHostBlocks(existing);
     for (const block of blocks) {
       if (block.connectAlias) {
-        preserved++;
+        removedAliases++;
         continue;
       }
 
-      const matchedNames = getMatchedKitHostNames(block, kitNames, kitEndpoints);
+      const matchedNames = getMatchedKitHostNames(block, kitNames, kitTargets);
       if (matchedNames.length > 0) {
-        const targetSet = block.managed ? syncedNames : conflictNames;
+        const targetSet = block.managed ? syncedNames : conflictHostNames;
         for (const name of matchedNames) {
           targetSet.add(name);
+        }
+        if (!block.managed) {
+          conflictAliases.add(block.aliases.join(" "));
         }
       } else {
         preserved++;
@@ -354,22 +361,24 @@ export function analyzeExport(
     }
   }
 
-  const added = hosts.filter((h) => !syncedNames.has(h.name) && !conflictNames.has(h.name)).length;
+  const added = hosts.filter((h) => !syncedNames.has(h.name) && !conflictHostNames.has(h.name)).length;
   return {
     added,
     synced: syncedNames.size,
     preserved,
-    conflicts: [...conflictNames].sort(),
+    removedAliases,
+    conflicts: [...conflictAliases].sort(),
   };
 }
 
 /**
  * Merge hosts into the SSH config file.
  * Safety strategy:
- * 1. Back up original as config.bak.YYYYMMDD-HHmmss
+ * 1. Caller backs up the original file before writing
  * 2. Preserve unrelated raw config text untouched
- * 3. Update matching Host blocks and append new SSH Kit hosts
- * 4. Append the managed marker line at the end of each section
+ * 3. Remove generated SSH Kit connection aliases
+ * 4. Update matching Host blocks and append current SSH Kit hosts
+ * 5. Append the managed marker line at the end of each section
  * @returns path of the written file
  */
 export function exportToSSHConfig(
@@ -387,21 +396,13 @@ export function exportToSSHConfig(
     fs.mkdirSync(dir, { recursive: true });
   }
 
-  // 备份原文件（精确到秒）
-  if (fs.existsSync(resolvedPath)) {
-    const now = new Date();
-    const ts = now.toISOString().slice(0, 19).replace(/[-:]/g, "").replace("T", "-");
-    const bakPath = resolvedPath + ".bak." + ts;
-    fs.copyFileSync(resolvedPath, bakPath);
-  }
-
   const existing = fs.existsSync(resolvedPath)
     ? fs.readFileSync(resolvedPath, "utf-8")
     : "";
   const existingBlocks = findHostBlocks(existing);
   const kitNames = new Set(hosts.map((h) => h.name));
-  const kitEndpoints = buildHostEndpointMap(hosts);
-  const conflicts = findUnmanagedConflicts(existingBlocks, kitNames, kitEndpoints);
+  const kitTargets = buildHostTargetMaps(hosts);
+  const conflicts = findUnmanagedConflicts(existingBlocks, kitNames, kitTargets);
   if (conflicts.length > 0 && !options.overwriteUnmanaged) {
     throw new Error(
       `发现同名或同连接目标但非 SSH Kit 托管的 Host：${conflicts.join(", ")}。请确认接管后再写入。`
@@ -416,9 +417,12 @@ export function exportToSSHConfig(
     for (const block of existingBlocks) {
       preservedText += existing.slice(cursor, block.start);
       const matchesKitHost = !block.connectAlias &&
-        getMatchedKitHostNames(block, kitNames, kitEndpoints).length > 0;
+        getMatchedKitHostNames(block, kitNames, kitTargets).length > 0;
       if (matchesKitHost && (block.managed || options.overwriteUnmanaged)) {
         // Matching blocks are replaced by the generated SSH Kit block below.
+      } else if (block.connectAlias) {
+        // Generated Remote-SSH helper aliases are transient and should not
+        // survive a full SSH Kit write-back.
       } else {
         preservedText += block.text;
       }
@@ -477,6 +481,7 @@ function findHostBlocks(rawText: string): HostBlock[] {
       managed: text.includes(MANAGED_MARKER),
       connectAlias: isConnectAliasBlock(text),
       endpointKey: getHostBlockEndpointKey(text, aliases),
+      addressKey: getHostBlockAddressKey(text, aliases),
     });
   }
 
@@ -505,12 +510,12 @@ function getConnectAliasBlockStart(rawText: string, hostStart: number): number {
 function findUnmanagedConflicts(
   blocks: HostBlock[],
   kitNames: Set<string>,
-  kitEndpoints: Map<string, string[]>
+  kitTargets: HostTargetMaps
 ): string[] {
   const conflicts = new Set<string>();
   for (const block of blocks) {
     if (block.managed || block.connectAlias) {continue;}
-    const matchedNames = getMatchedKitHostNames(block, kitNames, kitEndpoints);
+    const matchedNames = getMatchedKitHostNames(block, kitNames, kitTargets);
     if (matchedNames.length > 0) {
       conflicts.add(block.aliases.join(" "));
     }
@@ -521,7 +526,7 @@ function findUnmanagedConflicts(
 function getMatchedKitHostNames(
   block: HostBlock,
   kitNames: Set<string>,
-  kitEndpoints: Map<string, string[]>
+  kitTargets: HostTargetMaps
 ): string[] {
   const matchedNames = new Set<string>();
   for (const alias of block.aliases) {
@@ -530,33 +535,67 @@ function getMatchedKitHostNames(
     }
   }
   if (block.endpointKey) {
-    for (const name of kitEndpoints.get(block.endpointKey) ?? []) {
+    for (const name of kitTargets.byEndpoint.get(block.endpointKey) ?? []) {
+      matchedNames.add(name);
+    }
+  }
+  if (block.addressKey) {
+    for (const name of kitTargets.byAddress.get(block.addressKey) ?? []) {
       matchedNames.add(name);
     }
   }
   return [...matchedNames];
 }
 
-function buildHostEndpointMap(hosts: SSHHost[]): Map<string, string[]> {
-  const endpointMap = new Map<string, string[]>();
+interface HostTargetMaps {
+  byEndpoint: Map<string, string[]>;
+  byAddress: Map<string, string[]>;
+}
+
+function buildHostTargetMaps(hosts: SSHHost[]): HostTargetMaps {
+  const byEndpoint = new Map<string, string[]>();
+  const byAddress = new Map<string, string[]>();
   for (const host of hosts) {
-    const key = getHostEndpointKey(host);
-    endpointMap.set(key, [...(endpointMap.get(key) ?? []), host.name]);
+    const endpointKey = getHostEndpointKey(host);
+    const addressKey = getHostAddressKey(host);
+    byEndpoint.set(endpointKey, [...(byEndpoint.get(endpointKey) ?? []), host.name]);
+    byAddress.set(addressKey, [...(byAddress.get(addressKey) ?? []), host.name]);
   }
-  return endpointMap;
+  return { byEndpoint, byAddress };
 }
 
 function getHostEndpointKey(host: SSHHost): string {
   return formatEndpointKey(host.hostname, host.port, host.username);
 }
 
+function getHostAddressKey(host: SSHHost): string {
+  return formatAddressKey(host.hostname, host.port);
+}
+
 function getHostBlockEndpointKey(text: string, aliases: string[]): string | undefined {
+  const target = getHostBlockTarget(text, aliases);
+  return target ? formatEndpointKey(target.hostname, target.port, target.username) : undefined;
+}
+
+function getHostBlockAddressKey(text: string, aliases: string[]): string | undefined {
+  const target = getHostBlockTarget(text, aliases);
+  return target ? formatAddressKey(target.hostname, target.port) : undefined;
+}
+
+function getHostBlockTarget(
+  text: string,
+  aliases: string[]
+): { hostname: string; port: number; username: string } | undefined {
   const section = parseSections(text)[0];
   if (!section) {return undefined;}
   const hostname = getLastDirective(section.props, "hostname") ?? aliases[0];
   const port = parseInt(getLastDirective(section.props, "port") ?? "22", 10);
   const username = getLastDirective(section.props, "user") ?? "";
-  return formatEndpointKey(hostname, Number.isFinite(port) ? port : 22, username);
+  return {
+    hostname,
+    port: Number.isFinite(port) ? port : 22,
+    username,
+  };
 }
 
 function formatEndpointKey(hostname: string, port: number, username: string): string {
@@ -564,6 +603,13 @@ function formatEndpointKey(hostname: string, port: number, username: string): st
     hostname.trim().toLowerCase(),
     String(port || 22),
     username.trim().toLowerCase(),
+  ].join("\u0000");
+}
+
+function formatAddressKey(hostname: string, port: number): string {
+  return [
+    hostname.trim().toLowerCase(),
+    String(port || 22),
   ].join("\u0000");
 }
 

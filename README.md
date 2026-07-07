@@ -17,6 +17,7 @@ SSH Kit is a focused SSH host manager for VS Code. It gives you one place to org
 - Expand any host to copy its address, port, username, or key path.
 - Manage local SSH keys, copy public keys, and regenerate missing `.pub` files.
 - Back up and restore SSH Kit data, including associated key files when needed.
+- Let Copilot and other VS Code language model tools read host metadata when you ask for SSH context.
 
 ## Quick Start
 
@@ -54,7 +55,8 @@ SSH Kit is a focused SSH host manager for VS Code. It gives you one place to org
 - Preview import changes before writing them into SSH Kit.
 - Match existing hosts by name first, then by SSH endpoint.
 - Preserve repeated directives such as `LocalForward` and `SendEnv`.
-- Write managed hosts back to SSH Config with a backup of the original file, updating existing SSH Kit blocks by Host alias or by the same `HostName` / `Port` / `User` endpoint.
+- Write managed hosts back to SSH Config after you choose a backup location for the current file.
+- Treat SSH Kit as the source of truth when writing: same Host aliases or same `HostName` / `Port` targets are replaced by current SSH Kit entries, and generated SSH Kit connection aliases are removed.
 
 ### Key Management
 
@@ -72,6 +74,12 @@ SSH Kit is a focused SSH host manager for VS Code. It gives you one place to org
 - Rewrite restored host key paths to the local key that was written, renamed, or reused; skipped or failed keys leave the imported host without a key association instead of keeping source-machine paths.
 - Show failed key restore details when a backup contains invalid key data.
 - Use batch key changes after restore to fix migrated or renamed key paths without editing hosts one by one.
+
+### AI and Copilot Access
+
+- Provides a read-only VS Code language model tool named `sshKitHosts`.
+- Returns host names, addresses, ports, users, groups, and tags so AI can help plan SSH or Remote-SSH work.
+- Does not return private key contents. Associated key paths are hidden unless explicitly requested by the tool input.
 
 ## Command Palette
 
@@ -105,6 +113,8 @@ Available from `Ctrl+Shift+P`:
 ## Data and Security
 
 SSH Kit stores host metadata in VS Code `globalState`. Backup files may include private key material when hosts reference local keys, so keep backups in a trusted location and delete temporary copies after migration.
+
+When writing to `~/.ssh/config`, SSH Kit asks you to choose where to save a backup of the current file before it writes changes. The Copilot/language-model tool is read-only and does not expose private key contents.
 
 ## Development
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createRequire } from "node:module";
@@ -18,6 +18,8 @@ const tempHomes = [];
 
 try {
   await runCheck("SSH Config import ignores SSH Kit connect aliases and preserves repeated directives", checkSSHConfigImport);
+  await runCheck("SSH Config export prompts for an explicit backup", checkSSHConfigExportBackupPrompt);
+  await runCheck("AI host tool returns filtered metadata without private key material", checkAIHostTool);
   await runCheck("Backup restore preview deduplicates hosts and reports key failures", checkBackupRestore);
   await runCheck("Backup restore rewrites hosts to renamed or reused key files", checkBackupRestoreKeyConflicts);
   await runCheck("Backup restore clears host key links when conflicting keys are skipped", checkBackupRestoreSkippedKeyClearsHostLink);
@@ -180,11 +182,130 @@ function checkSSHConfigImport() {
   const exportStats = analyzeExport([managedHost], exportPath);
   assert(exportStats.synced === 1, `Expected endpoint-matched managed blocks to count as one sync, got ${exportStats.synced}`);
   assert(exportStats.conflicts.length === 0, "Expected managed endpoint duplicates not to be reported as conflicts");
+  assert(exportStats.removedAliases === 1, `Expected one generated connection alias to be removed, got ${exportStats.removedAliases}`);
   exportToSSHConfig([managedHost], exportPath);
   const merged = readFileSync(exportPath, "utf8");
   assert(!merged.includes("Host 175.27.233.248_AIMS010-Nginx_10.100.1.4"), "Expected old same-endpoint managed alias to be replaced");
   assert((merged.match(/^Host AIMS010-Nginx_10\.100\.1\.4$/gm) ?? []).length === 1, "Expected one generated managed Host block");
-  assert(merged.includes("# SSH Kit connect alias mqggfb9qc991lz begin"), "Expected connection alias blocks to be preserved separately");
+  assert(!merged.includes("# SSH Kit connect alias mqggfb9qc991lz begin"), "Expected generated connection alias blocks to be removed during export");
+
+  const conflictPath = join(home, ".ssh", "conflict_config");
+  writeFileSync(conflictPath, [
+    "Host legacy-AIMS010",
+    "  HostName 175.27.233.248",
+    "  Port 35264",
+    "  User deploy",
+    "",
+    "Host unrelated",
+    "  HostName 203.0.113.10",
+    "  Port 22",
+    "  User root",
+    "",
+  ].join("\n"));
+  const conflictStats = analyzeExport([managedHost], conflictPath);
+  assert(conflictStats.conflicts.includes("legacy-AIMS010"), "Expected same HostName/Port unmanaged alias to require takeover confirmation");
+  let takeoverRequired = false;
+  try {
+    exportToSSHConfig([managedHost], conflictPath);
+  } catch {
+    takeoverRequired = true;
+  }
+  assert(takeoverRequired, "Expected unmanaged same-target export to require overwriteUnmanaged");
+  exportToSSHConfig([managedHost], conflictPath, { overwriteUnmanaged: true });
+  const conflictMerged = readFileSync(conflictPath, "utf8");
+  assert(!conflictMerged.includes("Host legacy-AIMS010"), "Expected unmanaged same-target alias to be replaced after takeover");
+  assert(conflictMerged.includes("Host unrelated"), "Expected unrelated Host blocks to be preserved");
+  assert((conflictMerged.match(/^Host AIMS010-Nginx_10\.100\.1\.4$/gm) ?? []).length === 1, "Expected one SSH Kit Host block after takeover");
+}
+
+async function checkSSHConfigExportBackupPrompt() {
+  const home = makeTempHome("export-backup");
+  const configPath = join(home, ".ssh", "config");
+  const backupPath = join(home, "chosen-ssh-config-backup");
+  writeFileSync(configPath, [
+    "Host old-dev",
+    "  HostName 10.0.0.5",
+    "  Port 22",
+    "  User root",
+    "",
+  ].join("\n"));
+
+  const vscode = createVSCodeMock();
+  vscode.__saveDialogUri = { fsPath: backupPath };
+  vscode.__infoHandler = (message) => (
+    String(message).includes("即将写入") ? "确认写入" : undefined
+  );
+  vscode.__warningHandler = (message) => (
+    String(message).includes("备份当前配置文件") ? "选择备份位置" : "接管并覆盖"
+  );
+
+  const { StorageService } = loadTsModule("src/core/storage.ts", { vscode });
+  const { exportConfig } = loadTsModule("src/commands/ioCommands.ts", { vscode });
+  const storage = new StorageService(createExtensionContext({
+    groups: [],
+    hosts: [{
+      id: "h-managed",
+      name: "managed-dev",
+      hostname: "10.0.0.5",
+      port: 22,
+      username: "root",
+      tags: [],
+    }],
+    groupCollapsedState: {},
+    recentConnections: [],
+  }));
+
+  await exportConfig(storage);
+
+  assert(existsSync(backupPath), "Expected export command to create the user-selected backup file");
+  assert(readFileSync(backupPath, "utf8").includes("Host old-dev"), "Expected backup file to contain the original SSH config");
+  assert(!readdirSync(join(home, ".ssh")).some((name) => /^config\.bak\./.test(name)), "Expected export command not to create silent config.bak.* files");
+
+  const merged = readFileSync(configPath, "utf8");
+  assert(!merged.includes("Host old-dev"), "Expected confirmed takeover to replace same-target unmanaged Host");
+  assert(merged.includes("Host managed-dev"), "Expected SSH Kit Host to be written");
+  assert(merged.includes("# SSH Kit managed"), "Expected written Host to include the SSH Kit marker");
+}
+
+function checkAIHostTool() {
+  const vscode = createVSCodeMock();
+  const { StorageService } = loadTsModule("src/core/storage.ts", { vscode });
+  const { buildHostToolResult } = loadTsModule("src/ai/hostTool.ts", { vscode });
+  const storage = new StorageService(createExtensionContext({
+    groups: [{ id: "g-prod", name: "prod", order: 0 }],
+    hosts: [
+      {
+        id: "h-prod",
+        name: "api-prod",
+        hostname: "10.0.0.10",
+        port: 2222,
+        username: "root",
+        groupId: "g-prod",
+        tags: ["api", "linux"],
+        identityFile: "~/.ssh/id_prod",
+      },
+      {
+        id: "h-dev",
+        name: "worker-dev",
+        hostname: "10.0.0.11",
+        port: 22,
+        username: "ubuntu",
+        tags: ["worker"],
+      },
+    ],
+    groupCollapsedState: {},
+    recentConnections: [],
+  }));
+
+  const filtered = buildHostToolResult(storage, { query: "prod" });
+  assert(filtered.total === 1, `Expected one filtered host, got ${filtered.total}`);
+  assert(filtered.hosts[0].name === "api-prod", "Expected query to match host name/group/tag metadata");
+  assert(filtered.hosts[0].hasIdentityFile === true, "Expected AI host tool to expose key presence");
+  assert(filtered.hosts[0].identityFile === undefined, "Expected AI host tool to hide key paths by default");
+
+  const withPath = buildHostToolResult(storage, { query: "prod", includeIdentityFilePath: true });
+  assert(withPath.hosts[0].identityFile === "~/.ssh/id_prod", "Expected AI host tool to include key paths only when requested");
+  assert(!JSON.stringify(withPath).includes("PRIVATE KEY"), "Expected AI host tool result not to include private key material");
 }
 
 async function checkBackupRestore() {
@@ -1173,6 +1294,7 @@ function createVSCodeMock() {
     __terminals: terminals,
     __infoHandler: undefined,
     __openDialogUris: undefined,
+    __saveDialogUri: undefined,
     __quickPickHandler: undefined,
     __warningHandler: undefined,
     __warningChoice: undefined,
@@ -1199,6 +1321,9 @@ function createVSCodeMock() {
       },
       async showOpenDialog() {
         return mock.__openDialogUris;
+      },
+      async showSaveDialog() {
+        return mock.__saveDialogUri;
       },
       async showQuickPick(items, options) {
         if (typeof mock.__quickPickHandler === "function") {
@@ -1231,6 +1356,11 @@ function createVSCodeMock() {
       async executeCommand(command, args) {
         commands.push({ command, args });
         events.push(`command:${command}`);
+      },
+    },
+    Uri: {
+      file(fsPath) {
+        return { fsPath };
       },
     },
   };

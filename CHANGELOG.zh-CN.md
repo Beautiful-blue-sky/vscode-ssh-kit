@@ -2,6 +2,15 @@
 
 [![en](https://img.shields.io/badge/CHANGELOG-English-blue)](CHANGELOG.md)
 
+## 0.0.9 — 2026-07-07
+
+### 新增
+- 新增只读 VS Code 语言模型工具 `sshKitHosts`，方便 Copilot 和其他语言模型客户端读取 SSH Kit 主机元数据，且不返回私钥内容。
+
+### 调整
+- 写入 `~/.ssh/config` 前改为让用户明确选择备份保存位置，不再静默在配置文件旁生成 `config.bak.*`。
+- SSH Config 写回时以 SSH Kit 当前主机列表为准：同名 Host alias 或相同 `HostName` / `Port` 目标会被当前 SSH Kit 条目替换，并移除 SSH Kit 自动生成的临时连接别名。
+
 ## 0.0.8 — 2026-07-06
 
 ### 修复

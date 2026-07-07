@@ -14,6 +14,7 @@ import { addHost, editHost, deleteHost, copyHostName, copyHostDetail, deduplicat
 import { addGroup, renameGroup, deleteGroup } from "./commands/groupCommands";
 import { importConfig, exportConfig, openSshConfig, backupKitData, restoreKitData } from "./commands/ioCommands";
 import { showKeyList, generateKey } from "./commands/keyCommands";
+import { registerAIHostTools } from "./ai/hostTool";
 
 // ─── Interaction helpers ──────────────────────────────────────────────────
 
@@ -607,6 +608,7 @@ export function activate(context: vscode.ExtensionContext) {
   registerConnectCommands(context, storage, connectionStatus);
   registerIOCommands(context, storage, treeDataProvider, keyTreeDataProvider);
   registerKeyCommands(context, keyTreeDataProvider);
+  registerAIHostTools(context, storage);
 }
 
 /** Core command: refresh */
