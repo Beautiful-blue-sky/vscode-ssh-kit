@@ -27,6 +27,8 @@ try {
   await runCheck("Key discovery detects generated keys and can regenerate missing public keys", checkKeyManagement);
   await runCheck("Batch host key changes update selected hosts only", checkBatchHostKeyChange);
   await runCheck("Connection status ignores stale window cache outside Remote-SSH", checkConnectionStatusCacheGate);
+  await runCheck("Connection status restores cached context after Remote-SSH cold start", checkConnectionStatusColdStartRestore);
+  await runCheck("Expanded host details include a copyable Host nickname", checkHostDetailNickname);
   await runCheck("Remote-SSH window context claims matching aliases only", checkRemoteWindowContextStorage);
   await runCheck("Remote-SSH alias refreshes stale identity files before connecting", checkRemoteAliasRefreshesIdentityFile);
   await runCheck("Remote-SSH alias preserves native host names and is accepted by OpenSSH config parsing", checkRemoteAlias);
@@ -854,6 +856,70 @@ function checkConnectionStatusCacheGate() {
   assert(!canUseCachedSshKitWindowConnection("wsl"), "Expected non-SSH remote windows to ignore SSH Kit window state");
 }
 
+async function checkConnectionStatusColdStartRestore() {
+  const vscode = createVSCodeMock();
+  const host = {
+    id: "host-cold-start",
+    name: "cold-start-host",
+    hostname: "203.0.113.20",
+    port: 2222,
+    username: "root",
+    tags: [],
+  };
+  let clearWindowConnectionCalls = 0;
+  const storage = {
+    getAllHosts: () => [host],
+    getGroups: () => [],
+    getWindowConnection: () => ({
+      hostId: host.id,
+      alias: host.name,
+      connectedAt: new Date().toISOString(),
+    }),
+    clearWindowConnection: async () => {
+      clearWindowConnectionCalls++;
+    },
+    claimPendingWindowConnection: async () => undefined,
+  };
+  let connectedHostId;
+  const tree = {
+    setConnectedHostId: (hostId) => {
+      connectedHostId = hostId;
+    },
+  };
+  const { ConnectionStatusController } = loadTsModule("src/extension.ts", { vscode });
+  const controller = new ConnectionStatusController(storage, tree, []);
+
+  await controller.refresh();
+  assert(vscode.__statusBarItem.visible === false, "Expected local startup phase not to show cached Remote-SSH status");
+  assert(clearWindowConnectionCalls === 0, "Expected local startup phase to retain cached context for Remote-SSH restoration");
+
+  vscode.env.remoteName = "ssh-remote";
+  await controller.refresh();
+  assert(vscode.__statusBarItem.visible === true, "Expected status item to appear after Remote-SSH restoration");
+  assert(vscode.__statusBarItem.text.includes(host.name), "Expected restored status item to show the cached host");
+  assert(connectedHostId === host.id, "Expected restored host to be marked connected in the tree");
+  controller.dispose();
+}
+
+async function checkHostDetailNickname() {
+  const vscode = createVSCodeMock();
+  const host = {
+    id: "host-details",
+    name: "prod-api",
+    hostname: "10.0.0.8",
+    port: 22,
+    username: "deploy",
+    tags: [],
+  };
+  const { HostItem, HostTreeDataProvider } = loadTsModule("src/views/treeView.ts", { vscode });
+  const provider = new HostTreeDataProvider({});
+  const details = await provider.getChildren(new HostItem(host, "test"));
+  const nickname = details.find((item) => item.detailLabel === "Host 昵称");
+
+  assert(nickname?.detailValue === host.name, "Expected expanded details to expose the Host nickname");
+  assert(nickname?.contextValue === "hostDetail", "Expected the Host nickname detail to be copyable");
+}
+
 async function checkRemoteWindowContextStorage() {
   const vscode = createVSCodeMock();
   const { StorageService } = loadTsModule("src/core/storage.ts", { vscode });
@@ -1287,11 +1353,56 @@ function createVSCodeMock() {
   const events = [];
   const messages = [];
   const terminals = [];
+  class TreeItem {
+    constructor(label, collapsibleState) {
+      this.label = label;
+      this.collapsibleState = collapsibleState;
+    }
+  }
+  class ThemeIcon {
+    constructor(id, color) {
+      this.id = id;
+      this.color = color;
+    }
+  }
+  class ThemeColor {
+    constructor(id) {
+      this.id = id;
+    }
+  }
+  class EventEmitter {
+    constructor() {
+      this.listeners = new Set();
+      this.event = (listener) => {
+        this.listeners.add(listener);
+        return { dispose: () => this.listeners.delete(listener) };
+      };
+    }
+    fire(value) {
+      for (const listener of this.listeners) {
+        listener(value);
+      }
+    }
+  }
+  const statusBarItem = {
+    visible: false,
+    text: "",
+    show() {
+      this.visible = true;
+    },
+    hide() {
+      this.visible = false;
+    },
+    dispose() {
+      this.visible = false;
+    },
+  };
   const mock = {
     __commands: commands,
     __events: events,
     __messages: messages,
     __terminals: terminals,
+    __statusBarItem: statusBarItem,
     __infoHandler: undefined,
     __openDialogUris: undefined,
     __saveDialogUri: undefined,
@@ -1300,6 +1411,12 @@ function createVSCodeMock() {
     __warningChoice: undefined,
     window: {
       terminals: [],
+      createStatusBarItem() {
+        return statusBarItem;
+      },
+      onDidChangeWindowState() {
+        return { dispose() {} };
+      },
       createTerminal(options) {
         terminals.push(options);
         return {
@@ -1348,6 +1465,10 @@ function createVSCodeMock() {
     },
     workspace: {
       workspaceFolders: undefined,
+      workspaceFile: undefined,
+      onDidChangeWorkspaceFolders() {
+        return { dispose() {} };
+      },
     },
     env: {
       remoteName: undefined,
@@ -1362,6 +1483,23 @@ function createVSCodeMock() {
       file(fsPath) {
         return { fsPath };
       },
+    },
+    TreeItem,
+    TreeItemCollapsibleState: {
+      None: 0,
+      Collapsed: 1,
+      Expanded: 2,
+    },
+    ThemeIcon,
+    ThemeColor,
+    EventEmitter,
+    StatusBarAlignment: {
+      Left: 1,
+      Right: 2,
+    },
+    MarkdownString: class {
+      appendMarkdown() {}
+      appendCodeblock() {}
     },
   };
   return mock;

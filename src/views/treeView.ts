@@ -130,6 +130,7 @@ export class HostTreeDataProvider implements vscode.TreeDataProvider<vscode.Tree
     const children: HostDetailItem[] = [];
     const parentItemId = hostItem.id;
 
+    children.push(new HostDetailItem("Host 昵称", h.name, "server", true, parentItemId));
     children.push(new HostDetailItem("地址", h.hostname, "globe", true, parentItemId));
     children.push(new HostDetailItem("端口", String(h.port), "remote", true, parentItemId));
     children.push(new HostDetailItem("用户", h.username, "person", true, parentItemId));

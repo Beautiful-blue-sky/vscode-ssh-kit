@@ -2,7 +2,7 @@
   "name": "ssh-kit",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.0.9",
+  "version": "0.0.10",
   "publisher": "lixiaoyu",
   "license": "MIT",
   "icon": "icon.png",

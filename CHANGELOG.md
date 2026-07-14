@@ -2,12 +2,16 @@
 
 [![zh-CN](https://img.shields.io/badge/CHANGELOG-中文-red)](CHANGELOG.zh-CN.md)
 
-## Unreleased
+## 0.0.10 — 2026-07-14
 
 ### Changed
 - Clarify README instructions for using SSH Kit from Copilot Chat with `#sshKitHosts`, including example prompts, requirements, and privacy behavior.
 - Clarify the difference between SSH Config write-back backups and SSH Kit data backups.
 - Mark the language model tool as prompt-referenceable in the extension manifest with a user-facing description and icon.
+- Include the Host nickname in expanded host details so it can be copied directly.
+
+### Fixed
+- Restore SSH Kit status bar and connected-host indicators when VS Code cold-starts and automatically restores one or more Remote-SSH windows.
 
 ## 0.0.9 — 2026-07-07
 

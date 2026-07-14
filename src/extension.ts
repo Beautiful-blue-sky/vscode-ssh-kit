@@ -1,6 +1,7 @@
 // SSH Kit — Entry point (activation, helpers, command registration)
 import * as os from "os";
 import * as path from "path";
+import { clearTimeout, setTimeout } from "node:timers";
 import * as vscode from "vscode";
 import { SSHHost, SSHGroup } from "./core/types";
 import { StorageService } from "./core/storage";
@@ -387,28 +388,49 @@ interface CurrentConnectionInfo {
   alias: string;
 }
 
-class ConnectionStatusController implements vscode.Disposable {
+export class ConnectionStatusController implements vscode.Disposable {
   private readonly statusItem: vscode.StatusBarItem;
   private readonly disposables: vscode.Disposable[] = [];
   private current: CurrentConnectionInfo | undefined;
+  private refreshQueue: Promise<void> = Promise.resolve();
 
   constructor(
     private readonly storage: StorageService,
-    private readonly tree: HostTreeDataProvider
+    private readonly tree: HostTreeDataProvider,
+    startupRefreshDelays: readonly number[] = [1000, 5000, 15000]
   ) {
     this.statusItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 99);
     this.statusItem.name = "SSH Kit Connection";
+    const startupRefreshTimers = startupRefreshDelays.map((delay) =>
+      setTimeout(() => { void this.refresh(); }, delay)
+    );
     this.disposables.push(
       this.statusItem,
-      vscode.workspace.onDidChangeWorkspaceFolders(() => { void this.refresh(); })
+      vscode.workspace.onDidChangeWorkspaceFolders(() => { void this.refresh(); }),
+      vscode.window.onDidChangeWindowState((state) => {
+        if (state.focused) {
+          void this.refresh();
+        }
+      }),
+      {
+        dispose: () => {
+          for (const timer of startupRefreshTimers) {
+            clearTimeout(timer);
+          }
+        },
+      }
     );
     void this.refresh();
   }
 
-  async refresh(options: { claimPending?: boolean } = {}): Promise<void> {
-    this.current = await this.resolveCurrentConnection(options.claimPending ?? true);
-    this.tree.setConnectedHostId(this.current?.host.id);
-    this.updateStatusItem();
+  refresh(options: { claimPending?: boolean } = {}): Promise<void> {
+    const task = this.refreshQueue.then(async () => {
+      this.current = await this.resolveCurrentConnection(options.claimPending ?? true);
+      this.tree.setConnectedHostId(this.current?.host.id);
+      this.updateStatusItem();
+    });
+    this.refreshQueue = task.catch(() => {});
+    return task;
   }
 
   async showDetails(): Promise<void> {
@@ -496,7 +518,6 @@ class ConnectionStatusController implements vscode.Disposable {
     }
 
     if (!canUseCachedSshKitWindowConnection(vscode.env.remoteName)) {
-      await this.storage.clearWindowConnection();
       return undefined;
     }
 
