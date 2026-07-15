@@ -32,7 +32,7 @@ export async function addHost(
   await storage.addHost(host);
   tree.refresh();
   vscode.window.showInformationMessage(
-    `已添加主机：${host.name} (${host.hostname}:${host.port})`
+    vscode.l10n.t("Added host: {name} ({address}:{port})", { name: host.name, address: host.hostname, port: host.port })
   );
 }
 
@@ -49,7 +49,7 @@ export async function editHost(
   await storage.updateHost(host.id, updates);
   tree.refresh();
   vscode.window.showInformationMessage(
-    `已更新主机：${updates.name ?? host.name}`
+    vscode.l10n.t("Updated host: {name}", { name: updates.name ?? host.name })
   );
 }
 
@@ -59,30 +59,35 @@ export async function deleteHost(
   storage: StorageService,
   tree: HostTreeDataProvider
 ): Promise<void> {
+  const deleteAction = vscode.l10n.t("Delete");
   const confirmed = await vscode.window.showWarningMessage(
-    `确定删除主机「${host.name}」(${host.hostname}:${host.port})？此操作不可撤销。`,
+    vscode.l10n.t("Delete host “{name}” ({address}:{port})? This cannot be undone.", {
+      name: host.name,
+      address: host.hostname,
+      port: host.port,
+    }),
     { modal: true },
-    "删除"
+    deleteAction
   );
-  if (confirmed !== "删除") {return;}
+  if (confirmed !== deleteAction) {return;}
 
   await storage.deleteHost(host.id);
   tree.refresh();
   vscode.window.showInformationMessage(
-    `已删除主机：${host.name} (${host.hostname}:${host.port})`
+    vscode.l10n.t("Deleted host: {name} ({address}:{port})", { name: host.name, address: host.hostname, port: host.port })
   );
 }
 
 /** Copy hostname to clipboard */
 export async function copyHostName(host: SSHHost): Promise<void> {
   await vscode.env.clipboard.writeText(host.hostname);
-  vscode.window.showInformationMessage(`已复制：${host.hostname}`);
+  vscode.window.showInformationMessage(vscode.l10n.t("Copied: {value}", { value: host.hostname }));
 }
 
 /** Copy an expanded host detail field to clipboard */
 export async function copyHostDetail(label: string, value: string): Promise<void> {
   await vscode.env.clipboard.writeText(value);
-  vscode.window.showInformationMessage(`已复制${label}：${value}`);
+  vscode.window.showInformationMessage(vscode.l10n.t("Copied {label}: {value}", { label, value }));
 }
 
 /** Remove duplicate hosts by actual SSH endpoint after the user chooses which item to keep. */
@@ -93,7 +98,7 @@ export async function deduplicateHosts(
   const hosts = storage.getAllHosts();
   const duplicates = findDuplicateEndpointGroups(hosts);
   if (duplicates.length === 0) {
-    vscode.window.showInformationMessage("没有相同地址、端口和用户的重复主机，无需清理。");
+    vscode.window.showInformationMessage(vscode.l10n.t("No duplicate hosts share the same address, port, and user."));
     return;
   }
 
@@ -119,26 +124,32 @@ export async function deduplicateHosts(
   }
 
   if (deleteIds.size === 0) {
-    const suffix = skipped > 0 ? `，已跳过 ${skipped} 组` : "";
-    vscode.window.showInformationMessage(`未删除任何重复主机${suffix}。`);
+    vscode.window.showInformationMessage(skipped > 0
+      ? vscode.l10n.t("No duplicate hosts were deleted; {count} groups were skipped.", { count: skipped })
+      : vscode.l10n.t("No duplicate hosts were deleted."));
     return;
   }
 
   const toDelete = hosts.filter((host) => deleteIds.has(host.id));
-  const preview = toDelete.slice(0, 8).map((host) => `「${host.name}」`).join("、");
-  const more = toDelete.length > 8 ? ` 等 ${toDelete.length} 台` : "";
+  const preview = toDelete.slice(0, 8).map((host) => `“${host.name}”`).join(", ");
+  const more = toDelete.length > 8 ? vscode.l10n.t(" and {count} hosts total", { count: toDelete.length }) : "";
+  const confirmDeleteAction = vscode.l10n.t("Confirm Delete");
   const confirmed = await vscode.window.showWarningMessage(
-    `将删除 ${toDelete.length} 台重复主机：${preview}${more}。此操作不可撤销。`,
+    vscode.l10n.t("Delete {count} duplicate hosts: {preview}{more}. This cannot be undone.", {
+      count: toDelete.length,
+      preview,
+      more,
+    }),
     { modal: true },
-    "确认删除"
+    confirmDeleteAction
   );
-  if (confirmed !== "确认删除") {return;}
+  if (confirmed !== confirmDeleteAction) {return;}
 
   for (const host of toDelete) {
     await storage.deleteHost(host.id);
   }
   tree.refresh();
-  vscode.window.showInformationMessage(`已清理 ${toDelete.length} 台重复主机。`);
+  vscode.window.showInformationMessage(vscode.l10n.t("Removed {count} duplicate hosts.", { count: toDelete.length }));
 }
 
 async function promptHostToKeep(
@@ -158,13 +169,15 @@ async function promptHostToKeep(
       label: host.name,
       description: `[${getGroupName(host, groupNames)}] ${formatEndpoint(host)}`,
       detail: [
-        host.identityFile ? `密钥：${host.identityFile}` : "密钥：未关联",
-        host.tags.length > 0 ? `标签：${host.tags.join(", ")}` : "",
+        host.identityFile
+          ? vscode.l10n.t("Identity file: {path}", { path: host.identityFile })
+          : vscode.l10n.t("Identity file: not associated"),
+        host.tags.length > 0 ? vscode.l10n.t("Tags: {tags}", { tags: host.tags.join(", ") }) : "",
       ].filter(Boolean).join("  "),
       host,
     })),
     {
-      label: "$(debug-step-over) 跳过这一组",
+      label: vscode.l10n.t("$(debug-step-over) Skip this group"),
       description: endpoint,
       skip: true,
     },
@@ -173,7 +186,7 @@ async function promptHostToKeep(
   const picked = await vscode.window.showQuickPick(items, {
     matchOnDescription: true,
     matchOnDetail: true,
-    placeHolder: `重复目标 ${index}/${total}：选择要保留的主机，其余同目标主机将删除`,
+    placeHolder: vscode.l10n.t("Duplicate target {index}/{total}: choose the host to keep; the others will be deleted", { index, total }),
   });
   if (!picked) {return undefined;}
   if (picked.skip) {return "skip";}
@@ -181,7 +194,9 @@ async function promptHostToKeep(
 }
 
 function getGroupName(host: SSHHost, groupNames: Map<string, string>): string {
-  return host.groupId ? groupNames.get(host.groupId) ?? "未知分组" : "未分组";
+  return host.groupId
+    ? groupNames.get(host.groupId) ?? vscode.l10n.t("Unknown group")
+    : vscode.l10n.t("Ungrouped");
 }
 
 function formatEndpoint(host: SSHHost): string {
@@ -195,7 +210,7 @@ export async function batchDeleteHosts(
 ): Promise<void> {
   const hosts = storage.getAllHosts();
   if (hosts.length === 0) {
-    vscode.window.showInformationMessage("暂无主机。");
+    vscode.window.showInformationMessage(vscode.l10n.t("No hosts are available."));
     return;
   }
 
@@ -217,7 +232,7 @@ export async function batchDeleteHosts(
   for (const h of hosts.filter((h) => !pushed.has(h.id))) {
     items.push({
       label: h.name,
-      description: `[未分组] ${h.username}@${h.hostname}:${h.port}`,
+      description: `[${vscode.l10n.t("Ungrouped")}] ${h.username}@${h.hostname}:${h.port}`,
       _hostId: h.id,
     });
   }
@@ -226,7 +241,7 @@ export async function batchDeleteHosts(
     canPickMany: true,
     matchOnDescription: false,
     matchOnDetail: false,
-    placeHolder: "选择要删除的主机（可多选）...",
+    placeHolder: vscode.l10n.t("Choose hosts to delete (multiple selection allowed)…"),
   });
 
   if (!picked || picked.length === 0) {return;}
@@ -235,18 +250,19 @@ export async function batchDeleteHosts(
   const toDelete = hosts.filter((h) => ids.has(h.id));
   if (toDelete.length === 0) {return;}
 
+  const batchDeleteAction = vscode.l10n.t("Delete");
   const confirmed = await vscode.window.showWarningMessage(
-    `确定删除选中的 ${toDelete.length} 台主机？此操作不可撤销。`,
+    vscode.l10n.t("Delete the {count} selected hosts? This cannot be undone.", { count: toDelete.length }),
     { modal: true },
-    "删除"
+    batchDeleteAction
   );
-  if (confirmed !== "删除") {return;}
+  if (confirmed !== batchDeleteAction) {return;}
 
   for (const host of toDelete) {
     await storage.deleteHost(host.id);
   }
   tree.refresh();
-  vscode.window.showInformationMessage(`已批量删除 ${toDelete.length} 台主机。`);
+  vscode.window.showInformationMessage(vscode.l10n.t("Deleted {count} hosts.", { count: toDelete.length }));
 }
 
 /** Change selected hosts to a new associated identity file. */
@@ -256,7 +272,7 @@ export async function batchChangeHostKey(
 ): Promise<void> {
   const hosts = storage.getAllHosts();
   if (hosts.length === 0) {
-    vscode.window.showInformationMessage("暂无主机。");
+    vscode.window.showInformationMessage(vscode.l10n.t("No hosts are available."));
     return;
   }
 
@@ -274,7 +290,7 @@ export async function changeHostKey(
 ): Promise<void> {
   const target = storage.getAllHosts().find((item) => item.id === host.id);
   if (!target) {
-    vscode.window.showInformationMessage("该主机不存在或已被删除。");
+    vscode.window.showInformationMessage(vscode.l10n.t("This host does not exist or has been deleted."));
     return;
   }
 
@@ -289,22 +305,28 @@ async function applyHostKeyChange(
   const identityFile = await pickIdentityFileForHosts(targets);
   if (identityFile === null) {return;}
 
-  const label = identityFile || "不关联密钥";
-  const preview = targets.slice(0, 8).map((host) => `「${host.name}」`).join("、");
-  const more = targets.length > 8 ? ` 等 ${targets.length} 台` : "";
+  const label = identityFile || vscode.l10n.t("No identity file");
+  const preview = targets.slice(0, 8).map((host) => `“${host.name}”`).join(", ");
+  const more = targets.length > 8 ? vscode.l10n.t(" and {count} hosts total", { count: targets.length }) : "";
+  const confirmChangeAction = vscode.l10n.t("Confirm Change");
   const confirmed = await vscode.window.showWarningMessage(
-    `将把 ${targets.length} 台主机的关联密钥改为「${label}」：${preview}${more}。`,
+    vscode.l10n.t("Change the identity file for {count} hosts to “{identity}”: {preview}{more}.", {
+      count: targets.length,
+      identity: label,
+      preview,
+      more,
+    }),
     { modal: true },
-    "确认修改"
+    confirmChangeAction
   );
-  if (confirmed !== "确认修改") {return;}
+  if (confirmed !== confirmChangeAction) {return;}
 
   const updated = await storage.updateHostsIdentityFile(
     targets.map((host) => host.id),
     identityFile || undefined
   );
   tree.refresh();
-  vscode.window.showInformationMessage(`已更新 ${updated} 台主机的关联密钥。`);
+  vscode.window.showInformationMessage(vscode.l10n.t("Updated the identity file for {count} hosts.", { count: updated }));
 }
 
 async function pickHostsForKeyChange(
@@ -323,14 +345,14 @@ async function pickHostsForKeyChange(
   }
 
   for (const host of hosts.filter((item) => !pushed.has(item.id))) {
-    items.push(hostToPickItem(host, "未分组"));
+    items.push(hostToPickItem(host, vscode.l10n.t("Ungrouped")));
   }
 
   const picked = await vscode.window.showQuickPick(items, {
     canPickMany: true,
     matchOnDescription: true,
     matchOnDetail: true,
-    placeHolder: "选择要修改关联密钥的主机（可多选）...",
+    placeHolder: vscode.l10n.t("Choose hosts whose identity file should change (multiple selection allowed)…"),
   });
   if (!picked || picked.length === 0) {return undefined;}
 
@@ -342,7 +364,9 @@ function hostToPickItem(host: SSHHost, groupName: string): HostPickItem {
   return {
     label: host.name,
     description: `[${groupName}] ${formatEndpoint(host)}`,
-    detail: host.identityFile ? `当前密钥：${host.identityFile}` : "当前未关联密钥",
+    detail: host.identityFile
+      ? vscode.l10n.t("Current identity file: {path}", { path: host.identityFile })
+      : vscode.l10n.t("No identity file is currently associated"),
     _hostId: host.id,
   };
 }
@@ -350,21 +374,21 @@ function hostToPickItem(host: SSHHost, groupName: string): HostPickItem {
 async function pickIdentityFileForHosts(hosts: SSHHost[]): Promise<string | null> {
   const currentValues = [...new Set(hosts.map((host) => host.identityFile || "").filter(Boolean))];
   const currentSummary = currentValues.length === 0
-    ? "当前所选主机均未关联密钥"
+    ? vscode.l10n.t("None of the selected hosts has an identity file")
     : currentValues.length === 1
-      ? `当前：${currentValues[0]}`
-      : `当前包含 ${currentValues.length} 个不同密钥`;
+      ? vscode.l10n.t("Current: {path}", { path: currentValues[0] })
+      : vscode.l10n.t("The selection currently uses {count} different identity files", { count: currentValues.length });
 
   const items: IdentityPickItem[] = [
     {
-      label: "$(circle-slash) 不关联密钥",
+      label: vscode.l10n.t("$(circle-slash) No identity file"),
       description: currentSummary,
       action: "clear",
       path: "",
     },
     {
-      label: "$(edit) 输入自定义路径",
-      description: "例如 ~/.ssh/id_ed25519 或迁移后的绝对路径",
+      label: vscode.l10n.t("$(edit) Enter a custom path"),
+      description: vscode.l10n.t("For example, ~/.ssh/id_ed25519 or a migrated absolute path"),
       action: "custom",
     },
     ...listKeys().map((key) => ({
@@ -379,18 +403,18 @@ async function pickIdentityFileForHosts(hosts: SSHHost[]): Promise<string | null
   const picked = await vscode.window.showQuickPick(items, {
     matchOnDescription: true,
     matchOnDetail: true,
-    placeHolder: `选择新的关联密钥（${hosts.length} 台主机）`,
+    placeHolder: vscode.l10n.t("Choose a new identity file ({count} hosts)", { count: hosts.length }),
   });
   if (!picked) {return null;}
 
   if (picked.action === "custom") {
     const value = await vscode.window.showInputBox({
-      prompt: "输入新的私钥路径",
+      prompt: vscode.l10n.t("Enter the new private key path"),
       placeHolder: "~/.ssh/id_ed25519",
       validateInput: (input) => {
         const trimmed = input.trim();
-        if (!trimmed) {return "路径不能为空";}
-        if (/[\r\n]/.test(trimmed)) {return "路径不能包含换行";}
+        if (!trimmed) {return vscode.l10n.t("Path is required");}
+        if (/[\r\n]/.test(trimmed)) {return vscode.l10n.t("Path cannot contain line breaks");}
         return undefined;
       },
     });

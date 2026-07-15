@@ -9,15 +9,15 @@ export async function addGroup(
   tree: HostTreeDataProvider
 ): Promise<void> {
   const name = await vscode.window.showInputBox({
-    prompt: "分组名称",
-    placeHolder: "如 武当云-生产",
-    validateInput: (v) => (v.trim() ? undefined : "名称不能为空"),
+    prompt: vscode.l10n.t("Group name"),
+    placeHolder: vscode.l10n.t("For example, Cloud Production"),
+    validateInput: (v) => (v.trim() ? undefined : vscode.l10n.t("Name is required")),
   });
   if (!name) {return;}
 
   await storage.addGroup(name.trim());
   tree.refresh();
-  vscode.window.showInformationMessage(`已添加分组：${name}`);
+  vscode.window.showInformationMessage(vscode.l10n.t("Added group: {name}", { name }));
 }
 
 /** Rename a group */
@@ -27,9 +27,9 @@ export async function renameGroup(
   tree: HostTreeDataProvider
 ): Promise<void> {
   const name = await vscode.window.showInputBox({
-    prompt: "新分组名称",
+    prompt: vscode.l10n.t("New group name"),
     value: groupItem.group.name,
-    validateInput: (v) => (v.trim() ? undefined : "名称不能为空"),
+    validateInput: (v) => (v.trim() ? undefined : vscode.l10n.t("Name is required")),
   });
   if (!name) {return;}
 
@@ -46,15 +46,20 @@ export async function deleteGroup(
   const hostCount = storage.getHostsByGroup(groupItem.group.id).length;
   const message =
     hostCount > 0
-      ? `确定删除分组「${groupItem.group.name}」？组内 ${hostCount} 台主机将移入「未分组」。`
-      : `确定删除分组「${groupItem.group.name}」？`;
+      ? vscode.l10n.t("Delete group “{name}”? Its {count} hosts will be moved to Ungrouped.", {
+          name: groupItem.group.name,
+          count: hostCount,
+        })
+      : vscode.l10n.t("Delete group “{name}”?", { name: groupItem.group.name });
+
+  const deleteAction = vscode.l10n.t("Delete");
 
   const confirmed = await vscode.window.showWarningMessage(
     message,
     { modal: true },
-    "删除"
+    deleteAction
   );
-  if (confirmed !== "删除") {return;}
+  if (confirmed !== deleteAction) {return;}
 
   await storage.deleteGroup(groupItem.group.id);
   tree.refresh();

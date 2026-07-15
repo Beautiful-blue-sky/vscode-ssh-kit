@@ -15,6 +15,8 @@ const expectedPackageFiles = [
   "README.zh-CN.md",
   "dist/extension.js",
   "icon.png",
+  "l10n/bundle.l10n.json",
+  "l10n/bundle.l10n.zh-cn.json",
   "package.json",
   "package.nls.json",
   "package.nls.zh-cn.json",
@@ -52,6 +54,7 @@ addCheck("Marketplace identity", "version", "semver x.y.z", manifest.version, /^
 addCheck("Marketplace identity", "category", "Other", (manifest.categories ?? []).join(", "));
 addCheck("Marketplace identity", "repository", "github.com/Beautiful-blue-sky/vscode-ssh-kit", manifest.repository?.url ?? "", (manifest.repository?.url ?? "").includes("github.com/Beautiful-blue-sky/vscode-ssh-kit"));
 addCheck("Marketplace identity", "extension kind", "ui", (manifest.extensionKind ?? []).join(", "), (manifest.extensionKind ?? []).includes("ui"));
+addCheck("Marketplace identity", "startup activation", "*", (manifest.activationEvents ?? []).join(", "), (manifest.activationEvents ?? []).includes("*"));
 
 addCheck("Localized manifest", "displayName placeholder", "%displayName%", manifest.displayName);
 addCheck("Localized manifest", "description placeholder", "%description%", manifest.description);
@@ -59,6 +62,7 @@ addCheck("Localized manifest", "en displayName", "SSH Kit", nlsEn.displayName);
 addCheck("Localized manifest", "en description", "non-empty", nlsEn.description, Boolean(nlsEn.description));
 addCheck("Localized manifest", "zh displayName", "SSH Kit", nlsZh.displayName);
 addCheck("Localized manifest", "zh description", "non-empty", nlsZh.description, Boolean(nlsZh.description));
+addCheck("Localized manifest", "runtime bundle path", "./l10n", manifest.l10n);
 
 addCheck("Runtime assets", "main", "./dist/extension.js", manifest.main);
 addCheck("Runtime assets", "main exists", "present", fileStatus(manifest.main));

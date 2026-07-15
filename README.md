@@ -36,7 +36,8 @@ SSH Kit is a focused SSH host manager for VS Code. It gives you one place to org
 - Folders for grouping SSH hosts.
 - Drag-and-drop hosts between folders.
 - Recently connected hosts at the top of the list.
-- Search by host name, address, or tag.
+- Search-and-connect by host name, address, or tag.
+- Filter the host tree in place by Host alias, IP / HostName, user, port, group, or tags. Space-separated terms are combined, and the adjacent clear action restores the full tree.
 - Batch delete and endpoint-based duplicate cleanup.
 - Batch change the associated key path for selected hosts, including clearing the key or entering a custom path.
 - Right-click a host to change only that host's associated key.
@@ -46,7 +47,7 @@ SSH Kit is a focused SSH host manager for VS Code. It gives you one place to org
 - Open the selected host in a current or new empty Remote-SSH window.
 - Keep the native Remote-SSH status label readable by using the Host alias directly.
 - Show the active SSH Kit connection per VS Code window in the host tree and status bar; hover to view name, endpoint, user, group, key, and tag details, or click the status item to copy the full details.
-- Restore each window's SSH Kit status and connected-host marker when VS Code restarts and reopens Remote-SSH windows.
+- Restore each window's SSH Kit status and connected-host marker when VS Code restarts, reopens Remote-SSH windows, or switches a remote window from empty state to an opened folder.
 - Keep new-window connection context separate from the source window, so opening several Remote-SSH windows does not overwrite the current window marker.
 - Use generated SSH Kit connection aliases without polluting imported host data.
 - Refresh SSH Kit-managed Remote-SSH Host blocks before connecting, so restored or edited key paths are used without manually writing SSH Config.
@@ -55,6 +56,7 @@ SSH Kit is a focused SSH host manager for VS Code. It gives you one place to org
 ### SSH Config Import and Export
 
 - Import from `~/.ssh/config`, including `Include` directives.
+- Import concrete `Host` aliases only. Wildcard/negated patterns and conditional `Match` sections are kept out of the host list, and `Match` directives cannot leak into the preceding host. Global defaults and `Match` rules are not evaluated as inherited host values.
 - Preview import changes before writing them into SSH Kit, including added, updated, skipped, and ambiguous entries.
 - Match existing hosts by name first, then by SSH endpoint, so repeated imports update existing records instead of creating obvious duplicates.
 - Ignore SSH Kit generated Remote-SSH connection alias blocks during import.
@@ -62,6 +64,7 @@ SSH Kit is a focused SSH host manager for VS Code. It gives you one place to org
 - Preview write-back impact before modifying `~/.ssh/config`.
 - Before writing an existing SSH Config file, choose where to save a backup copy. Canceling the backup cancels the write.
 - Treat SSH Kit as the source of truth when writing: same Host aliases or same `HostName` / `Port` targets are replaced by current SSH Kit entries, unmanaged matches require explicit takeover confirmation, and generated SSH Kit connection aliases are removed.
+- Connectivity tests use OpenSSH `StrictHostKeyChecking=accept-new`: first-seen fingerprints can be accepted automatically, while changed fingerprints still stop the connection.
 
 ### Key Management
 
@@ -69,12 +72,13 @@ SSH Kit is a focused SSH host manager for VS Code. It gives you one place to org
 - Display key type and fingerprint.
 - Generate ed25519, RSA, or ECDSA key pairs.
 - Copy public keys from the tree.
+- Open private or public key files directly from expanded key details while keeping path-copy actions available.
 - Regenerate missing public key files from private keys.
 
 ### SSH Kit Data Backup and Restore
 
-- Export SSH Kit groups, hosts, recent connection data, and associated key files to JSON.
-- Backup files can include private key contents when hosts reference local keys. SSH Kit shows a warning before creating this kind of backup.
+- Choose between a host-data-only JSON backup and a complete backup containing associated key files.
+- Complete backups contain private key contents. SSH Kit requires an explicit warning confirmation, and applies owner-only `0600` permissions on POSIX systems.
 - Preview restore targets before writing key files back to `~/.ssh/`.
 - Reuse matching SSH keys by public-key identity even when the local file has a different name, and prompt before handling same-name key conflicts.
 - Rewrite restored host key paths to the local key that was written, renamed, or reused; skipped or failed keys leave the imported host without a key association instead of keeping source-machine paths.
@@ -133,6 +137,8 @@ Available from `Ctrl+Shift+P`:
 | `SSH Kit: Add Group` | Create a host group |
 | `SSH Kit: Refresh` | Refresh host and key views |
 | `SSH Kit: Search Hosts` | Search hosts and connect |
+| `SSH Kit: Filter Host List` | Filter the current host tree by alias, address, user, port, group, or tags |
+| `SSH Kit: Clear Host Filter` | Clear the active host-tree filter |
 | `SSH Kit: Import from SSH Config` | Import hosts from `~/.ssh/config` with a preview |
 | `SSH Kit: Write to SSH Config` | Write SSH Kit hosts to `~/.ssh/config` after preview and explicit backup |
 | `SSH Kit: Open SSH Config` | Open the SSH Config file |
@@ -143,7 +149,7 @@ Available from `Ctrl+Shift+P`:
 | `SSH Kit: Remove Duplicate Hosts` | Find duplicate endpoints and choose which entry to keep |
 | `SSH Kit: Batch Delete Hosts` | Delete selected hosts in one flow |
 | `SSH Kit: Batch Change Host Key` | Change the associated key for selected hosts |
-| `SSH Kit: Backup Data` | Export SSH Kit data and associated key files to JSON |
+| `SSH Kit: Backup Data` | Export host data only, or explicitly include associated key files |
 | `SSH Kit: Restore Data` | Restore SSH Kit data from a previous JSON backup |
 
 ## Requirements
@@ -160,7 +166,9 @@ SSH Kit stores host metadata in VS Code `globalState`.
 There are two different backup flows:
 
 - **SSH Config write-back backup:** when writing to `~/.ssh/config`, SSH Kit asks you to choose where to save a copy of the current SSH Config file before it writes changes. This backs up the config text only.
-- **SSH Kit data backup:** the **Backup Data** command exports SSH Kit data to JSON and may include private key contents when hosts reference local keys. Keep these backups in a trusted location and delete temporary copies after migration.
+- **SSH Kit data backup:** the **Backup Data** command asks whether to export host data only or include associated keys. A complete backup contains private key material; keep it in an encrypted or access-controlled location and delete temporary copies after migration.
+
+Runtime prompts and tree labels are localized for English and Simplified Chinese. Stored data carries a schema version and is validated/migrated when older extension data is loaded; malformed backup records are rejected before restore.
 
 The Copilot/language-model tool is read-only and does not expose private key contents. When you reference `#sshKitHosts`, selected host metadata is included in that chat request so Copilot can answer with the right SSH context.
 

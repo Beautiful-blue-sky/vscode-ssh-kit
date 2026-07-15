@@ -2,6 +2,21 @@
 
 [![zh-CN](https://img.shields.io/badge/CHANGELOG-中文-red)](CHANGELOG.zh-CN.md)
 
+## 0.0.11 — 2026-07-15
+
+### Changed
+- Add direct actions in expanded key details to open private and public key files while preserving path-copy actions.
+- Add an in-place host-tree filter for alias, HostName/IP, user, port, group, and tags, with multi-term matching and a clear action.
+- Let data backups explicitly choose host data only or a complete backup with associated keys; protect created backups with `0600` permissions on POSIX systems.
+- Localize all runtime prompts, errors, tree labels, and status details for English and Simplified Chinese, with localization coverage checked during preflight.
+- Add versioned validation and migration for stored SSH Kit data and reject malformed backup records before restore.
+- Extract connection-status lifecycle logic from the extension entry point to keep activation and command registration focused.
+
+### Fixed
+- Activate SSH Kit in every restored VS Code window and resolve both plain and hex-encoded Remote-SSH authorities, keeping status and connected-host markers visible after restart or opening a remote folder.
+- Stop SSH Config `Match` directives from contaminating the preceding Host during import, and skip wildcard or negated Host patterns instead of creating unusable host records.
+- Use `StrictHostKeyChecking=accept-new` for connectivity tests so changed host fingerprints are not silently accepted.
+
 ## 0.0.10 — 2026-07-14
 
 ### Changed

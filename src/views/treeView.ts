@@ -41,11 +41,13 @@ export class HostDetailItem extends vscode.TreeItem {
     this.description = value;
     this.iconPath = new vscode.ThemeIcon(icon);
     this.contextValue = copyable && value ? "hostDetail" : "hostDetailReadonly";
-    this.tooltip = copyable && value ? `点击复制${label}：${value}` : `${label}：${value}`;
+    this.tooltip = copyable && value
+      ? vscode.l10n.t("Click to copy {label}: {value}", { label, value })
+      : vscode.l10n.t("{label}: {value}", { label, value });
     this.command = copyable && value
       ? {
           command: "sshKit.copyHostDetail",
-          title: `复制${label}`,
+          title: vscode.l10n.t("Copy {label}", { label }),
           arguments: [this],
         }
       : undefined;
@@ -61,12 +63,12 @@ export class HostItem extends vscode.TreeItem {
   ) {
     super(host.name, vscode.TreeItemCollapsibleState.Collapsed);
     this.id = `host:${itemScope}:${host.id}`;
-    this.description = connected ? "已连接" : `${host.hostname}:${host.port}`;
+    this.description = connected ? vscode.l10n.t("Connected") : `${host.hostname}:${host.port}`;
     this.iconPath = connected
       ? new vscode.ThemeIcon("remote", new vscode.ThemeColor("testing.iconPassed"))
       : new vscode.ThemeIcon("server");
     this.contextValue = "host";
-    this.tooltip = `${connected ? "已连接\n" : ""}${host.username}@${host.hostname}:${host.port}` +
+    this.tooltip = `${connected ? `${vscode.l10n.t("Connected")}\n` : ""}${host.username}@${host.hostname}:${host.port}` +
       (host.identityFile ? `\n🔑 ${host.identityFile}` : "");
   }
 }
@@ -83,11 +85,14 @@ export class HostTreeDataProvider implements vscode.TreeDataProvider<vscode.Tree
   readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
 
   private connectedHostId: string | undefined;
+  private filterQuery = "";
+  private filterMatchIds: Set<string> | undefined;
 
   constructor(private storage: StorageService) {}
 
   /** Refresh the entire tree */
   refresh(): void {
+    this.filterMatchIds = undefined;
     this._onDidChangeTreeData.fire();
   }
 
@@ -95,6 +100,23 @@ export class HostTreeDataProvider implements vscode.TreeDataProvider<vscode.Tree
     if (this.connectedHostId === hostId) {return;}
     this.connectedHostId = hostId;
     this.refresh();
+  }
+
+  setFilterQuery(query: string): void {
+    const normalized = query.trim();
+    if (this.filterQuery === normalized) {return;}
+    this.filterQuery = normalized;
+    this.refresh();
+  }
+
+  getFilterQuery(): string {
+    return this.filterQuery;
+  }
+
+  getFilteredHostCount(): number {
+    return this.filterQuery
+      ? this.getFilterMatchIds().size
+      : this.storage.getAllHosts().length;
   }
 
   getTreeItem(element: vscode.TreeItem): vscode.TreeItem {
@@ -130,20 +152,32 @@ export class HostTreeDataProvider implements vscode.TreeDataProvider<vscode.Tree
     const children: HostDetailItem[] = [];
     const parentItemId = hostItem.id;
 
-    children.push(new HostDetailItem("Host 昵称", h.name, "server", true, parentItemId));
-    children.push(new HostDetailItem("地址", h.hostname, "globe", true, parentItemId));
-    children.push(new HostDetailItem("端口", String(h.port), "remote", true, parentItemId));
-    children.push(new HostDetailItem("用户", h.username, "person", true, parentItemId));
-    children.push(new HostDetailItem("状态", hostItem.connected ? "已连接" : "未连接", "pulse", false, parentItemId));
+    children.push(new HostDetailItem(vscode.l10n.t("Host alias"), h.name, "server", true, parentItemId));
+    children.push(new HostDetailItem(vscode.l10n.t("Address"), h.hostname, "globe", true, parentItemId));
+    children.push(new HostDetailItem(vscode.l10n.t("Port"), String(h.port), "remote", true, parentItemId));
+    children.push(new HostDetailItem(vscode.l10n.t("User"), h.username, "person", true, parentItemId));
+    children.push(new HostDetailItem(
+      vscode.l10n.t("Status"),
+      hostItem.connected ? vscode.l10n.t("Connected") : vscode.l10n.t("Not connected"),
+      "pulse",
+      false,
+      parentItemId
+    ));
 
     if (h.identityFile) {
-      children.push(new HostDetailItem("密钥", h.identityFile, "key", true, parentItemId));
+      children.push(new HostDetailItem(vscode.l10n.t("Identity file"), h.identityFile, "key", true, parentItemId));
     } else {
-      children.push(new HostDetailItem("密钥", "未关联", "key", false, parentItemId));
+      children.push(new HostDetailItem(
+        vscode.l10n.t("Identity file"),
+        vscode.l10n.t("Not associated"),
+        "key",
+        false,
+        parentItemId
+      ));
     }
 
     if (h.tags.length > 0) {
-      children.push(new HostDetailItem("标签", h.tags.join(", "), "tag", true, parentItemId));
+      children.push(new HostDetailItem(vscode.l10n.t("Tags"), h.tags.join(", "), "tag", true, parentItemId));
     }
 
     return children;
@@ -151,12 +185,12 @@ export class HostTreeDataProvider implements vscode.TreeDataProvider<vscode.Tree
 
   /** Build the recent connections virtual group node (empty if none) */
   private buildRecentGroup(): GroupItem[] {
-    const recentHosts = this.storage.getRecentHosts();
+    const recentHosts = this.getFilteredRecentHosts();
     if (recentHosts.length === 0) {return [];}
 
     const group: SSHGroup = {
       id: RECENT_GROUP_ID,
-      name: "最近连接",
+      name: vscode.l10n.t("Recent Connections"),
       order: -1,
     };
     return [new GroupItem(group, recentHosts.length, false)];
@@ -164,25 +198,60 @@ export class HostTreeDataProvider implements vscode.TreeDataProvider<vscode.Tree
 
   /** Build recent connection host nodes */
   private buildRecentHostNodes(): HostItem[] {
-    return this.storage.getRecentHosts().map((h) => this.createHostItem(h, "recent"));
+    return this.getFilteredRecentHosts().map((h) => this.createHostItem(h, "recent"));
   }
 
   /** Build group nodes from storage */
   private buildGroupNodes(): GroupItem[] {
     const groups = this.storage.getGroups();
     const collapsed = this.storage.getGroupCollapsedState();
-    return groups.map((g) => {
-      const count = this.storage.getHostsByGroup(g.id).length;
-      return new GroupItem(g, count, collapsed[g.id] ?? true);
+    return groups.flatMap((g) => {
+      const count = this.getFilteredHostsByGroup(g.id).length;
+      if (this.filterQuery && count === 0) {return [];}
+      return [new GroupItem(g, count, this.filterQuery ? false : collapsed[g.id] ?? true)];
     });
   }
 
   /** Build host nodes for a given group (groupId=undefined returns ungrouped hosts), sorted by name */
   private buildHostNodes(groupId: string | undefined): HostItem[] {
     const itemScope = groupId ? `group:${groupId}` : "ungrouped";
-    return this.storage.getHostsByGroup(groupId)
+    return this.getFilteredHostsByGroup(groupId)
       .sort((a, b) => a.name.localeCompare(b.name))
       .map((h) => this.createHostItem(h, itemScope));
+  }
+
+  private getFilteredRecentHosts(): SSHHost[] {
+    const matchIds = this.filterQuery ? this.getFilterMatchIds() : undefined;
+    return this.storage.getRecentHosts().filter((host) => !matchIds || matchIds.has(host.id));
+  }
+
+  private getFilteredHostsByGroup(groupId: string | undefined): SSHHost[] {
+    const matchIds = this.filterQuery ? this.getFilterMatchIds() : undefined;
+    return this.storage.getHostsByGroup(groupId).filter((host) => !matchIds || matchIds.has(host.id));
+  }
+
+  private getFilterMatchIds(): Set<string> {
+    if (this.filterMatchIds) {return this.filterMatchIds;}
+    const terms = this.filterQuery.toLocaleLowerCase().split(/\s+/).filter(Boolean);
+    const groupNames = new Map(this.storage.getGroups().map((group) => [group.id, group.name]));
+    this.filterMatchIds = new Set(
+      this.storage.getAllHosts()
+        .filter((host) => this.matchesFilter(host, terms, groupNames))
+        .map((host) => host.id)
+    );
+    return this.filterMatchIds;
+  }
+
+  private matchesFilter(host: SSHHost, terms: string[], groupNames: Map<string, string>): boolean {
+    const haystack = [
+      host.name,
+      host.hostname,
+      host.username,
+      String(host.port),
+      host.groupId ? groupNames.get(host.groupId) ?? "" : "",
+      ...(host.tags ?? []),
+    ].join("\n").toLocaleLowerCase();
+    return terms.every((term) => haystack.includes(term));
   }
 
   private createHostItem(host: SSHHost, itemScope: string): HostItem {

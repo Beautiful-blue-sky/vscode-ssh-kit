@@ -23,6 +23,8 @@
   "commands.copyHostDetail": "复制该项",
   "commands.testConnection": "测试连通性",
   "commands.searchHosts": "搜索主机",
+  "commands.filterHosts": "筛选主机列表",
+  "commands.clearHostFilter": "清除主机筛选",
   "commands.importConfig": "从 SSH Config 导入",
   "commands.exportConfig": "写入到 SSH Config",
   "commands.openSshConfig": "打开 SSH Config 文件",

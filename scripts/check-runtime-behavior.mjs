@@ -10,6 +10,7 @@ import * as esbuild from "esbuild";
 
 const require = createRequire(import.meta.url);
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+const zhTranslations = JSON.parse(readFileSync(join(root, "l10n", "bundle.l10n.zh-cn.json"), "utf8"));
 const originalHome = {
   HOME: process.env.HOME,
   USERPROFILE: process.env.USERPROFILE,
@@ -18,20 +19,27 @@ const tempHomes = [];
 
 try {
   await runCheck("SSH Config import ignores SSH Kit connect aliases and preserves repeated directives", checkSSHConfigImport);
+  await runCheck("SSH Config import isolates Match blocks and skips Host patterns", checkSSHConfigImportBoundaries);
   await runCheck("SSH Config export prompts for an explicit backup", checkSSHConfigExportBackupPrompt);
   await runCheck("AI host tool returns filtered metadata without private key material", checkAIHostTool);
   await runCheck("Backup restore preview deduplicates hosts and reports key failures", checkBackupRestore);
   await runCheck("Backup restore rewrites hosts to renamed or reused key files", checkBackupRestoreKeyConflicts);
   await runCheck("Backup restore clears host key links when conflicting keys are skipped", checkBackupRestoreSkippedKeyClearsHostLink);
+  await runCheck("Backups can omit private keys and stored data migrates safely", checkBackupModesAndDataMigration);
   await runCheck("Restore command prompts for key conflicts and rewrites imported hosts", checkRestoreCommandKeyConflictFlow);
   await runCheck("Key discovery detects generated keys and can regenerate missing public keys", checkKeyManagement);
   await runCheck("Batch host key changes update selected hosts only", checkBatchHostKeyChange);
   await runCheck("Connection status ignores stale window cache outside Remote-SSH", checkConnectionStatusCacheGate);
+  await runCheck("Remote-SSH authority decoding supports plain and hex JSON host aliases", checkRemoteAuthorityDecoding);
   await runCheck("Connection status restores cached context after Remote-SSH cold start", checkConnectionStatusColdStartRestore);
+  await runCheck("Connection status resolves encoded authority after opening a remote folder", checkConnectionStatusEncodedFolderAuthority);
   await runCheck("Expanded host details include a copyable Host nickname", checkHostDetailNickname);
+  await runCheck("Host tree filtering matches address, name, group, user, port, and tags", checkHostTreeFiltering);
+  await runCheck("Expanded key details expose direct private and public file actions", checkKeyDetailFileActions);
   await runCheck("Remote-SSH window context claims matching aliases only", checkRemoteWindowContextStorage);
   await runCheck("Remote-SSH alias refreshes stale identity files before connecting", checkRemoteAliasRefreshesIdentityFile);
   await runCheck("Remote-SSH alias preserves native host names and is accepted by OpenSSH config parsing", checkRemoteAlias);
+  await runCheck("Connectivity tests accept new fingerprints but reject changed fingerprints", checkConnectivityTestHostKeyPolicy);
   console.log("\nRuntime behavior checks passed.");
 } finally {
   restoreHome();
@@ -52,7 +60,7 @@ function loadTsModule(relativePath, mocks = {}) {
     platform: "node",
     target: "node22",
     format: "cjs",
-    external: Object.keys(mocks),
+    external: [...new Set(["vscode", ...Object.keys(mocks)])],
     write: false,
     logLevel: "silent",
   });
@@ -62,10 +70,13 @@ function loadTsModule(relativePath, mocks = {}) {
     if (Object.prototype.hasOwnProperty.call(mocks, id)) {
       return mocks[id];
     }
+    if (id === "vscode") {
+      return createVSCodeMock();
+    }
     return require(id);
   };
   localRequire.resolve = (id) => (
-    Object.prototype.hasOwnProperty.call(mocks, id) ? id : require.resolve(id)
+    id === "vscode" || Object.prototype.hasOwnProperty.call(mocks, id) ? id : require.resolve(id)
   );
 
   new Function("require", "module", "exports", result.outputFiles[0].text)(
@@ -218,6 +229,38 @@ function checkSSHConfigImport() {
   assert(!conflictMerged.includes("Host legacy-AIMS010"), "Expected unmanaged same-target alias to be replaced after takeover");
   assert(conflictMerged.includes("Host unrelated"), "Expected unrelated Host blocks to be preserved");
   assert((conflictMerged.match(/^Host AIMS010-Nginx_10\.100\.1\.4$/gm) ?? []).length === 1, "Expected one SSH Kit Host block after takeover");
+}
+
+function checkSSHConfigImportBoundaries() {
+  const home = makeTempHome("config-boundaries");
+  const configPath = join(home, ".ssh", "config");
+  writeFileSync(configPath, [
+    "Host concrete-host",
+    "  HostName 10.10.0.10",
+    "  User root",
+    "  Port 2222",
+    "",
+    "Match host concrete-host",
+    "  User must-not-leak",
+    "  Port 9999",
+    "",
+    "Host *.internal !blocked.internal",
+    "  User wildcard-user",
+    "",
+    "Host second-host",
+    "  HostName 10.10.0.11",
+    "  User deploy",
+    "",
+  ].join("\n"));
+
+  const { importFromSSHConfig } = loadTsModule("src/ssh/sshConfig.ts");
+  const { hosts } = importFromSSHConfig(configPath);
+  assert(hosts.length === 2, `Expected two concrete hosts, got ${hosts.length}`);
+  const concrete = hosts.find((host) => host.name === "concrete-host");
+  assert(concrete?.username === "root", "Expected Match User not to leak into the preceding Host");
+  assert(concrete?.port === 2222, "Expected Match Port not to leak into the preceding Host");
+  assert(!hosts.some((host) => /[*!?]/.test(host.name)), "Expected wildcard and negated patterns not to be imported as hosts");
+  assert(hosts.some((host) => host.name === "second-host"), "Expected parsing to resume at the next Host after Match");
 }
 
 async function checkSSHConfigExportBackupPrompt() {
@@ -699,10 +742,10 @@ async function checkRestoreCommandKeyConflictFlow() {
   const expectedReuseTarget = join(home, ".ssh", "id_existing_reuse");
   const expectedPublicReuseTarget = join(home, ".ssh", "id_rsa_ivy");
   const saved = context.globalState.get("sshKit.data");
-  assert(restoreConfirmMessage.includes("含 3 个备份密钥（将写入 1 个，复用本机已有 2 个）"), "Expected restore confirmation to summarize written and reused keys separately");
+  assert(restoreConfirmMessage.includes("包含 3 个备份密钥（写入 1 个, 复用本机已有密钥 2 个）"), "Expected restore confirmation to summarize written and reused keys separately");
   assert(!restoreConfirmMessage.includes("密钥恢复目标"), "Expected restore confirmation not to call existing reused keys restore targets");
   assert(restoreConfirmMessage.includes("将写入密钥文件："), "Expected restore confirmation to label keys that will be written");
-  assert(restoreConfirmMessage.includes("匹配到本机已有密钥（不会写入/覆盖）："), "Expected restore confirmation to label reused local keys clearly");
+  assert(restoreConfirmMessage.includes("匹配到本机已有密钥（不会写入或覆盖）："), "Expected restore confirmation to label reused local keys clearly");
   assert(restoreConfirmMessage.includes("~/.ssh/id_rsa_ivy"), "Expected restore confirmation to list reused id_rsa_ivy as an existing local key");
   assert(readFileSync(join(home, ".ssh", "id_conflict"), "utf8") === existingPrivate, "Expected restore command to preserve existing conflicting key");
   assert(readFileSync(expectedTarget, "utf8") === importedPrivate, "Expected restore command to write renamed conflicting key");
@@ -856,6 +899,29 @@ function checkConnectionStatusCacheGate() {
   assert(!canUseCachedSshKitWindowConnection("wsl"), "Expected non-SSH remote windows to ignore SSH Kit window state");
 }
 
+function checkRemoteAuthorityDecoding() {
+  const { decodeRemoteSshAuthority } = loadTsModule("src/core/remoteAuthority.ts");
+  const alias = "10.0.1.2_Staging";
+  const hexPayload = Buffer.from(JSON.stringify({ hostName: alias }), "utf8").toString("hex");
+
+  assert(
+    decodeRemoteSshAuthority(`ssh-remote+${alias}`) === alias,
+    "Expected a plain Remote-SSH authority to keep its Host alias"
+  );
+  assert(
+    decodeRemoteSshAuthority(`ssh-remote+${encodeURIComponent("host+prod")}`) === "host+prod",
+    "Expected a URI-encoded Remote-SSH authority to decode its Host alias"
+  );
+  assert(
+    decodeRemoteSshAuthority(`ssh-remote+${hexPayload}`) === alias,
+    "Expected a hex JSON Remote-SSH authority to resolve payload.hostName"
+  );
+  assert(
+    decodeRemoteSshAuthority("ssh-remote+abcdef") === "abcdef",
+    "Expected a hex-looking plain alias without a JSON payload to remain unchanged"
+  );
+}
+
 async function checkConnectionStatusColdStartRestore() {
   const vscode = createVSCodeMock();
   const host = {
@@ -886,7 +952,7 @@ async function checkConnectionStatusColdStartRestore() {
       connectedHostId = hostId;
     },
   };
-  const { ConnectionStatusController } = loadTsModule("src/extension.ts", { vscode });
+  const { ConnectionStatusController } = loadTsModule("src/core/connectionStatus.ts", { vscode });
   const controller = new ConnectionStatusController(storage, tree, []);
 
   await controller.refresh();
@@ -898,6 +964,57 @@ async function checkConnectionStatusColdStartRestore() {
   assert(vscode.__statusBarItem.visible === true, "Expected status item to appear after Remote-SSH restoration");
   assert(vscode.__statusBarItem.text.includes(host.name), "Expected restored status item to show the cached host");
   assert(connectedHostId === host.id, "Expected restored host to be marked connected in the tree");
+  controller.dispose();
+}
+
+async function checkConnectionStatusEncodedFolderAuthority() {
+  const vscode = createVSCodeMock();
+  const host = {
+    id: "host-encoded-folder",
+    name: "10.0.1.2_Staging",
+    hostname: "203.0.113.21",
+    port: 12888,
+    username: "root",
+    tags: [],
+  };
+  const payload = Buffer.from(JSON.stringify({ hostName: host.name }), "utf8").toString("hex");
+  vscode.env.remoteName = "ssh-remote";
+  vscode.workspace.workspaceFolders = [{
+    uri: {
+      scheme: "vscode-remote",
+      authority: `ssh-remote+${payload}`,
+    },
+  }];
+
+  let savedWindowAlias;
+  let savedAuthorityAlias;
+  let connectedHostId;
+  const storage = {
+    getAllHosts: () => [host],
+    getGroups: () => [],
+    getRemoteAuthorityConnection: () => undefined,
+    setWindowConnection: async (_hostId, alias) => {
+      savedWindowAlias = alias;
+    },
+    setRemoteAuthorityConnection: async (_hostId, alias) => {
+      savedAuthorityAlias = alias;
+    },
+    clearPendingWindowConnection: async () => {},
+  };
+  const tree = {
+    setConnectedHostId: (hostId) => {
+      connectedHostId = hostId;
+    },
+  };
+  const { ConnectionStatusController } = loadTsModule("src/core/connectionStatus.ts", { vscode });
+  const controller = new ConnectionStatusController(storage, tree, []);
+
+  await controller.refresh();
+  assert(vscode.__statusBarItem.visible === true, "Expected encoded remote folder authority to show connection status");
+  assert(vscode.__statusBarItem.text.includes(host.name), "Expected encoded remote folder authority to resolve the Host alias");
+  assert(connectedHostId === host.id, "Expected encoded remote folder authority to mark the matching host connected");
+  assert(savedWindowAlias === host.name, "Expected decoded Host alias to persist as window context");
+  assert(savedAuthorityAlias === host.name, "Expected decoded Host alias to persist in the authority index");
   controller.dispose();
 }
 
@@ -918,6 +1035,29 @@ async function checkHostDetailNickname() {
 
   assert(nickname?.detailValue === host.name, "Expected expanded details to expose the Host nickname");
   assert(nickname?.contextValue === "hostDetail", "Expected the Host nickname detail to be copyable");
+}
+
+async function checkKeyDetailFileActions() {
+  const vscode = createVSCodeMock();
+  const key = {
+    name: "id_test",
+    type: "ed25519",
+    privateKeyPath: "C:\\Users\\test\\.ssh\\id_test",
+    publicKeyPath: "C:\\Users\\test\\.ssh\\id_test.pub",
+  };
+  const { KeyItem, KeyTreeDataProvider } = loadTsModule("src/views/keyTreeView.ts", { vscode });
+  const provider = new KeyTreeDataProvider();
+  const keyItem = new KeyItem(key);
+  const details = await provider.getChildren(keyItem);
+  const privateAction = details.find((item) => item.detailLabel === "私钥内容");
+  const publicAction = details.find((item) => item.detailLabel === "公钥内容");
+
+  assert(privateAction?.command?.command === "sshKit.openPrivateKey", "Expected a direct private key file action");
+  assert(publicAction?.command?.command === "sshKit.openKeyFile", "Expected a direct public key file action");
+  assert(privateAction?.command?.arguments?.[0] === keyItem, "Expected private key action to target the expanded key");
+  assert(publicAction?.command?.arguments?.[0] === keyItem, "Expected public key action to target the expanded key");
+  assert(privateAction?.contextValue === "keyDetailReadonly", "Expected private key action not to show the copy-path menu");
+  assert(publicAction?.contextValue === "keyDetailReadonly", "Expected public key action not to show the copy-path menu");
 }
 
 async function checkRemoteWindowContextStorage() {
@@ -1317,6 +1457,173 @@ function assertIncludesSequence(values, sequence, message) {
   );
 }
 
+async function checkBackupModesAndDataMigration() {
+  const home = makeTempHome("backup-modes");
+  const keyPath = join(home, ".ssh", "id_backup_mode");
+  writeFileSync(keyPath, fakePrivateKey("backup-mode"));
+
+  const vscode = createVSCodeMock();
+  const { StorageService } = loadTsModule("src/core/storage.ts", { vscode });
+  const context = createExtensionContext({
+    groups: [{ id: "g-valid", name: "production", order: 0 }],
+    hosts: [
+      {
+        id: "h-valid",
+        name: "api-prod",
+        hostname: "10.30.0.10",
+        port: 22,
+        username: "root",
+        groupId: "g-valid",
+        identityFile: keyPath,
+      },
+      {
+        id: "h-invalid",
+        name: "invalid",
+        hostname: "",
+        port: 70000,
+        username: "root",
+      },
+    ],
+    groupCollapsedState: { "g-valid": true, missing: true },
+    recentConnections: ["h-valid", "missing"],
+  });
+  const storage = new StorageService(context);
+  const migrated = storage.getData();
+  assert(migrated.schemaVersion === 1, "Expected legacy data to receive the current schema version");
+  assert(migrated.hosts.length === 1, "Expected unusable legacy hosts to be excluded during migration");
+  assert(Array.isArray(migrated.hosts[0].tags), "Expected missing legacy tags to migrate to an empty array");
+  assert(migrated.recentConnections.length === 1, "Expected stale recent host ids to be removed during migration");
+  assert(migrated.groupCollapsedState.missing === undefined, "Expected stale collapsed group state to be removed");
+
+  const hostsOnly = JSON.parse(storage.exportAllData({ includeKeyFiles: false }));
+  assert(hostsOnly.keyFiles.length === 0, "Expected host-only backups not to contain key files");
+  assert(hostsOnly.containsPrivateKeys === false, "Expected host-only backups to declare that no private keys are present");
+  assert(!JSON.stringify(hostsOnly).includes(Buffer.from(fakePrivateKey("backup-mode")).toString("base64")), "Expected host-only backup not to contain private key material");
+
+  const complete = JSON.parse(storage.exportAllData({ includeKeyFiles: true }));
+  assert(complete.keyFiles.length === 1, "Expected complete backups to include the associated key");
+  assert(complete.containsPrivateKeys === true, "Expected complete backups to declare private key content");
+
+  let rejectedMalformedBackup = false;
+  try {
+    storage.previewImport(JSON.stringify({ groups: [], hosts: [{ id: "bad" }] }));
+  } catch {
+    rejectedMalformedBackup = true;
+  }
+  assert(rejectedMalformedBackup, "Expected malformed backup hosts to fail validation before import");
+
+  let rejectedMalformedOptionalField = false;
+  try {
+    storage.previewImport(JSON.stringify({
+      groups: [],
+      hosts: [{
+        id: "bad-optional",
+        name: "bad-optional",
+        hostname: "10.30.0.20",
+        port: 22,
+        username: "root",
+        identityFile: { path: "~/.ssh/id_bad" },
+      }],
+    }));
+  } catch {
+    rejectedMalformedOptionalField = true;
+  }
+  assert(rejectedMalformedOptionalField, "Expected malformed optional backup fields to fail validation");
+
+  let rejectedMalformedKeyFile = false;
+  try {
+    storage.previewImport(JSON.stringify({
+      groups: [],
+      hosts: [],
+      keyFiles: [{
+        name: "id_invalid",
+        type: 123,
+        privateKey: Buffer.from(fakePrivateKey("invalid-type")).toString("base64"),
+      }],
+    }));
+  } catch {
+    rejectedMalformedKeyFile = true;
+  }
+  assert(rejectedMalformedKeyFile, "Expected malformed key-file metadata to fail validation");
+
+  const futureContext = createExtensionContext({
+    schemaVersion: 99,
+    futureSetting: { enabled: true },
+    groups: [],
+    hosts: [],
+    groupCollapsedState: {},
+    recentConnections: [],
+  });
+  const futureStorage = new StorageService(futureContext);
+  await futureStorage.addGroup("future-compatible");
+  const futureSaved = futureContext.globalState.get("sshKit.data");
+  assert(futureSaved.schemaVersion === 99, "Expected an older extension not to downgrade future schema data");
+  assert(futureSaved.futureSetting?.enabled === true, "Expected unknown future schema fields to survive normal writes");
+}
+
+async function checkHostTreeFiltering() {
+  const vscode = createVSCodeMock();
+  const groups = [
+    { id: "g-prod", name: "production", order: 0 },
+    { id: "g-dev", name: "development", order: 1 },
+  ];
+  const hosts = [
+    { id: "h-api", name: "api-main", hostname: "10.40.0.10", port: 2222, username: "root", groupId: "g-prod", tags: ["nginx"] },
+    { id: "h-db", name: "database", hostname: "db.internal", port: 22, username: "postgres", groupId: "g-prod", tags: ["sql"] },
+    { id: "h-dev", name: "worker-dev", hostname: "10.40.0.12", port: 2200, username: "deploy", groupId: "g-dev", tags: ["worker"] },
+  ];
+  const storage = {
+    getAllHosts: () => hosts,
+    getGroups: () => groups,
+    getRecentHosts: () => [hosts[0], hosts[2]],
+    getHostsByGroup: (groupId) => hosts.filter((host) => host.groupId === groupId),
+    getGroupCollapsedState: () => ({}),
+  };
+  const { GroupItem, HostTreeDataProvider } = loadTsModule("src/views/treeView.ts", { vscode });
+  const provider = new HostTreeDataProvider(storage);
+
+  provider.setFilterQuery("10.40.0.12 deploy");
+  assert(provider.getFilteredHostCount() === 1, "Expected multiple terms to match address and username on the same host");
+  let roots = await provider.getChildren();
+  const devGroup = roots.find((item) => item instanceof GroupItem && item.group.id === "g-dev");
+  assert(devGroup?.collapsibleState === vscode.TreeItemCollapsibleState.Expanded, "Expected matching groups to expand while filtering");
+  assert(!roots.some((item) => item instanceof GroupItem && item.group.id === "g-prod"), "Expected groups without matches to be hidden");
+
+  provider.setFilterQuery("production");
+  assert(provider.getFilteredHostCount() === 2, "Expected a group-name query to match all hosts in that group");
+  provider.setFilterQuery("2222 nginx");
+  assert(provider.getFilteredHostCount() === 1, "Expected port and tag fields to participate in filtering");
+  provider.setFilterQuery("DB.INTERNAL");
+  assert(provider.getFilteredHostCount() === 1, "Expected HostName matching to be case-insensitive");
+  provider.setFilterQuery("");
+  assert(provider.getFilteredHostCount() === 3, "Expected clearing the filter to restore every host");
+}
+
+async function checkConnectivityTestHostKeyPolicy() {
+  const vscode = createVSCodeMock();
+  let capturedArgs;
+  const childProcess = {
+    spawnSync(_command, args) {
+      capturedArgs = args;
+      return { status: 0, stderr: "" };
+    },
+  };
+  const { testConnection } = loadTsModule("src/commands/connectCommands.ts", {
+    vscode,
+    child_process: childProcess,
+  });
+  await testConnection({
+    id: "h-policy",
+    name: "policy-host",
+    hostname: "192.0.2.30",
+    port: 22,
+    username: "root",
+    tags: [],
+  });
+  assertIncludesSequence(capturedArgs, ["-o", "StrictHostKeyChecking=accept-new"], "Expected connectivity tests to accept first-seen host keys only");
+  assert(!capturedArgs.includes("StrictHostKeyChecking=no"), "Expected connectivity tests not to disable changed-fingerprint protection");
+}
+
 function createExtensionContext(initialData) {
   const values = new Map([["sshKit.data", initialData]]);
   const workspaceValues = new Map();
@@ -1472,6 +1779,16 @@ function createVSCodeMock() {
     },
     env: {
       remoteName: undefined,
+    },
+    l10n: {
+      t(message, ...args) {
+        const values = args.length === 1 && typeof args[0] === "object" && args[0] !== null
+          ? args[0]
+          : Object.fromEntries(args.map((value, index) => [String(index), value]));
+        return String(zhTranslations[message] ?? message).replace(/\{([^}]+)\}/g, (match, name) =>
+          Object.prototype.hasOwnProperty.call(values, name) ? String(values[name]) : match
+        );
+      },
     },
     commands: {
       async executeCommand(command, args) {

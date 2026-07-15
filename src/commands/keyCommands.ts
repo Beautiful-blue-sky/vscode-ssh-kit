@@ -12,7 +12,7 @@ export async function showKeyList(keyTree?: { refresh: () => void }): Promise<vo
   const keys = listKeys();
   if (keys.length === 0) {
     vscode.window.showInformationMessage(
-      "未找到 SSH 密钥。可以通过命令「生成 SSH 密钥」新建。"
+      vscode.l10n.t("No SSH keys were found. Run “Generate SSH Key” to create one.")
     );
     return;
   }
@@ -22,12 +22,12 @@ export async function showKeyList(keyTree?: { refresh: () => void }): Promise<vo
   const items = keys.map((k) => ({
     label: `$(key) ${k.name}`,
     description: formatKeyType(k),
-    detail: k.fingerprint ?? "正在获取指纹...",
+    detail: k.fingerprint ?? vscode.l10n.t("Reading fingerprint…"),
     key: k,
   }));
 
   const picked = await vscode.window.showQuickPick(items, {
-    placeHolder: "选择密钥查看详情、复制公钥或管理",
+    placeHolder: vscode.l10n.t("Choose a key to view details, copy its public key, or manage it"),
   });
 
   if (picked) {
@@ -38,21 +38,25 @@ export async function showKeyList(keyTree?: { refresh: () => void }): Promise<vo
 /** Show key detail dialog with copy/delete/rename actions */
 async function showKeyDetail(key: KeyInfo, keyTree?: { refresh: () => void }): Promise<void> {
   const parts: string[] = [];
-  parts.push(`$(key) 密钥：${key.name}`);
-  parts.push(`类型：${formatKeyType(key)}`);
+  parts.push(vscode.l10n.t("$(key) Key: {name}", { name: key.name }));
+  parts.push(vscode.l10n.t("Type: {type}", { type: formatKeyType(key) }));
   if (key.fingerprint) {
-    parts.push(`指纹：${key.fingerprint}`);
+    parts.push(vscode.l10n.t("Fingerprint: {fingerprint}", { fingerprint: key.fingerprint }));
   }
-  parts.push(`路径：${key.privateKeyPath}`);
+  parts.push(vscode.l10n.t("Path: {path}", { path: key.privateKeyPath }));
   if (!key.publicKeyPath) {
-    parts.push("公钥：缺少公钥文件");
+    parts.push(vscode.l10n.t("Public key: file is missing"));
   }
 
+  const regenerateAction = vscode.l10n.t("Regenerate Public Key");
+  const copyAction = vscode.l10n.t("Copy Public Key");
+  const renameAction = vscode.l10n.t("Rename");
+  const deleteAction = vscode.l10n.t("Delete");
   const actions = [
-    ...(!key.publicKeyPath || key.type === "unknown" ? ["重新生成公钥"] : []),
-    "复制公钥",
-    "重命名",
-    "删除",
+    ...(!key.publicKeyPath || key.type === "unknown" ? [regenerateAction] : []),
+    copyAction,
+    renameAction,
+    deleteAction,
   ];
   const choice = await vscode.window.showInformationMessage(
     parts.join("\n"),
@@ -61,87 +65,92 @@ async function showKeyDetail(key: KeyInfo, keyTree?: { refresh: () => void }): P
   );
 
   switch (choice) {
-    case "重新生成公钥":
+    case regenerateAction:
       await promptRegeneratePublicKey(key, keyTree);
       break;
-    case "复制公钥":
+    case copyAction:
       await copyPublicKeyToClipboard(key);
       break;
-    case "重命名":
+    case renameAction:
       await promptRenameKey(key, keyTree);
       break;
-    case "删除":
+    case deleteAction:
       await promptDeleteKey(key, keyTree);
       break;
   }
 }
 
 function formatKeyType(key: KeyInfo): string {
-  return key.type === "unknown" ? "无法识别" : key.type;
+  return key.type === "unknown" ? vscode.l10n.t("Unknown") : key.type;
 }
 
 /** Copy public key to clipboard */
 async function copyPublicKeyToClipboard(key: KeyInfo): Promise<void> {
   if (!key.publicKeyPath) {
-    vscode.window.showErrorMessage("该密钥没有对应的公钥文件。");
+    vscode.window.showErrorMessage(vscode.l10n.t("This key has no public key file."));
     return;
   }
   try {
     const pubKey = readPublicKey(key.publicKeyPath);
     await vscode.env.clipboard.writeText(pubKey);
-    vscode.window.showInformationMessage("公钥已复制到剪贴板。");
+    vscode.window.showInformationMessage(vscode.l10n.t("Public key copied to the clipboard."));
   } catch (err: unknown) {
-    vscode.window.showErrorMessage(`读取公钥失败：${getErrorMessage(err)}`);
+    vscode.window.showErrorMessage(vscode.l10n.t("Failed to read public key: {error}", { error: getErrorMessage(err) }));
   }
 }
 
 /** Confirm and delete a key pair */
 async function promptDeleteKey(key: KeyInfo, keyTree?: { refresh: () => void }): Promise<void> {
+  const deleteAction = vscode.l10n.t("Delete");
   const confirmed = await vscode.window.showWarningMessage(
-    `确定删除密钥「${key.name}」？此操作不可撤销。\n私钥：${key.privateKeyPath}`,
+    vscode.l10n.t("Delete key “{name}”? This cannot be undone.\nPrivate key: {path}", {
+      name: key.name,
+      path: key.privateKeyPath,
+    }),
     { modal: true },
-    "删除"
+    deleteAction
   );
-  if (confirmed !== "删除") {return;}
+  if (confirmed !== deleteAction) {return;}
 
   try {
     deleteKeyPair(key.privateKeyPath);
     keyTree?.refresh();
-    vscode.window.showInformationMessage(`已删除密钥：${key.name}`);
+    vscode.window.showInformationMessage(vscode.l10n.t("Deleted key: {name}", { name: key.name }));
   } catch (err: unknown) {
-    vscode.window.showErrorMessage(`删除失败：${getErrorMessage(err)}`);
+    vscode.window.showErrorMessage(vscode.l10n.t("Delete failed: {error}", { error: getErrorMessage(err) }));
   }
 }
 
 async function promptRegeneratePublicKey(key: KeyInfo, keyTree?: { refresh: () => void }): Promise<void> {
   const hasPublicKey = Boolean(key.publicKeyPath);
   if (hasPublicKey) {
+    const regenerateAction = vscode.l10n.t("Regenerate");
     const confirmed = await vscode.window.showWarningMessage(
-      `公钥文件已存在，确定重新生成并覆盖「${key.name}.pub」？`,
+      vscode.l10n.t("The public key file already exists. Regenerate and overwrite “{name}.pub”?", { name: key.name }),
       { modal: true },
-      "重新生成"
+      regenerateAction
     );
-    if (confirmed !== "重新生成") {return;}
+    if (confirmed !== regenerateAction) {return;}
   }
 
   try {
     const publicKeyPath = regeneratePublicKey(key.privateKeyPath, hasPublicKey);
     keyTree?.refresh();
-    vscode.window.showInformationMessage(`已生成公钥：${publicKeyPath}`);
+    vscode.window.showInformationMessage(vscode.l10n.t("Generated public key: {path}", { path: publicKeyPath }));
   } catch (err: unknown) {
-    vscode.window.showErrorMessage(`生成公钥失败：${getErrorMessage(err)}`);
+    vscode.window.showErrorMessage(vscode.l10n.t("Public key generation failed: {error}", { error: getErrorMessage(err) }));
   }
 }
 
 /** Rename a key pair */
 async function promptRenameKey(key: KeyInfo, keyTree?: { refresh: () => void }): Promise<void> {
   const newName = await vscode.window.showInputBox({
-    prompt: "新文件名（不含路径）",
-    placeHolder: "如 id_ed25519_new",
+    prompt: vscode.l10n.t("New file name (without a path)"),
+    placeHolder: vscode.l10n.t("For example, id_ed25519_new"),
     value: key.name,
     validateInput: (v) => {
-      if (!v.trim()) {return "文件名不能为空";}
-      if (/[\\/:"*?<>| ]/.test(v)) {return "文件名包含非法字符（含空格）";}
+      if (!v.trim()) {return vscode.l10n.t("File name is required");}
+      if (/[\\/:"*?<>| ]/.test(v)) {return vscode.l10n.t("File name contains invalid characters or spaces");}
       return undefined;
     },
   });
@@ -151,10 +160,10 @@ async function promptRenameKey(key: KeyInfo, keyTree?: { refresh: () => void }):
     const newPath = renameKeyPair(key.privateKeyPath, newName.trim());
     keyTree?.refresh();
     vscode.window.showInformationMessage(
-      `已重命名：${key.name} → ${path.basename(newPath)}`
+      vscode.l10n.t("Renamed: {oldName} → {newName}", { oldName: key.name, newName: path.basename(newPath) })
     );
   } catch (err: unknown) {
-    vscode.window.showErrorMessage(`重命名失败：${getErrorMessage(err)}`);
+    vscode.window.showErrorMessage(vscode.l10n.t("Rename failed: {error}", { error: getErrorMessage(err) }));
   }
 }
 
@@ -168,13 +177,18 @@ export async function generateKey(keyTree?: { refresh: () => void }): Promise<vo
     const pubKey = readPublicKey(result.publicKeyPath);
     await vscode.env.clipboard.writeText(pubKey);
 
-    const passMsg = config.passphrase ? "（已设置密码）" : "";
-    vscode.window.showInformationMessage(
-      `已生成 ${config.type} 密钥对：${result.privateKeyPath} ${passMsg}\n公钥已复制到剪贴板。`
-    );
+    vscode.window.showInformationMessage(config.passphrase
+      ? vscode.l10n.t("Generated password-protected {type} key pair: {path}\nPublic key copied to the clipboard.", {
+          type: config.type,
+          path: result.privateKeyPath,
+        })
+      : vscode.l10n.t("Generated {type} key pair: {path}\nPublic key copied to the clipboard.", {
+          type: config.type,
+          path: result.privateKeyPath,
+        }));
     keyTree?.refresh();
   } catch (err: unknown) {
-    vscode.window.showErrorMessage(`生成密钥失败：${getErrorMessage(err)}`);
+    vscode.window.showErrorMessage(vscode.l10n.t("Key generation failed: {error}", { error: getErrorMessage(err) }));
   }
 }
 
@@ -190,24 +204,24 @@ interface KeyGenConfig {
 async function promptKeyGenConfig(): Promise<KeyGenConfig | undefined> {
   // 1. Select key type
   const typeItems: { label: string; description: string; type: KeyType }[] = [
-    { label: "ed25519", description: "推荐 · 256 位 · 安全性高 · 密钥短速度快", type: "ed25519" },
-    { label: "RSA 4096", description: "4096 位 · 安全性高 · 兼容旧系统 · 密钥体积大", type: "rsa" },
-    { label: "RSA 2048", description: "2048 位 · 安全性中 · 最低兼容门槛", type: "rsa" },
-    { label: "ECDSA", description: "256 位 · 安全性高 · 椭圆曲线 · 旧版默认", type: "ecdsa" },
+    { label: "ed25519", description: vscode.l10n.t("Recommended · 256-bit · strong security · compact and fast"), type: "ed25519" },
+    { label: "RSA 4096", description: vscode.l10n.t("4096-bit · strong security · legacy compatibility · larger keys"), type: "rsa" },
+    { label: "RSA 2048", description: vscode.l10n.t("2048-bit · moderate security · minimum compatibility option"), type: "rsa" },
+    { label: "ECDSA", description: vscode.l10n.t("256-bit · strong security · elliptic curve · older default"), type: "ecdsa" },
   ];
   const typePick = await vscode.window.showQuickPick(typeItems, {
-    placeHolder: "选择密钥加密类型",
+    placeHolder: vscode.l10n.t("Choose a key algorithm"),
   });
   if (!typePick) {return;}
   const type = typePick.type;
 
   // 2. Key file name
   const name = await vscode.window.showInputBox({
-    prompt: "密钥文件名（保存在 ~/.ssh/ 下）",
-    placeHolder: `如 id_${type}_github`,
+    prompt: vscode.l10n.t("Key file name (saved under ~/.ssh/)"),
+    placeHolder: vscode.l10n.t("For example, id_{type}_github", { type }),
     validateInput: (v) => {
-      if (!v.trim()) {return "文件名不能为空";}
-      if (/[\\/:"*?<>| ]/.test(v)) {return "文件名包含非法字符（含空格）";}
+      if (!v.trim()) {return vscode.l10n.t("File name is required");}
+      if (/[\\/:"*?<>| ]/.test(v)) {return vscode.l10n.t("File name contains invalid characters or spaces");}
       return undefined;
     },
   });
@@ -215,15 +229,15 @@ async function promptKeyGenConfig(): Promise<KeyGenConfig | undefined> {
 
   // 3. Comment (optional)
   const comment = await vscode.window.showInputBox({
-    prompt: "备注（可选，用于标识密钥用途）",
-    placeHolder: "如 your-name@company.com",
+    prompt: vscode.l10n.t("Comment (optional, used to identify the key)"),
+    placeHolder: vscode.l10n.t("For example, your-name@company.com"),
   });
   if (comment === undefined) {return;}
 
   // 4. Passphrase (optional)
   const passphrase = await vscode.window.showInputBox({
-    prompt: "密码短语（可选，留空则无密码）",
-    placeHolder: "建议设置密码保护私钥",
+    prompt: vscode.l10n.t("Passphrase (optional; leave empty for none)"),
+    placeHolder: vscode.l10n.t("A passphrase is recommended to protect the private key"),
     password: true,
   });
   if (passphrase === undefined) {return;}

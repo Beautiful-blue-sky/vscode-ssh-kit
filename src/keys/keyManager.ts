@@ -3,6 +3,7 @@ import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
 import * as cp from "child_process";
+import * as vscode from "vscode";
 
 /** Well-known SSH private key file names (without .pub suffix) */
 const KNOWN_KEY_NAMES = new Set([
@@ -186,7 +187,7 @@ export function generateKeyPair(options: KeyGenOptions): { privateKeyPath: strin
   const keyPath = path.join(sshDir, safeName);
 
   if (fs.existsSync(keyPath)) {
-    throw new Error(`密钥文件已存在：${keyPath}`);
+    throw new Error(vscode.l10n.t("Key file already exists: {path}", { path: keyPath }));
   }
 
   const args: string[] = ["-t", options.type, "-f", keyPath, "-N", options.passphrase ?? ""];
@@ -204,7 +205,7 @@ export function generateKeyPair(options: KeyGenOptions): { privateKeyPath: strin
 
   if (result.status !== 0) {
     const stderr = result.stderr?.trim() || "";
-    throw new Error(stderr || "ssh-keygen 执行失败");
+    throw new Error(stderr || vscode.l10n.t("ssh-keygen failed"));
   }
 
   return {
@@ -226,7 +227,7 @@ export function generateEd25519Key(
 /** Delete a key pair (private key + public key) */
 export function deleteKeyPair(privateKeyPath: string): void {
   if (!fs.existsSync(privateKeyPath)) {
-    throw new Error(`密钥文件不存在：${privateKeyPath}`);
+    throw new Error(vscode.l10n.t("Key file does not exist: {path}", { path: privateKeyPath }));
   }
   fs.unlinkSync(privateKeyPath);
   const pubPath = privateKeyPath + ".pub";
@@ -238,7 +239,7 @@ export function deleteKeyPair(privateKeyPath: string): void {
 /** Rename a key pair (stays in the same directory) */
 export function renameKeyPair(oldPrivatePath: string, newName: string): string {
   if (!fs.existsSync(oldPrivatePath)) {
-    throw new Error(`密钥文件不存在：${oldPrivatePath}`);
+    throw new Error(vscode.l10n.t("Key file does not exist: {path}", { path: oldPrivatePath }));
   }
   const dir = path.dirname(oldPrivatePath);
   const safeName = newName.replace(/[\\/:"*?<>| ]/g, "_");
@@ -246,7 +247,7 @@ export function renameKeyPair(oldPrivatePath: string, newName: string): string {
   const newPublicPath = newPrivatePath + ".pub";
 
   if (fs.existsSync(newPrivatePath)) {
-    throw new Error(`目标文件已存在：${newPrivatePath}`);
+    throw new Error(vscode.l10n.t("Target file already exists: {path}", { path: newPrivatePath }));
   }
 
   fs.renameSync(oldPrivatePath, newPrivatePath);
@@ -262,7 +263,7 @@ export function renameKeyPair(oldPrivatePath: string, newName: string): string {
 /** Read public key file content */
 export function readPublicKey(publicKeyPath: string): string {
   if (!fs.existsSync(publicKeyPath)) {
-    throw new Error(`公钥文件不存在：${publicKeyPath}`);
+    throw new Error(vscode.l10n.t("Public key file does not exist: {path}", { path: publicKeyPath }));
   }
   return fs.readFileSync(publicKeyPath, "utf-8").trim();
 }
@@ -270,12 +271,12 @@ export function readPublicKey(publicKeyPath: string): string {
 /** Regenerate a public key file from a private key using ssh-keygen -y. */
 export function regeneratePublicKey(privateKeyPath: string, overwrite = false): string {
   if (!fs.existsSync(privateKeyPath)) {
-    throw new Error(`私钥文件不存在：${privateKeyPath}`);
+    throw new Error(vscode.l10n.t("Private key file does not exist: {path}", { path: privateKeyPath }));
   }
 
   const publicKeyPath = privateKeyPath + ".pub";
   if (fs.existsSync(publicKeyPath) && !overwrite) {
-    throw new Error(`公钥文件已存在：${publicKeyPath}`);
+    throw new Error(vscode.l10n.t("Public key file already exists: {path}", { path: publicKeyPath }));
   }
 
   const result = cp.spawnSync("ssh-keygen", ["-y", "-f", privateKeyPath], {
@@ -284,7 +285,7 @@ export function regeneratePublicKey(privateKeyPath: string, overwrite = false): 
   });
   if (result.status !== 0 || !result.stdout.trim()) {
     const stderr = result.stderr?.trim() || "";
-    throw new Error(stderr || "ssh-keygen 无法从私钥生成公钥，可能需要密码短语。");
+    throw new Error(stderr || vscode.l10n.t("ssh-keygen could not derive a public key from the private key; a passphrase may be required."));
   }
 
   fs.writeFileSync(publicKeyPath, result.stdout.trim() + "\n", {
@@ -410,7 +411,7 @@ export function importKeyFiles(entries: KeyFileEntry[], plan: KeyFileImportPlan[
         reused++;
         restoredPaths.push({ sourceName: entry.name, targetPath: planned.reusePath });
       } else {
-        failed.push({ name: entry.name, reason: `计划复用的密钥不存在或不是同一把 SSH 密钥：${planned.reusePath}` });
+        failed.push({ name: entry.name, reason: vscode.l10n.t("The key planned for reuse does not exist or is not the same SSH key: {path}", { path: planned.reusePath }) });
         failedSourceNames.push(entry.name);
       }
       continue;
@@ -420,7 +421,7 @@ export function importKeyFiles(entries: KeyFileEntry[], plan: KeyFileImportPlan[
     const targetName = planned?.targetName ?? entry.name;
     const safeName = sanitizeKeyFileName(targetName);
     if (!safeName) {
-      failed.push({ name: entry.name || "(empty)", reason: "文件名无效" });
+      failed.push({ name: entry.name || "(empty)", reason: vscode.l10n.t("File name is invalid") });
       failedSourceNames.push(entry.name);
       continue;
     }
@@ -441,7 +442,7 @@ export function importKeyFiles(entries: KeyFileEntry[], plan: KeyFileImportPlan[
         reused++;
         restoredPaths.push({ sourceName: entry.name, targetPath: privatePath });
       } else if (planned?.targetName) {
-        failed.push({ name: entry.name, reason: `目标密钥已存在且不是同一把 SSH 密钥：${privatePath}` });
+        failed.push({ name: entry.name, reason: vscode.l10n.t("The target key already exists and is not the same SSH key: {path}", { path: privatePath }) });
         failedSourceNames.push(entry.name);
       } else {
         skipped++;
@@ -452,12 +453,12 @@ export function importKeyFiles(entries: KeyFileEntry[], plan: KeyFileImportPlan[
 
     const privateKey = decodeBase64(entry.privateKey);
     if (!privateKey) {
-      failed.push({ name: entry.name, reason: "私钥内容不是有效 base64" });
+      failed.push({ name: entry.name, reason: vscode.l10n.t("Private key contents are not valid Base64") });
       failedSourceNames.push(entry.name);
       continue;
     }
     if (!isLikelySSHPrivateKey(privateKey)) {
-      failed.push({ name: entry.name, reason: "私钥内容不是支持的 SSH 私钥格式" });
+      failed.push({ name: entry.name, reason: vscode.l10n.t("Private key contents are not a supported SSH private key format") });
       failedSourceNames.push(entry.name);
       continue;
     }
@@ -466,7 +467,7 @@ export function importKeyFiles(entries: KeyFileEntry[], plan: KeyFileImportPlan[
     if (entry.publicKey) {
       publicKey = decodeBase64(entry.publicKey);
       if (!publicKey) {
-        failed.push({ name: entry.name, reason: "公钥内容不是有效 base64" });
+        failed.push({ name: entry.name, reason: vscode.l10n.t("Public key contents are not valid Base64") });
         failedSourceNames.push(entry.name);
         continue;
       }

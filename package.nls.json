@@ -23,6 +23,8 @@
   "commands.copyHostDetail": "Copy Detail",
   "commands.testConnection": "Test Connection",
   "commands.searchHosts": "Search Hosts",
+  "commands.filterHosts": "Filter Host List",
+  "commands.clearHostFilter": "Clear Host Filter",
   "commands.importConfig": "Import from SSH Config",
   "commands.exportConfig": "Write to SSH Config",
   "commands.openSshConfig": "Open SSH Config",

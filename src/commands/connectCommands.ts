@@ -38,9 +38,13 @@ async function doConnect(
   const openInNewWindow = windowTarget.openInNewWindow;
   const hostSpec = formatHostSpec(host);
   const remoteDisplayLabel = buildRemoteDisplayLabel(host);
-  const windowLabel = openInNewWindow ? "新窗口" : "当前窗口";
+  const windowLabel = openInNewWindow ? vscode.l10n.t("New Window") : vscode.l10n.t("Current Window");
   const status = vscode.window.setStatusBarMessage(
-    `$(sync~spin) SSH Kit: 正在打开 ${remoteDisplayLabel} (${hostSpec}) [${windowLabel} · 空窗口]...`
+    vscode.l10n.t("$(sync~spin) SSH Kit: Opening {host} ({spec}) [{window} · empty window]…", {
+      host: remoteDisplayLabel,
+      spec: hostSpec,
+      window: windowLabel,
+    })
   );
   if (windowTarget.reason) {
     vscode.window.setStatusBarMessage(
@@ -73,7 +77,7 @@ async function doConnect(
       } catch {
         await clearConnectionLaunchContext(storage, host.id, alias, openInNewWindow);
         vscode.window.showErrorMessage(
-          "无法调起 Remote-SSH 连接。请确认已安装 Remote-SSH 扩展。"
+          vscode.l10n.t("Could not start a Remote-SSH connection. Make sure the Remote-SSH extension is installed.")
         );
       }
     }
@@ -81,7 +85,9 @@ async function doConnect(
     if (alias) {
       await clearConnectionLaunchContext(storage, host.id, alias, openInNewWindow);
     }
-    vscode.window.showErrorMessage(`无法准备 Remote-SSH 连接：${getErrorMessage(err)}`);
+    vscode.window.showErrorMessage(vscode.l10n.t("Could not prepare the Remote-SSH connection: {error}", {
+      error: getErrorMessage(err),
+    }));
   } finally {
     status.dispose();
   }
@@ -122,31 +128,35 @@ async function resolveWindowTarget(forceNewWindow: boolean): Promise<WindowTarge
   }
 
   const hasTerminals = vscode.window.terminals.length > 0;
-  const continueCurrent = hasTerminals ? "关闭终端并继续当前窗口" : "继续当前窗口";
+  const continueCurrent = hasTerminals
+    ? vscode.l10n.t("Close terminals and continue in the current window")
+    : vscode.l10n.t("Continue in the current window");
+  const useNewWindow = vscode.l10n.t("Use a new window");
+  const riskText = risks.join(", ");
   const message = hasTerminals
     ? [
-        `当前窗口已有${risks.join("、")}，复用窗口连接 Remote-SSH 前需要先关闭本窗口终端。`,
-        "这样可以避免 VS Code 在远程端恢复本地 cwd，导致 Starting directory (cwd) 不存在。",
+        vscode.l10n.t("The current window contains {risks}. Its terminals must be closed before reusing it for Remote-SSH.", { risks: riskText }),
+        vscode.l10n.t("This prevents VS Code from restoring a local cwd on the remote host and reporting that the starting directory does not exist."),
       ].join("\n")
     : [
-        `当前窗口已有${risks.join("、")}，复用窗口连接 Remote-SSH 可能让远程端继承本地窗口状态。`,
-        "低配置服务器建议改用新窗口，避免工作区索引和终端状态影响远程连接。",
+        vscode.l10n.t("The current window contains {risks}. Reusing it for Remote-SSH may carry local window state to the remote host.", { risks: riskText }),
+        vscode.l10n.t("For lower-spec servers, use a new window so workspace indexing and terminal state do not affect the remote connection."),
       ].join("\n");
 
   const choice = await vscode.window.showWarningMessage(
     message,
     { modal: true },
     continueCurrent,
-    "改用新窗口"
+    useNewWindow
   );
 
   if (choice === continueCurrent) {
     return { openInNewWindow: false };
   }
-  if (choice === "改用新窗口") {
+  if (choice === useNewWindow) {
     return {
       openInNewWindow: true,
-      reason: "已按选择改用新窗口，避免远程 cwd 报错。",
+      reason: vscode.l10n.t("Using a new window to avoid a remote cwd error."),
     };
   }
   return undefined;
@@ -155,10 +165,10 @@ async function resolveWindowTarget(forceNewWindow: boolean): Promise<WindowTarge
 function getCurrentWindowReuseRisks(): string[] {
   const risks: string[] = [];
   if ((vscode.workspace.workspaceFolders?.length ?? 0) > 0) {
-    risks.push("工作区");
+    risks.push(vscode.l10n.t("a workspace"));
   }
   if (vscode.window.terminals.length > 0) {
-    risks.push("终端");
+    risks.push(vscode.l10n.t("terminals"));
   }
   return risks;
 }
@@ -184,7 +194,10 @@ async function prepareCurrentWindowForRemoteReuse(): Promise<void> {
 /** Show a short, auto-disappearing status after VS Code accepts the remote open request. */
 function showRemoteOpenSuccess(hostName: string, windowLabel: string): void {
   vscode.window.setStatusBarMessage(
-    `$(check) SSH Kit: 已打开 ${hostName} [${windowLabel} · 空窗口]`,
+    vscode.l10n.t("$(check) SSH Kit: Opened {host} [{window} · empty window]", {
+      host: hostName,
+      window: windowLabel,
+    }),
     5000
   );
 }
@@ -200,13 +213,13 @@ export async function testConnection(host: SSHHost): Promise<void> {
     ...buildSSHArgs(host, {
       batchMode: true,
       connectTimeoutSeconds: 5,
-      strictHostKeyChecking: "no",
+      strictHostKeyChecking: "accept-new",
     }),
     "exit",
   ];
 
   vscode.window.showInformationMessage(
-    `正在测试 ${host.name} (${host.hostname}:${host.port})...`
+    vscode.l10n.t("Testing {name} ({address}:{port})…", { name: host.name, address: host.hostname, port: host.port })
   );
 
   try {
@@ -230,8 +243,8 @@ function showTestResult(
 ): void {
   if (exitCode === 0) {
     vscode.window.showInformationMessage(
-      `✅ ${host.name} 连通正常 (${elapsed}ms)`,
-      "确定"
+      vscode.l10n.t("$(check) {name} is reachable ({elapsed} ms)", { name: host.name, elapsed }),
+      vscode.l10n.t("OK")
     );
     return;
   }
@@ -242,10 +255,10 @@ function showTestResult(
     .slice(0, 3);
   const errorMsg = errorLines.length > 0
     ? errorLines.join("\n")
-    : `退出码 ${exitCode}`;
+    : vscode.l10n.t("Exit code {code}", { code: exitCode ?? "null" });
 
   vscode.window.showErrorMessage(
-    `❌ ${host.name} 连接失败 (${elapsed}ms)\n${errorMsg}`,
+    vscode.l10n.t("$(error) {name} connection failed ({elapsed} ms)\n{error}", { name: host.name, elapsed, error: errorMsg }),
     { modal: false }
   );
 }
@@ -254,12 +267,12 @@ function showTestResult(
 function showTestError(host: SSHHost, message: string): void {
   if (message.includes("ETIMEDOUT") || message.includes("timed out")) {
     vscode.window.showErrorMessage(
-      `❌ ${host.name} 连接超时（>8s）`,
+      vscode.l10n.t("$(error) {name} connection timed out (>8 s)", { name: host.name }),
       { modal: false }
     );
   } else {
     vscode.window.showErrorMessage(
-      `❌ ${host.name} 连接测试异常：${message}`,
+      vscode.l10n.t("$(error) {name} connectivity test failed: {error}", { name: host.name, error: message }),
       { modal: false }
     );
   }
@@ -271,7 +284,7 @@ function showTestError(host: SSHHost, message: string): void {
 export async function searchHosts(storage: StorageService): Promise<void> {
   const hosts = storage.getAllHosts();
   if (hosts.length === 0) {
-    vscode.window.showInformationMessage("暂无主机，请先添加。");
+    vscode.window.showInformationMessage(vscode.l10n.t("No hosts are available. Add a host first."));
     return;
   }
 
@@ -285,7 +298,7 @@ export async function searchHosts(storage: StorageService): Promise<void> {
   const picked = await vscode.window.showQuickPick(items, {
     matchOnDescription: true,
     matchOnDetail: true,
-    placeHolder: "搜索主机（按名称、地址或标签过滤）...",
+    placeHolder: vscode.l10n.t("Search hosts by name, address, or tags…"),
   });
 
   if (picked) {
@@ -313,7 +326,10 @@ export async function connectInExternalTerminal(
   }
 
   vscode.window.showInformationMessage(
-    `正在外部终端连接 ${host.name} (${host.username}@${host.hostname}:${host.port})...`
+    vscode.l10n.t("Connecting to {name} in an external terminal ({target})…", {
+      name: host.name,
+      target: `${host.username}@${host.hostname}:${host.port}`,
+    })
   );
 
   try {
@@ -321,7 +337,7 @@ export async function connectInExternalTerminal(
     await storage.addRecentConnection(host.id);
   } catch (err: unknown) {
     vscode.window.showErrorMessage(
-      `启动外部终端失败：${getErrorMessage(err)}`
+      vscode.l10n.t("Failed to start an external terminal: {error}", { error: getErrorMessage(err) })
     );
   }
 }
@@ -678,7 +694,7 @@ function escapeRegExp(value: string): string {
 export async function cleanupRemoteSshAliases(storage: StorageService): Promise<void> {
   const configPath = getSSHConfigPath();
   if (!fs.existsSync(configPath)) {
-    vscode.window.showInformationMessage("SSH Config 文件不存在，无需清理连接别名。");
+    vscode.window.showInformationMessage(vscode.l10n.t("The SSH Config file does not exist; there are no connection aliases to clean up."));
     return;
   }
 
@@ -695,19 +711,20 @@ export async function cleanupRemoteSshAliases(storage: StorageService): Promise<
   });
 
   if (staleAliases.length === 0) {
-    vscode.window.showInformationMessage("没有失效的 SSH Kit 连接别名。");
+    vscode.window.showInformationMessage(vscode.l10n.t("No stale SSH Kit connection aliases were found."));
     return;
   }
 
+  const cleanupAction = vscode.l10n.t("Clean Up");
   const confirmed = await vscode.window.showWarningMessage(
-    `将从 SSH Config 删除 ${staleAliases.length} 个失效的 SSH Kit 连接别名。此操作只影响 SSH Kit 自动生成的别名块。`,
+    vscode.l10n.t("Remove {count} stale SSH Kit connection aliases from SSH Config? Only alias blocks generated by SSH Kit are affected.", { count: staleAliases.length }),
     { modal: true },
-    "确认清理"
+    cleanupAction
   );
-  if (confirmed !== "确认清理") {return;}
+  if (confirmed !== cleanupAction) {return;}
 
   fs.writeFileSync(configPath, updated.replace(/\n{3,}/g, "\n\n"), "utf-8");
-  vscode.window.showInformationMessage(`已清理 ${staleAliases.length} 个失效的 SSH Kit 连接别名。`);
+  vscode.window.showInformationMessage(vscode.l10n.t("Removed {count} stale SSH Kit connection aliases.", { count: staleAliases.length }));
 }
 
 // ─── VS Code built-in terminal connection ──────────────────────────────────
@@ -747,7 +764,10 @@ export async function connectInVSCodeTerminal(
   terminal.show();
 
   vscode.window.showInformationMessage(
-    `已在终端连接 ${host.name} (${host.username}@${host.hostname}:${host.port})`
+    vscode.l10n.t("Opened {name} in the terminal ({target})", {
+      name: host.name,
+      target: `${host.username}@${host.hostname}:${host.port}`,
+    })
   );
 
   await storage.addRecentConnection(host.id);
@@ -768,25 +788,29 @@ async function resolveRemoteWindowTerminalMode(
     return "localWindow";
   }
 
+  const localTerminalAction = vscode.l10n.t("Open in a local VS Code terminal");
+  const externalAction = vscode.l10n.t("Open in a local external terminal");
+  const remoteTerminalAction = vscode.l10n.t("Open in the current remote terminal anyway");
+  const cancelAction = vscode.l10n.t("Cancel");
   const choice = await vscode.window.showWarningMessage(
     [
-      "当前 VS Code 窗口已经连接到远程环境，内置终端会在当前远程服务器上执行 ssh。",
-      "如果要使用本机 SSH 配置和本机密钥，建议改用本机 VS Code 终端或本机外部终端。",
+      vscode.l10n.t("This VS Code window is already connected to a remote environment, so its integrated terminal runs ssh on that remote host."),
+      vscode.l10n.t("To use your local SSH configuration and local keys, use a local VS Code terminal or a local external terminal."),
     ].join("\n"),
-    "在本机 VS Code 终端打开",
-    "打开本机外部终端",
-    "仍在当前远程终端打开",
-    "取消"
+    localTerminalAction,
+    externalAction,
+    remoteTerminalAction,
+    cancelAction
   );
 
-  if (choice === "在本机 VS Code 终端打开") {
+  if (choice === localTerminalAction) {
     return "localVSCodeTerminal";
   }
-  if (choice === "打开本机外部终端") {
+  if (choice === externalAction) {
     await connectInExternalTerminal(host, storage);
     return "external";
   }
-  if (choice === "仍在当前远程终端打开") {
+  if (choice === remoteTerminalAction) {
     return "remoteTerminal";
   }
   return "cancel";
@@ -806,33 +830,33 @@ export async function promptTerminalConnect(
   const picked = await vscode.window.showQuickPick(
     isRemoteWindow ? [
       {
-        label: "$(terminal) 在本机 VS Code 终端打开",
-        description: "推荐：当前是远程窗口，使用本机 SSH 和本机密钥",
+        label: vscode.l10n.t("$(terminal) Open in a local VS Code terminal"),
+        description: vscode.l10n.t("Recommended in a remote window: uses local SSH and local keys"),
         key: "localVscode",
       },
       {
-        label: "$(remote-explorer) 在本机外部终端打开",
-        description: "使用系统原生终端窗口",
+        label: vscode.l10n.t("$(remote-explorer) Open in a local external terminal"),
+        description: vscode.l10n.t("Uses a native system terminal window"),
         key: "external",
       },
       {
-        label: "$(terminal) 在当前远程 VS Code 终端打开",
-        description: "会在当前远程服务器上执行 ssh，不使用本机密钥文件",
+        label: vscode.l10n.t("$(terminal) Open in the current remote VS Code terminal"),
+        description: vscode.l10n.t("Runs ssh on the current remote host and does not use local key files"),
         key: "vscode",
       },
     ] : [
       {
-        label: "$(terminal) 在 VS Code 终端打开",
-        description: "使用内置终端，保持在编辑器内",
+        label: vscode.l10n.t("$(terminal) Open in a VS Code terminal"),
+        description: vscode.l10n.t("Uses the integrated terminal and stays inside the editor"),
         key: "vscode",
       },
       {
-        label: "$(remote-explorer) 在外部终端打开",
-        description: "打开系统原生终端窗口",
+        label: vscode.l10n.t("$(remote-explorer) Open in an external terminal"),
+        description: vscode.l10n.t("Opens a native system terminal window"),
         key: "external",
       },
     ],
-    { placeHolder: `选择 ${host.name} 的连接方式` }
+    { placeHolder: vscode.l10n.t("Choose how to connect to {name}", { name: host.name }) }
   );
 
   if (!picked) {return;}
@@ -904,20 +928,25 @@ async function connectInLocalVSCodeTerminal(
       text: `${commandLine}\r`,
     });
     vscode.window.showInformationMessage(
-      `已在本机 VS Code 终端连接 ${host.name} (${host.username}@${host.hostname}:${host.port})`
+      vscode.l10n.t("Opened {name} in a local VS Code terminal ({target})", {
+        name: host.name,
+        target: `${host.username}@${host.hostname}:${host.port}`,
+      })
     );
     await storage.addRecentConnection(host.id);
   } catch (err: unknown) {
+    const externalAction = vscode.l10n.t("Open a local external terminal");
+    const cancelAction = vscode.l10n.t("Cancel");
     const choice = await vscode.window.showWarningMessage(
       [
-        "当前 VS Code 未能创建本机集成终端。",
-        `原因：${getErrorMessage(err)}`,
-        "可以改用本机外部终端继续连接。",
+        vscode.l10n.t("VS Code could not create a local integrated terminal."),
+        vscode.l10n.t("Reason: {error}", { error: getErrorMessage(err) }),
+        vscode.l10n.t("You can continue in a local external terminal."),
       ].join("\n"),
-      "打开本机外部终端",
-      "取消"
+      externalAction,
+      cancelAction
     );
-    if (choice === "打开本机外部终端") {
+    if (choice === externalAction) {
       await connectInExternalTerminal(host, storage);
     }
   }
@@ -933,22 +962,25 @@ async function confirmMissingIdentityFile(
   host: SSHHost,
   missing: MissingIdentityFile
 ): Promise<boolean> {
+  const continueAction = vscode.l10n.t("Continue Connecting");
+  const editAction = vscode.l10n.t("Edit Host");
+  const cancelAction = vscode.l10n.t("Cancel");
   const choice = await vscode.window.showWarningMessage(
     [
-      `主机「${host.name}」配置的认证文件不存在：`,
+      vscode.l10n.t("The identity file configured for host “{name}” does not exist:", { name: host.name }),
       missing.resolvedPath,
-      "继续连接时将不传递 -i 参数，SSH 会改用默认密钥、ssh-agent 或密码认证。",
+      vscode.l10n.t("If you continue, SSH Kit will omit -i so SSH can use default keys, ssh-agent, or password authentication."),
     ].join("\n"),
-    "继续连接",
-    "编辑主机",
-    "取消"
+    continueAction,
+    editAction,
+    cancelAction
   );
 
-  if (choice === "编辑主机") {
+  if (choice === editAction) {
     await vscode.commands.executeCommand("sshKit.editHost", host);
     return false;
   }
-  return choice === "继续连接";
+  return choice === continueAction;
 }
 
 function quoteForLocalShellArg(value: string): string {
@@ -1055,7 +1087,7 @@ async function launchLinuxTerminal(sshCommand: string): Promise<void> {
     }
   }
 
-  throw new Error("未找到可用的 Linux 终端（gnome-terminal / konsole / xterm / x-terminal-emulator）。");
+  throw new Error(vscode.l10n.t("No supported Linux terminal was found (gnome-terminal / konsole / xterm / x-terminal-emulator)."));
 }
 
 /** Check whether a command exists on PATH. */

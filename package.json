@@ -2,7 +2,7 @@
   "name": "ssh-kit",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.0.10",
+  "version": "0.0.11",
   "publisher": "lixiaoyu",
   "license": "MIT",
   "icon": "icon.png",
@@ -29,9 +29,10 @@
     "ui"
   ],
   "activationEvents": [
-    "onStartupFinished"
+    "*"
   ],
   "main": "./dist/extension.js",
+  "l10n": "./l10n",
   "contributes": {
     "languageModelTools": [
       {
@@ -189,6 +190,19 @@
         "category": "%commands.category%"
       },
       {
+        "command": "sshKit.filterHosts",
+        "title": "%commands.filterHosts%",
+        "category": "%commands.category%",
+        "icon": "$(search)"
+      },
+      {
+        "command": "sshKit.clearHostFilter",
+        "title": "%commands.clearHostFilter%",
+        "category": "%commands.category%",
+        "icon": "$(clear-all)",
+        "enablement": "sshKit.hostFilterActive"
+      },
+      {
         "command": "sshKit.openSshConfig",
         "title": "%commands.openSshConfig%",
         "category": "%commands.category%",
@@ -343,7 +357,17 @@
         {
           "command": "sshKit.refresh",
           "when": "view == sshKit.hosts",
+          "group": "navigation@8"
+        },
+        {
+          "command": "sshKit.filterHosts",
+          "when": "view == sshKit.hosts",
           "group": "navigation@6"
+        },
+        {
+          "command": "sshKit.clearHostFilter",
+          "when": "view == sshKit.hosts && sshKit.hostFilterActive",
+          "group": "navigation@7"
         },
         {
           "command": "sshKit.deduplicateHosts",
@@ -565,11 +589,12 @@
     "watch:esbuild": "node esbuild.js --watch",
     "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
     "package": "npm run check-types && node esbuild.js --production",
-    "preflight": "npm run lint && npm run package && npm run check:runtime && node scripts/preflight.mjs",
+    "preflight": "npm run lint && npm run check:l10n && npm run package && npm run check:runtime && node scripts/preflight.mjs",
     "vsix": "vsce package --no-dependencies",
     "check-types": "tsc --noEmit",
     "lint": "eslint src",
-    "check:runtime": "node scripts/check-runtime-behavior.mjs"
+    "check:runtime": "node scripts/check-runtime-behavior.mjs",
+    "check:l10n": "node scripts/generate-l10n.mjs --check"
   },
   "devDependencies": {
     "@eslint/js": "^9.13.0",

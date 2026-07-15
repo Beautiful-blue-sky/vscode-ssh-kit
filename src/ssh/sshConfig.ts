@@ -2,6 +2,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
+import * as vscode from "vscode";
 import { SSHHost, SSHGroup } from "../core/types";
 
 /** Default SSH config file path */
@@ -58,6 +59,11 @@ function parseSections(rawText: string): HostSection[] {
         aliases: splitSSHWords(value),
         props: {},
       };
+    } else if (directive === "match") {
+      // Match starts a different conditional section. Its directives must not
+      // leak into the preceding Host block.
+      if (current) {sections.push(current);}
+      current = null;
     } else if (current) {
       // Section-level directive (stored lowercase for lookup)
       current.props[directive] = [...(current.props[directive] ?? []), value];
@@ -92,7 +98,7 @@ export function importFromSSHConfig(
 ): { hosts: Omit<SSHHost, "id">[]; groups: SSHGroup[] } {
   const resolvedPath = configPath ?? defaultConfigPath();
   if (!fs.existsSync(resolvedPath)) {
-    throw new Error(`SSH config 文件不存在：${resolvedPath}`);
+    throw new Error(vscode.l10n.t("SSH Config file does not exist: {path}", { path: resolvedPath }));
   }
 
   const rawText = stripConnectAliasBlocks(readConfigWithIncludes(resolvedPath));
@@ -101,15 +107,15 @@ export function importFromSSHConfig(
   const hosts: Omit<SSHHost, "id">[] = [];
 
   for (const section of sections) {
-    // Skip wildcard Host *
-    if (section.aliases.length === 1 && section.aliases[0] === "*") {continue;}
+    const concreteAliases = section.aliases.filter(isConcreteHostAlias);
+    if (concreteAliases.length === 0) {continue;}
 
-    const hostname = getLastDirective(section.props, "hostname") ?? section.aliases[0];
+    const hostname = getLastDirective(section.props, "hostname") ?? concreteAliases[0];
     const port = parseInt(getLastDirective(section.props, "port") ?? "22", 10);
     const username = getLastDirective(section.props, "user") ?? "";
     const identityFile = getLastDirective(section.props, "identityfile");
 
-    for (const alias of section.aliases) {
+    for (const alias of concreteAliases) {
       hosts.push({
         name: alias,
         hostname,
@@ -123,6 +129,11 @@ export function importFromSSHConfig(
   }
 
   return { hosts, groups: [] };
+}
+
+/** OpenSSH Host patterns are rules, not concrete connection entries. */
+function isConcreteHostAlias(alias: string): boolean {
+  return Boolean(alias) && !alias.startsWith("!") && !/[?*]/.test(alias);
 }
 
 // ─── Include recursive resolution ─────────────────────────────────────────
@@ -387,7 +398,7 @@ export function exportToSSHConfig(
   options: ExportOptions = {}
 ): string {
   if (hosts.length === 0) {
-    throw new Error("没有可导出的主机。");
+    throw new Error(vscode.l10n.t("There are no hosts to export."));
   }
 
   const resolvedPath = configPath ?? defaultConfigPath();
@@ -404,9 +415,9 @@ export function exportToSSHConfig(
   const kitTargets = buildHostTargetMaps(hosts);
   const conflicts = findUnmanagedConflicts(existingBlocks, kitNames, kitTargets);
   if (conflicts.length > 0 && !options.overwriteUnmanaged) {
-    throw new Error(
-      `发现同名或同连接目标但非 SSH Kit 托管的 Host：${conflicts.join(", ")}。请确认接管后再写入。`
-    );
+    throw new Error(vscode.l10n.t("Found Host blocks with matching aliases or endpoints that are not managed by SSH Kit: {hosts}. Confirm takeover before writing.", {
+      hosts: conflicts.join(", "),
+    }));
   }
   let preservedText = "";
 
@@ -442,7 +453,7 @@ export function exportToSSHConfig(
 }
 
 /**
- * 将主机列表格式化为 SSH config 文本（不写文件，预览用）
+ * Format hosts as SSH Config text without writing a file (used for previews).
  */
 export function stringifyHosts(hosts: SSHHost[]): string {
   if (hosts.length === 0) {return "";}

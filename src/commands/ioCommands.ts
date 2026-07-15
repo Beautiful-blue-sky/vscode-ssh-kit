@@ -25,7 +25,7 @@ export async function importConfig(
   try {
     const { hosts } = importFromSSHConfig();
     if (hosts.length === 0) {
-      vscode.window.showInformationMessage("SSH config 中没有找到可导入的主机。");
+      vscode.window.showInformationMessage(vscode.l10n.t("No importable hosts were found in SSH Config."));
       return;
     }
 
@@ -70,17 +70,21 @@ export async function importConfig(
     tree.refresh();
 
     const parts: string[] = [];
-    if (imported > 0) {parts.push(`已导入 ${imported} 台主机`);}
+    if (imported > 0) {parts.push(vscode.l10n.t("Imported {count} hosts", { count: imported }));}
     if (updated > 0) {
-      const detail = endpointMatched > 0 ? `，其中 ${endpointMatched} 台按地址匹配` : "";
-      parts.push(`已更新 ${updated} 台已有主机${detail}`);
+      parts.push(endpointMatched > 0
+        ? vscode.l10n.t("Updated {count} existing hosts ({endpointCount} matched by endpoint)", {
+            count: updated,
+            endpointCount: endpointMatched,
+          })
+        : vscode.l10n.t("Updated {count} existing hosts", { count: updated }));
     }
-    if (skipped > 0) {parts.push(`跳过 ${skipped} 台重复`);}
-    if (ambiguous > 0) {parts.push(`跳过 ${ambiguous} 台目标重复需手动确认`);}
-    if (parts.length === 0) {parts.push("没有需要导入或更新的主机");}
-    vscode.window.showInformationMessage(parts.join("，") + "。");
+    if (skipped > 0) {parts.push(vscode.l10n.t("Skipped {count} duplicates", { count: skipped }));}
+    if (ambiguous > 0) {parts.push(vscode.l10n.t("Skipped {count} ambiguous endpoints that need manual review", { count: ambiguous }));}
+    if (parts.length === 0) {parts.push(vscode.l10n.t("No hosts needed to be imported or updated"));}
+    vscode.window.showInformationMessage(`${parts.join(", ")}.`);
   } catch (err: unknown) {
-    vscode.window.showErrorMessage(`导入失败：${getErrorMessage(err)}`);
+    vscode.window.showErrorMessage(vscode.l10n.t("Import failed: {error}", { error: getErrorMessage(err) }));
   }
 }
 
@@ -135,7 +139,11 @@ function previewSSHConfigImport(
       } else {
         preview.endpointMatched++;
       }
-      pushSample(preview.updatedSamples, `${host.name} → ${match.host.name}（${match.reason === "name" ? "名称" : "地址"}匹配）`);
+      pushSample(preview.updatedSamples, vscode.l10n.t("{source} → {target} ({matchType} match)", {
+        source: host.name,
+        target: match.host.name,
+        matchType: match.reason === "name" ? vscode.l10n.t("name") : vscode.l10n.t("endpoint"),
+      }));
       continue;
     }
 
@@ -160,29 +168,34 @@ async function confirmSSHConfigImport(preview: SSHConfigImportPreview): Promise<
     preview.skipped === 0 &&
     preview.ambiguous === 0
   ) {
-    vscode.window.showInformationMessage("没有需要导入或更新的主机。");
+    vscode.window.showInformationMessage(vscode.l10n.t("No hosts need to be imported or updated."));
     return false;
   }
 
   const lines = [
-    "即将从 SSH Config 导入：",
-    preview.imported > 0 ? `  新增 ${preview.imported} 台` : "",
+    vscode.l10n.t("SSH Config import preview:"),
+    preview.imported > 0 ? vscode.l10n.t("  Add {count}", { count: preview.imported }) : "",
     preview.updated > 0
-      ? `  更新 ${preview.updated} 台（按名称 ${preview.nameMatched}，按地址 ${preview.endpointMatched}）`
+      ? vscode.l10n.t("  Update {count} (name matches: {nameCount}; endpoint matches: {endpointCount})", {
+          count: preview.updated,
+          nameCount: preview.nameMatched,
+          endpointCount: preview.endpointMatched,
+        })
       : "",
-    preview.skipped > 0 ? `  跳过 ${preview.skipped} 台重复项` : "",
-    preview.ambiguous > 0 ? `  跳过 ${preview.ambiguous} 台目标重复需手动确认` : "",
-    formatPreviewSamples("新增示例", preview.importedSamples),
-    formatPreviewSamples("更新示例", preview.updatedSamples),
-    formatPreviewSamples("冲突示例", preview.ambiguousSamples),
+    preview.skipped > 0 ? vscode.l10n.t("  Skip {count} duplicates", { count: preview.skipped }) : "",
+    preview.ambiguous > 0 ? vscode.l10n.t("  Skip {count} ambiguous endpoints requiring manual review", { count: preview.ambiguous }) : "",
+    formatPreviewSamples(vscode.l10n.t("Add examples"), preview.importedSamples),
+    formatPreviewSamples(vscode.l10n.t("Update examples"), preview.updatedSamples),
+    formatPreviewSamples(vscode.l10n.t("Conflict examples"), preview.ambiguousSamples),
   ].filter(Boolean);
 
+  const importAction = vscode.l10n.t("Import");
   const confirmed = await vscode.window.showInformationMessage(
     lines.join("\n"),
     { modal: true },
-    "确认导入"
+    importAction
   );
-  return confirmed === "确认导入";
+  return confirmed === importAction;
 }
 
 function pushSample(samples: string[], value: string): void {
@@ -192,7 +205,7 @@ function pushSample(samples: string[], value: string): void {
 }
 
 function formatPreviewSamples(label: string, samples: string[]): string {
-  return samples.length > 0 ? `  ${label}：${samples.join("；")}` : "";
+  return samples.length > 0 ? `  ${label}: ${samples.join("; ")}` : "";
 }
 
 /** Export all hosts to SSH config with change preview and confirmation */
@@ -200,64 +213,64 @@ export async function exportConfig(storage: StorageService): Promise<void> {
   try {
     const hosts = storage.getAllHosts();
     if (hosts.length === 0) {
-      vscode.window.showInformationMessage("没有可写入的主机。");
+      vscode.window.showInformationMessage(vscode.l10n.t("There are no hosts to write."));
       return;
     }
 
     const stats = analyzeExport(hosts);
     if (!stats) {
-      vscode.window.showErrorMessage("无法分析变更影响。");
+      vscode.window.showErrorMessage(vscode.l10n.t("Could not analyze the pending SSH Config changes."));
       return;
     }
 
     let overwriteUnmanaged = false;
     if (stats.conflicts.length > 0) {
       const preview = stats.conflicts.slice(0, 8).join(", ");
-      const more = stats.conflicts.length > 8 ? ` 等 ${stats.conflicts.length} 个` : "";
+      const more = stats.conflicts.length > 8 ? vscode.l10n.t(" and {count} total", { count: stats.conflicts.length }) : "";
+      const takeoverAction = vscode.l10n.t("Take Over and Overwrite");
       const takeover = await vscode.window.showWarningMessage(
         [
-          `发现 ${stats.conflicts.length} 个同名或同连接目标 Host 已存在，但不是 SSH Kit 托管：`,
+          vscode.l10n.t("Found {count} existing Host blocks with the same alias or connection endpoint that are not managed by SSH Kit:", { count: stats.conflicts.length }),
           `${preview}${more}`,
           "",
-          "SSH Kit 会按 Host 别名或 HostName/Port 判断同一连接目标。",
-          "接管后这些 Host 块会被 SSH Kit 当前主机列表重新生成。",
+          vscode.l10n.t("SSH Kit identifies the same connection target by Host alias or HostName/Port."),
+          vscode.l10n.t("After takeover, these Host blocks will be regenerated from the current SSH Kit host list."),
         ].join("\n"),
         { modal: true },
-        "接管并覆盖"
+        takeoverAction
       );
-      if (takeover !== "接管并覆盖") {return;}
+      if (takeover !== takeoverAction) {return;}
       overwriteUnmanaged = true;
     }
 
     const lines = [
-      `即将写入 ${hosts.length} 台主机到 ~/.ssh/config：`,
-      stats.added > 0 ? `  新增 ${stats.added} 台` : "",
-      stats.synced > 0 ? `  同步 ${stats.synced} 台（已存在，将更新）` : "",
-      stats.conflicts.length > 0 ? `  接管 ${stats.conflicts.length} 个同名或同连接目标 Host` : "",
-      stats.removedAliases > 0 ? `  移除 ${stats.removedAliases} 个 SSH Kit 临时连接别名` : "",
-      stats.preserved > 0 ? `  保留 ${stats.preserved} 个现有主机不动` : "",
+      vscode.l10n.t("Write {count} hosts to ~/.ssh/config:", { count: hosts.length }),
+      stats.added > 0 ? vscode.l10n.t("  Add {count}", { count: stats.added }) : "",
+      stats.synced > 0 ? vscode.l10n.t("  Sync {count} existing hosts", { count: stats.synced }) : "",
+      stats.conflicts.length > 0 ? vscode.l10n.t("  Take over {count} Host blocks with matching aliases or endpoints", { count: stats.conflicts.length }) : "",
+      stats.removedAliases > 0 ? vscode.l10n.t("  Remove {count} temporary SSH Kit connection aliases", { count: stats.removedAliases }) : "",
+      stats.preserved > 0 ? vscode.l10n.t("  Preserve {count} unrelated existing hosts", { count: stats.preserved }) : "",
       "",
-      "如果当前 SSH Config 已存在，写入前会让你选择备份保存位置；取消备份将不会写入。",
+      vscode.l10n.t("If SSH Config already exists, you must choose a backup location before writing. Cancelling the backup cancels the write."),
     ].filter(Boolean);
 
+    const writeAction = vscode.l10n.t("Write");
     const confirmed = await vscode.window.showInformationMessage(
       lines.join("\n"),
       { modal: true },
-      "确认写入"
+      writeAction
     );
-    if (confirmed !== "确认写入") {return;}
+    if (confirmed !== writeAction) {return;}
 
     const backupPath = await backupSSHConfigBeforeWrite();
     if (backupPath === null) {return;}
 
     const filePath = exportToSSHConfig(hosts, undefined, { overwriteUnmanaged });
-    vscode.window.showInformationMessage(
-      backupPath
-        ? `已写入 ${hosts.length} 台主机到 ${filePath}，备份：${backupPath}`
-        : `已写入 ${hosts.length} 台主机到 ${filePath}`
-    );
+    vscode.window.showInformationMessage(backupPath
+      ? vscode.l10n.t("Wrote {count} hosts to {path}. Backup: {backup}", { count: hosts.length, path: filePath, backup: backupPath })
+      : vscode.l10n.t("Wrote {count} hosts to {path}", { count: hosts.length, path: filePath }));
   } catch (err: unknown) {
-    vscode.window.showErrorMessage(`写入失败：${getErrorMessage(err)}`);
+    vscode.window.showErrorMessage(vscode.l10n.t("Write failed: {error}", { error: getErrorMessage(err) }));
   }
 }
 
@@ -267,31 +280,33 @@ async function backupSSHConfigBeforeWrite(): Promise<string | null | undefined> 
     return undefined;
   }
 
+  const chooseBackupAction = vscode.l10n.t("Choose Backup Location");
   const confirmed = await vscode.window.showWarningMessage(
     [
-      "写入 SSH Config 前需要先备份当前配置文件。",
-      "请选择一个你能找到的位置保存备份；取消备份则不会写入。",
+      vscode.l10n.t("The current SSH Config must be backed up before writing."),
+      vscode.l10n.t("Choose a backup location you can find later. Cancelling the backup cancels the write."),
     ].join("\n"),
     { modal: true },
-    "选择备份位置"
+    chooseBackupAction
   );
-  if (confirmed !== "选择备份位置") {return null;}
+  if (confirmed !== chooseBackupAction) {return null;}
 
   const uri = await vscode.window.showSaveDialog({
     defaultUri: vscode.Uri.file(path.join(os.homedir(), `ssh-config-backup-${formatBackupTimestamp()}`)),
-    saveLabel: "备份并继续",
-    title: "保存 SSH Config 备份",
+    saveLabel: vscode.l10n.t("Back Up and Continue"),
+    title: vscode.l10n.t("Save SSH Config Backup"),
   });
   if (!uri) {return null;}
 
   const normalizedSource = normalizePathForCompare(configPath);
   const normalizedTarget = normalizePathForCompare(uri.fsPath);
   if (normalizedSource === normalizedTarget) {
-    vscode.window.showErrorMessage("备份位置不能是当前 SSH Config 文件本身。");
+    vscode.window.showErrorMessage(vscode.l10n.t("The backup location cannot be the SSH Config file itself."));
     return null;
   }
 
   fs.copyFileSync(configPath, uri.fsPath);
+  protectSensitiveFile(uri.fsPath);
   return uri.fsPath;
 }
 
@@ -309,7 +324,7 @@ export async function openSshConfig(): Promise<void> {
   const configPath = path.join(os.homedir(), ".ssh", "config");
   if (!fs.existsSync(configPath)) {
     vscode.window.showInformationMessage(
-      `SSH config 文件不存在：${configPath}`
+      vscode.l10n.t("SSH Config file does not exist: {path}", { path: configPath })
     );
     return;
   }
@@ -317,31 +332,67 @@ export async function openSshConfig(): Promise<void> {
   await vscode.window.showTextDocument(doc);
 }
 
-/** Backup SSH Kit data to a JSON file (including associated key files) */
+/** Backup SSH Kit data, optionally including associated key files. */
 export async function backupKitData(storage: StorageService): Promise<void> {
+  const mode = await vscode.window.showQuickPick(
+    [
+      {
+        label: vscode.l10n.t("$(server) Host data only"),
+        description: vscode.l10n.t("Does not include private key contents; suitable for routine migration and archiving"),
+        includeKeyFiles: false,
+      },
+      {
+        label: vscode.l10n.t("$(lock) Host data and associated keys"),
+        description: vscode.l10n.t("Includes Base64-encoded private and public keys; treat the backup as sensitive"),
+        includeKeyFiles: true,
+      },
+    ],
+    {
+      title: vscode.l10n.t("Choose SSH Kit backup contents"),
+      placeHolder: vscode.l10n.t("Host-only backup is recommended; include keys only for a complete migration"),
+    }
+  );
+  if (!mode) {return;}
+
+  if (mode.includeKeyFiles) {
+    const continueWithKeys = vscode.l10n.t("Continue with keys");
+    const confirmed = await vscode.window.showWarningMessage(
+      vscode.l10n.t("The backup will contain SSH private key contents associated with hosts. Save it in an encrypted or access-controlled location and delete it when no longer needed."),
+      { modal: true },
+      continueWithKeys
+    );
+    if (confirmed !== continueWithKeys) {return;}
+  }
+
   const defaultUri = vscode.Uri.file(
     path.join(os.homedir(), `ssh-kit-backup-${new Date().toISOString().slice(0, 10)}.json`)
   );
   const uri = await vscode.window.showSaveDialog({
     defaultUri,
-    filters: { "JSON 文件": ["json"] },
+    filters: { [vscode.l10n.t("JSON Files")]: ["json"] },
   });
   if (!uri) {return;}
 
-  // Security warning: backup contains private key material
-  const confirmed = await vscode.window.showWarningMessage(
-    "备份文件将包含已关联主机的 SSH 私钥内容，请妥善保管。\n建议保存到加密位置，使用后及时删除。",
-    { modal: true },
-    "确认备份"
-  );
-  if (confirmed !== "确认备份") {return;}
-
   try {
-    const json = storage.exportAllData();
-    fs.writeFileSync(uri.fsPath, json, "utf-8");
-    vscode.window.showInformationMessage(`已备份到 ${uri.fsPath}`);
+    const json = storage.exportAllData({ includeKeyFiles: mode.includeKeyFiles });
+    fs.writeFileSync(uri.fsPath, json, {
+      encoding: "utf-8",
+      mode: process.platform === "win32" ? undefined : 0o600,
+    });
+    protectSensitiveFile(uri.fsPath);
+    vscode.window.showInformationMessage(
+      mode.includeKeyFiles
+        ? vscode.l10n.t("Complete backup saved to {path}", { path: uri.fsPath })
+        : vscode.l10n.t("Host data backup saved to {path}", { path: uri.fsPath })
+    );
   } catch (err: unknown) {
-    vscode.window.showErrorMessage(`备份失败：${getErrorMessage(err)}`);
+    vscode.window.showErrorMessage(vscode.l10n.t("Backup failed: {error}", { error: getErrorMessage(err) }));
+  }
+}
+
+function protectSensitiveFile(filePath: string): void {
+  if (process.platform !== "win32") {
+    fs.chmodSync(filePath, 0o600);
   }
 }
 
@@ -352,7 +403,7 @@ export async function restoreKitData(
   keyTree?: { refresh: () => void }
 ): Promise<void> {
   const uris = await vscode.window.showOpenDialog({
-    filters: { "JSON 文件": ["json"] },
+    filters: { [vscode.l10n.t("JSON Files")]: ["json"] },
     canSelectMany: false,
   });
   if (!uris || uris.length === 0) {return;}
@@ -364,52 +415,60 @@ export async function restoreKitData(
     if (!keyPlan) {return;}
 
     const lines = [
-      `即将导入 ${preview.importedHosts} 台主机、${preview.importedGroups} 个分组`,
-      preview.skippedHosts > 0 ? `跳过 ${preview.skippedHosts} 台已存在主机` : "",
+      vscode.l10n.t("Import {hostCount} hosts and {groupCount} groups", {
+        hostCount: preview.importedHosts,
+        groupCount: preview.importedGroups,
+      }),
+      preview.skippedHosts > 0 ? vscode.l10n.t("Skip {count} existing hosts", { count: preview.skippedHosts }) : "",
       formatRestoreKeyOverview(preview.keyCount, keyPlan),
       formatRestoreKeyPlanSummary(keyPlan),
-      formatRestoreKeyTargets("将写入密钥文件：", keyPlan.writeTargets),
-      formatRestoreKeyTargets("匹配到本机已有密钥（不会写入/覆盖）：", keyPlan.reuseTargets),
+      formatRestoreKeyTargets(vscode.l10n.t("Key files to write:"), keyPlan.writeTargets),
+      formatRestoreKeyTargets(vscode.l10n.t("Matching local keys to reuse (no write or overwrite):"), keyPlan.reuseTargets),
       keyPlan.entries.length === 0 && keyPlan.writeTargets.length === 0 && keyPlan.reuseTargets.length === 0
-        ? formatRestoreKeyTargets("备份中记录的密钥名称：", preview.keyTargets)
+        ? formatRestoreKeyTargets(vscode.l10n.t("Key names recorded in the backup:"), preview.keyTargets)
         : "",
-      "已存在的项目将跳过（不覆盖）",
+      vscode.l10n.t("Existing items will be skipped and not overwritten."),
       "",
-      "⚠ 请确认备份文件来源可信，其中可能包含私钥",
+      vscode.l10n.t("⚠ Only restore backups from a trusted source; the file may contain private keys."),
     ].filter(Boolean);
 
+    const importAction = vscode.l10n.t("Import");
     const confirmed = await vscode.window.showInformationMessage(
       lines.join("\n"),
       { modal: true },
-      "确认导入"
+      importAction
     );
-    if (confirmed !== "确认导入") {return;}
+    if (confirmed !== importAction) {return;}
 
     const result = await storage.commitImport(json, keyPlan.entries);
     tree.refresh();
     keyTree?.refresh();
 
-    const parts = [`已导入 ${result.importedHosts} 台主机、${result.importedGroups} 个分组`];
+    const parts = [vscode.l10n.t("Imported {hostCount} hosts and {groupCount} groups", {
+      hostCount: result.importedHosts,
+      groupCount: result.importedGroups,
+    })];
     if (result.skippedHosts > 0) {
-      parts.push(`跳过 ${result.skippedHosts} 台已存在主机`);
+      parts.push(vscode.l10n.t("Skipped {count} existing hosts", { count: result.skippedHosts }));
     }
     if (result.keyFilesRestored > 0) {
-      parts.push(`恢复 ${result.keyFilesRestored} 个密钥文件到 ~/.ssh/`);
+      parts.push(vscode.l10n.t("Restored {count} key files to ~/.ssh/", { count: result.keyFilesRestored }));
     }
     if (result.keyFilesReused > 0) {
-      parts.push(`复用 ${result.keyFilesReused} 个已存在密钥`);
+      parts.push(vscode.l10n.t("Reused {count} existing keys", { count: result.keyFilesReused }));
     }
     if (result.keyFilesSkipped > 0) {
-      parts.push(`跳过 ${result.keyFilesSkipped} 个已存在密钥`);
+      parts.push(vscode.l10n.t("Skipped {count} existing keys", { count: result.keyFilesSkipped }));
     }
     if (result.keyFilesFailed > 0) {
-      parts.push(`${result.keyFilesFailed} 个密钥恢复失败`);
+      parts.push(vscode.l10n.t("Failed to restore {count} keys", { count: result.keyFilesFailed }));
     }
+    const viewFailuresAction = vscode.l10n.t("View Failure Details");
     const action = await vscode.window.showInformationMessage(
-      parts.join("，"),
-      ...(result.keyFileFailures.length > 0 ? ["查看失败详情"] : [])
+      parts.join(", "),
+      ...(result.keyFileFailures.length > 0 ? [viewFailuresAction] : [])
     );
-    if (action === "查看失败详情") {
+    if (action === viewFailuresAction) {
       vscode.window.showWarningMessage(
         result.keyFileFailures
           .slice(0, 20)
@@ -419,7 +478,7 @@ export async function restoreKitData(
       );
     }
   } catch (err: unknown) {
-    vscode.window.showErrorMessage(`恢复失败：${getErrorMessage(err)}`);
+    vscode.window.showErrorMessage(vscode.l10n.t("Restore failed: {error}", { error: getErrorMessage(err) }));
   }
 }
 
@@ -504,23 +563,27 @@ function isKeyFileEntry(entry: unknown): entry is KeyFileEntry {
 
 async function resolveConflictingRestoreKeyName(sourceName: string): Promise<string | null | undefined> {
   const autoName = makeAvailableRestoreKeyName(sourceName);
+  const autoRenameAction = vscode.l10n.t("Rename Automatically");
+  const customNameAction = vscode.l10n.t("Choose a Custom Name");
+  const skipAction = vscode.l10n.t("Skip Key");
+  const cancelAction = vscode.l10n.t("Cancel Import");
   const choice = await vscode.window.showWarningMessage(
     [
-      `备份中的密钥「${sourceName}」与本机 ~/.ssh/ 下同名文件不是同一把 SSH 密钥。`,
-      "为避免覆盖本机已有密钥，可以改名导入，并自动更新本次导入主机的关联密钥路径。",
-      "如果跳过该密钥，本次导入中使用它的主机将不关联密钥，避免误用本机同名但不同的密钥。",
-      `自动改名目标：~/.ssh/${autoName}`,
+      vscode.l10n.t("The backup key “{name}” is not the same SSH key as the local file with that name under ~/.ssh/.", { name: sourceName }),
+      vscode.l10n.t("Rename the imported key to avoid overwriting the local key. Imported host identity paths will be updated automatically."),
+      vscode.l10n.t("If you skip the key, imported hosts that reference it will have no identity file, preventing accidental use of the different local key."),
+      vscode.l10n.t("Automatic target: ~/.ssh/{name}", { name: autoName }),
     ].join("\n"),
     { modal: true },
-    "自动重命名",
-    "自定义名称",
-    "跳过密钥",
-    "取消导入"
+    autoRenameAction,
+    customNameAction,
+    skipAction,
+    cancelAction
   );
 
-  if (choice === "自动重命名") {return autoName;}
-  if (choice === "跳过密钥") {return null;}
-  if (choice === "自定义名称") {
+  if (choice === autoRenameAction) {return autoName;}
+  if (choice === skipAction) {return null;}
+  if (choice === customNameAction) {
     return promptCustomRestoreKeyName(sourceName);
   }
   return undefined;
@@ -528,16 +591,16 @@ async function resolveConflictingRestoreKeyName(sourceName: string): Promise<str
 
 async function promptCustomRestoreKeyName(sourceName: string): Promise<string | undefined> {
   const value = await vscode.window.showInputBox({
-    prompt: `输入「${sourceName}」导入后的新密钥文件名（写入 ~/.ssh/）`,
+    prompt: vscode.l10n.t("Enter the new file name for imported key “{name}” (written under ~/.ssh/)", { name: sourceName }),
     placeHolder: makeAvailableRestoreKeyName(sourceName),
     validateInput: (input) => {
       const trimmed = input.trim();
-      if (!trimmed) {return "文件名不能为空";}
+      if (!trimmed) {return vscode.l10n.t("File name is required");}
       const safeName = sanitizeKeyFileName(trimmed);
-      if (safeName !== trimmed) {return "只能输入文件名，不能包含路径、空格或特殊字符";}
+      if (safeName !== trimmed) {return vscode.l10n.t("Enter only a file name, without a path, spaces, or special characters");}
       const targetPath = getImportKeyTargetPath(safeName);
-      if (!targetPath) {return "文件名无效";}
-      if (fs.existsSync(targetPath)) {return `目标文件已存在：~/.ssh/${safeName}`;}
+      if (!targetPath) {return vscode.l10n.t("File name is invalid");}
+      if (fs.existsSync(targetPath)) {return vscode.l10n.t("Target file already exists: ~/.ssh/{name}", { name: safeName });}
       return undefined;
     },
   });
@@ -574,30 +637,32 @@ function formatKeyTargetPath(filePath: string): string {
 
 function formatRestoreKeyPlanSummary(plan: RestoreKeyPlan): string {
   const parts = [
-    plan.conflicts > 0 ? `检测到 ${plan.conflicts} 个同名但不是同一把的密钥` : "",
-    plan.renamed > 0 ? `自动改名 ${plan.renamed} 个` : "",
-    plan.customRenamed > 0 ? `自定义改名 ${plan.customRenamed} 个` : "",
-    plan.reused > 0 ? `复用本机已有密钥 ${plan.reused} 个` : "",
-    plan.skipped > 0 ? `跳过密钥 ${plan.skipped} 个` : "",
+    plan.conflicts > 0 ? vscode.l10n.t("Detected {count} same-name keys with different contents", { count: plan.conflicts }) : "",
+    plan.renamed > 0 ? vscode.l10n.t("Automatically renamed {count}", { count: plan.renamed }) : "",
+    plan.customRenamed > 0 ? vscode.l10n.t("Custom-renamed {count}", { count: plan.customRenamed }) : "",
+    plan.reused > 0 ? vscode.l10n.t("Reused {count} local keys", { count: plan.reused }) : "",
+    plan.skipped > 0 ? vscode.l10n.t("Skipped {count} keys", { count: plan.skipped }) : "",
   ].filter(Boolean);
-  return parts.length > 0 ? parts.join("，") : "";
+  return parts.length > 0 ? parts.join(", ") : "";
 }
 
 function formatRestoreKeyOverview(keyCount: number, plan: RestoreKeyPlan): string {
   if (keyCount === 0) {return "";}
   const parts = [
-    plan.writeTargets.length > 0 ? `将写入 ${plan.writeTargets.length} 个` : "",
-    plan.reuseTargets.length > 0 ? `复用本机已有 ${plan.reuseTargets.length} 个` : "",
-    plan.skipped > 0 ? `跳过 ${plan.skipped} 个` : "",
+    plan.writeTargets.length > 0 ? vscode.l10n.t("write {count}", { count: plan.writeTargets.length }) : "",
+    plan.reuseTargets.length > 0 ? vscode.l10n.t("reuse {count} local keys", { count: plan.reuseTargets.length }) : "",
+    plan.skipped > 0 ? vscode.l10n.t("skip {count}", { count: plan.skipped }) : "",
   ].filter(Boolean);
   return parts.length > 0
-    ? `含 ${keyCount} 个备份密钥（${parts.join("，")}）`
-    : `含 ${keyCount} 个密钥记录（备份中没有可恢复的私钥内容）`;
+    ? vscode.l10n.t("Contains {count} backup keys ({summary})", { count: keyCount, summary: parts.join(", ") })
+    : vscode.l10n.t("Contains {count} key records (no restorable private key contents)", { count: keyCount });
 }
 
 function formatRestoreKeyTargets(title: string, targets: string[]): string {
   if (targets.length === 0) {return "";}
   const visible = targets.slice(0, 8).map((target) => `  - ${target}`);
-  const suffix = targets.length > visible.length ? `  ... 另有 ${targets.length - visible.length} 个` : "";
+  const suffix = targets.length > visible.length
+    ? vscode.l10n.t("  …and {count} more", { count: targets.length - visible.length })
+    : "";
   return [title, ...visible, suffix].filter(Boolean).join("\n");
 }

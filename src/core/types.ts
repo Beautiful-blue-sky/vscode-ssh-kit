@@ -22,6 +22,7 @@ export interface SSHGroup {
 
 /** Top-level extension storage structure */
 export interface SSHKitData {
+  schemaVersion: number;
   groups: SSHGroup[];
   hosts: SSHHost[];
   groupCollapsedState: Record<string, boolean>; // Group ID → collapsed
@@ -39,6 +40,7 @@ export interface SSHKitCurrentConnection {
 /** Create default empty storage data */
 export function createDefaultData(): SSHKitData {
   return {
+    schemaVersion: 1,
     groups: [],
     hosts: [],
     groupCollapsedState: {},

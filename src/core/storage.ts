@@ -4,7 +4,6 @@ import {
   SSHKitData,
   SSHHost,
   SSHGroup,
-  createDefaultData,
   generateId,
 } from "./types";
 import {
@@ -19,6 +18,7 @@ import {
   sanitizeKeyFileName,
 } from "../keys/keyManager";
 import { findDuplicateEndpointGroups, findImportMatch } from "./hostMatching";
+import { CURRENT_DATA_SCHEMA_VERSION, migrateStoredData, ValidatedBackupData, validateBackupData } from "./dataSchema";
 
 /** Key used in globalState storage */
 const DATA_KEY = "sshKit.data";
@@ -35,12 +35,17 @@ export class StorageService {
 
   /** Read all data; return default empty data if none exists */
   getData(): SSHKitData {
-    const raw = this.context.globalState.get<SSHKitData>(DATA_KEY);
-    return raw ?? createDefaultData();
+    const raw = this.context.globalState.get<unknown>(DATA_KEY);
+    const migrated = migrateStoredData(raw);
+    if (migrated.changed) {
+      void this.context.globalState.update(DATA_KEY, migrated.data);
+    }
+    return migrated.data;
   }
 
   /** Persist all data */
   private async saveData(data: SSHKitData): Promise<void> {
+    data.schemaVersion = Math.max(data.schemaVersion, CURRENT_DATA_SCHEMA_VERSION);
     await this.context.globalState.update(DATA_KEY, data);
   }
 
@@ -323,11 +328,14 @@ export class StorageService {
   // ─── Backup / restore ───────────────────────────────────────────────
 
   /** Export all data as JSON (including base64-encoded associated key files) */
-  exportAllData(): string {
-    const keys = listKeys();
-    populateFingerprints(keys);
+  exportAllData(options: { includeKeyFiles?: boolean } = {}): string {
+    const includeKeyFiles = options.includeKeyFiles ?? true;
+    const keys = includeKeyFiles ? listKeys() : [];
+    if (includeKeyFiles) {populateFingerprints(keys);}
     const data = this.getData();
-    const keyFiles = exportKeyFiles(data.hosts.map((host) => host.identityFile).filter(Boolean) as string[]);
+    const keyFiles = includeKeyFiles
+      ? exportKeyFiles(data.hosts.map((host) => host.identityFile).filter(Boolean) as string[])
+      : [];
 
     const exportData = {
       ...data,
@@ -339,6 +347,7 @@ export class StorageService {
           fingerprint: k.fingerprint,
         })),
       keyFiles,
+      containsPrivateKeys: keyFiles.length > 0,
       exportedAt: new Date().toISOString(),
     };
 
@@ -353,15 +362,13 @@ export class StorageService {
     keyCount: number;
     keyTargets: string[];
   } {
-    let source: SSHKitData & { keyMetadata?: Array<{ name: string }>; keyFiles?: Array<unknown> };
+    let source: ValidatedBackupData;
     try {
       source = JSON.parse(json);
     } catch {
-      throw new Error("备份文件格式无效，无法解析 JSON。");
+      throw new Error(vscode.l10n.t("Invalid backup file: could not parse JSON."));
     }
-    if (!source.hosts || !source.groups) {
-      throw new Error("无效的备份文件格式。");
-    }
+    validateBackupData(source);
 
     const data = this.getData();
     const existingGroupNames = new Set(data.groups.map((g) => g.name));
@@ -410,15 +417,13 @@ export class StorageService {
     keyFilesFailed: number;
     keyFileFailures: Array<{ name: string; reason: string }>;
   }> {
-    let source: SSHKitData & { keyFiles?: KeyFileEntry[] };
+    let source: ValidatedBackupData & { keyFiles?: KeyFileEntry[] };
     try {
       source = JSON.parse(json);
     } catch {
-      throw new Error("Invalid backup file format; unable to parse JSON.");
+      throw new Error(vscode.l10n.t("Invalid backup file: could not parse JSON."));
     }
-    if (!source.hosts || !source.groups) {
-      throw new Error("Invalid backup file format.");
-    }
+    validateBackupData(source);
 
     const data = this.getData();
     let importedHosts = 0;
