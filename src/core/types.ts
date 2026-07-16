@@ -20,6 +20,14 @@ export interface SSHGroup {
   order: number;           // Sort order
 }
 
+export const HOST_SORT_MODES = ["nameAsc", "nameDesc", "addressAsc", "recent"] as const;
+export type HostSortMode = (typeof HOST_SORT_MODES)[number];
+export const DEFAULT_HOST_SORT_MODE: HostSortMode = "nameAsc";
+
+export interface SSHKitSortPreferences {
+  hostSort: HostSortMode;
+}
+
 /** Top-level extension storage structure */
 export interface SSHKitData {
   schemaVersion: number;
@@ -27,6 +35,7 @@ export interface SSHKitData {
   hosts: SSHHost[];
   groupCollapsedState: Record<string, boolean>; // Group ID → collapsed
   recentConnections: string[];                   // Recently connected host IDs
+  sortPreferences: SSHKitSortPreferences;
   currentConnection?: SSHKitCurrentConnection;   // Last SSH Kit Remote-SSH connection context
 }
 
@@ -40,11 +49,14 @@ export interface SSHKitCurrentConnection {
 /** Create default empty storage data */
 export function createDefaultData(): SSHKitData {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     groups: [],
     hosts: [],
     groupCollapsedState: {},
     recentConnections: [],
+    sortPreferences: {
+      hostSort: DEFAULT_HOST_SORT_MODE,
+    },
   };
 }
 

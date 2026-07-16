@@ -2,6 +2,21 @@
 
 [![zh-CN](https://img.shields.io/badge/CHANGELOG-中文-red)](CHANGELOG.zh-CN.md)
 
+## 0.0.12 — 2026-07-16
+
+### Added
+- Add persistent host sorting by natural name, reverse name, address, or recent connection activity; filtering keeps the selected order.
+- Add manual group ordering through hover up/down actions, target-position drag-and-drop, and folder context actions for moving to the top or bottom.
+- Add a one-click action to arrange every real host group in natural name order.
+
+### Changed
+- Normalize stored group order during data migration and include host sort preferences in backup and restore validation.
+- Preserve the relative order of newly restored groups when merging backup data, and pause group reordering while a host filter hides part of the tree.
+
+### Fixed
+- Hide edit and reorder actions from the virtual Recent Connections group.
+- Avoid writes and tree refreshes when hosts are dropped back into their current group.
+
 ## 0.0.11 — 2026-07-15
 
 ### Changed
@@ -105,7 +120,7 @@
 ## 0.0.1 — 2026-06-25
 
 ### Added
-- Host management with grouping, tagging, and drag-and-drop
+- Host management with grouping, tagging, and dragging hosts between groups
 - Connect via Remote-SSH (current window, new window) or external terminal
 - SSH key scanning, generation (ed25519 / RSA / ECDSA), and fingerprint display
 - Import from and export to `~/.ssh/config` with `Include` directive support

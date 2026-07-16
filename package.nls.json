@@ -14,6 +14,11 @@
   "commands.addGroup": "Add Group",
   "commands.renameGroup": "Rename Group",
   "commands.deleteGroup": "Delete Group",
+  "commands.moveGroupTop": "Move Group to Top",
+  "commands.moveGroupUp": "Move Group Up",
+  "commands.moveGroupDown": "Move Group Down",
+  "commands.moveGroupBottom": "Move Group to Bottom",
+  "commands.sortGroupsByName": "Sort Groups by Name",
   "commands.refresh": "Refresh",
   "commands.connectHostInCurrentWindow": "Connect in Current Window",
   "commands.connectHostInNewWindow": "Connect in New Window",
@@ -25,6 +30,7 @@
   "commands.searchHosts": "Search Hosts",
   "commands.filterHosts": "Filter Host List",
   "commands.clearHostFilter": "Clear Host Filter",
+  "commands.sortHosts": "Sort Hosts",
   "commands.importConfig": "Import from SSH Config",
   "commands.exportConfig": "Write to SSH Config",
   "commands.openSshConfig": "Open SSH Config",
@@ -46,6 +52,7 @@
   "commands.changeHostKey": "Change This Host Key",
   "commands.backupData": "Backup Data",
   "commands.restoreData": "Restore Data",
+  "menus.groupOrder": "Group Order",
   "viewsWelcome.hosts": "No SSH hosts yet.\n\n[Add Host](command:sshKit.addHost)  |  [Import from SSH Config](command:sshKit.importConfig)\n[Open SSH Config](command:sshKit.openSshConfig)",
   "viewsWelcome.keys": "No SSH keys found.\n\n[Generate SSH Key](command:sshKit.generateKey)"
 }

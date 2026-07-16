@@ -9,11 +9,12 @@ import { getErrorMessage } from "./core/utils";
 import { ConnectionStatusController } from "./core/connectionStatus";
 import { connectHostInCurrentWindow, connectHostInNewWindow, promptTerminalConnect, testConnection, searchHosts, cleanupRemoteSshAliases } from "./commands/connectCommands";
 import { addHost, editHost, deleteHost, copyHostName, copyHostDetail, deduplicateHosts, batchDeleteHosts, batchChangeHostKey, changeHostKey } from "./commands/hostCommands";
-import { addGroup, renameGroup, deleteGroup } from "./commands/groupCommands";
+import { addGroup, renameGroup, deleteGroup, moveGroup, sortGroupsByName } from "./commands/groupCommands";
 import { importConfig, exportConfig, openSshConfig, backupKitData, restoreKitData } from "./commands/ioCommands";
 import { showKeyList, generateKey } from "./commands/keyCommands";
 import { registerAIHostTools } from "./ai/hostTool";
 import { promptEditHost, promptNewHost } from "./commands/hostPrompts";
+import { sortHosts } from "./commands/sortCommands";
 
 // ─── Utility functions ────────────────────────────────────────────────────
 
@@ -33,7 +34,11 @@ export function activate(context: vscode.ExtensionContext) {
   const treeDataProvider = new HostTreeDataProvider(storage);
   const keyTreeDataProvider = new KeyTreeDataProvider();
   const connectionStatus = new ConnectionStatusController(storage, treeDataProvider);
-  const dragController = new HostDragAndDropController(storage, () => treeDataProvider.refresh());
+  const dragController = new HostDragAndDropController(
+    storage,
+    () => treeDataProvider.refresh(),
+    () => Boolean(treeDataProvider.getFilterQuery())
+  );
 
   const treeView = vscode.window.createTreeView("sshKit.hosts", {
     treeDataProvider,
@@ -146,6 +151,9 @@ function registerHostCommands(
     vscode.commands.registerCommand("sshKit.clearHostFilter", () =>
       applyHostFilter("", tree, treeView)
     ),
+    vscode.commands.registerCommand("sshKit.sortHosts", () =>
+      sortHosts(storage, tree)
+    ),
     vscode.commands.registerCommand(
       "sshKit.changeHostKey",
       (arg?: HostItem | SSHHost) => {
@@ -199,6 +207,25 @@ function registerGroupCommands(
     vscode.commands.registerCommand(
       "sshKit.deleteGroup",
       (group: GroupItem) => deleteGroup(group, storage, tree)
+    ),
+    vscode.commands.registerCommand(
+      "sshKit.moveGroupTop",
+      (group: GroupItem | undefined) => moveGroup(group, storage, tree, "top")
+    ),
+    vscode.commands.registerCommand(
+      "sshKit.moveGroupUp",
+      (group: GroupItem | undefined) => moveGroup(group, storage, tree, "up")
+    ),
+    vscode.commands.registerCommand(
+      "sshKit.moveGroupDown",
+      (group: GroupItem | undefined) => moveGroup(group, storage, tree, "down")
+    ),
+    vscode.commands.registerCommand(
+      "sshKit.moveGroupBottom",
+      (group: GroupItem | undefined) => moveGroup(group, storage, tree, "bottom")
+    ),
+    vscode.commands.registerCommand("sshKit.sortGroupsByName", () =>
+      sortGroupsByName(storage, tree)
     )
   );
 }

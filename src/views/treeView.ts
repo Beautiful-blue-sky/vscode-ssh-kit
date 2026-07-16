@@ -3,6 +3,9 @@ import * as vscode from "vscode";
 import { SSHHost, SSHGroup } from "../core/types";
 import { StorageService } from "../core/storage";
 
+/** Virtual group ID for recent connections. */
+export const RECENT_GROUP_ID = "__recent__";
+
 // ─── TreeView nodes ───────────────────────────────────────────────────────
 
 /** Group node */
@@ -21,7 +24,7 @@ export class GroupItem extends vscode.TreeItem {
     this.id = group.id;
     this.description = `(${hostCount})`;
     this.iconPath = new vscode.ThemeIcon("folder");
-    this.contextValue = "group";
+    this.contextValue = group.id === RECENT_GROUP_ID ? "recentGroup" : "group";
   }
 }
 
@@ -75,9 +78,6 @@ export class HostItem extends vscode.TreeItem {
 
 // ─── TreeDataProvider ──────────────────────────────────────────────────────
 
-/** Virtual group ID for recent connections */
-export const RECENT_GROUP_ID = "__recent__";
-
 export class HostTreeDataProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
   private _onDidChangeTreeData = new vscode.EventEmitter<
     vscode.TreeItem | undefined | void
@@ -87,6 +87,10 @@ export class HostTreeDataProvider implements vscode.TreeDataProvider<vscode.Tree
   private connectedHostId: string | undefined;
   private filterQuery = "";
   private filterMatchIds: Set<string> | undefined;
+  private readonly hostCollator = new Intl.Collator(vscode.env.language || undefined, {
+    numeric: true,
+    sensitivity: "base",
+  });
 
   constructor(private storage: StorageService) {}
 
@@ -212,12 +216,44 @@ export class HostTreeDataProvider implements vscode.TreeDataProvider<vscode.Tree
     });
   }
 
-  /** Build host nodes for a given group (groupId=undefined returns ungrouped hosts), sorted by name */
+  /** Build sorted host nodes for a group; groupId=undefined returns ungrouped hosts. */
   private buildHostNodes(groupId: string | undefined): HostItem[] {
     const itemScope = groupId ? `group:${groupId}` : "ungrouped";
-    return this.getFilteredHostsByGroup(groupId)
-      .sort((a, b) => a.name.localeCompare(b.name))
+    return this.sortHosts(this.getFilteredHostsByGroup(groupId))
       .map((h) => this.createHostItem(h, itemScope));
+  }
+
+  private sortHosts(hosts: SSHHost[]): SSHHost[] {
+    const mode = this.storage.getHostSortMode();
+    const recentRanks = mode === "recent"
+      ? new Map(this.storage.getRecentConnectionIds().map((id, index) => [id, index]))
+      : undefined;
+
+    return [...hosts].sort((left, right) => {
+      if (mode === "recent" && recentRanks) {
+        const rankDifference = (recentRanks.get(left.id) ?? Number.MAX_SAFE_INTEGER) -
+          (recentRanks.get(right.id) ?? Number.MAX_SAFE_INTEGER);
+        if (rankDifference !== 0) {return rankDifference;}
+      }
+
+      if (mode === "addressAsc") {
+        return this.compareByAddress(left, right);
+      }
+
+      const nameDifference = this.hostCollator.compare(left.name, right.name);
+      if (nameDifference !== 0) {
+        return mode === "nameDesc" ? -nameDifference : nameDifference;
+      }
+      return this.compareByAddress(left, right);
+    });
+  }
+
+  private compareByAddress(left: SSHHost, right: SSHHost): number {
+    const addressDifference = this.hostCollator.compare(left.hostname, right.hostname);
+    if (addressDifference !== 0) {return addressDifference;}
+    if (left.port !== right.port) {return left.port - right.port;}
+    const nameDifference = this.hostCollator.compare(left.name, right.name);
+    return nameDifference !== 0 ? nameDifference : left.id.localeCompare(right.id);
   }
 
   private getFilteredRecentHosts(): SSHHost[] {
@@ -263,21 +299,22 @@ export class HostTreeDataProvider implements vscode.TreeDataProvider<vscode.Tree
 
 const SSHKIT_MIME = "application/vnd.code.tree.sshKit";
 
-/**
- * Host drag-and-drop controller — supports moving hosts between groups.
- * Drop onto a group node → move host into that group.
- * Drop onto empty space → ungroup the host.
- */
+type SSHKitDragPayload =
+  | { kind: "hosts"; hostIds: string[] }
+  | { kind: "group"; groupId: string };
+
+/** Supports manual group ordering and moving hosts between groups. */
 export class HostDragAndDropController implements vscode.TreeDragAndDropController<vscode.TreeItem> {
   readonly dropMimeTypes = [SSHKIT_MIME];
   readonly dragMimeTypes = [SSHKIT_MIME];
 
   constructor(
     private storage: StorageService,
-    private onChanged: () => void
+    private onChanged: () => void,
+    private isGroupReorderBlocked: () => boolean = () => false
   ) {}
 
-  /** Prepare drag data: serialize host IDs into the DataTransfer */
+  /** Serialize the dragged hosts or group into the DataTransfer. */
   handleDrag(
     source: readonly vscode.TreeItem[],
     dataTransfer: vscode.DataTransfer,
@@ -287,11 +324,21 @@ export class HostDragAndDropController implements vscode.TreeDragAndDropControll
       .filter((s): s is HostItem => s instanceof HostItem)
       .map((s) => s.host.id);
     if (hostIds.length > 0) {
-      dataTransfer.set(SSHKIT_MIME, new vscode.DataTransferItem(JSON.stringify(hostIds)));
+      const payload: SSHKitDragPayload = { kind: "hosts", hostIds };
+      dataTransfer.set(SSHKIT_MIME, new vscode.DataTransferItem(JSON.stringify(payload)));
+      return;
+    }
+
+    const group = source.find((item): item is GroupItem =>
+      item instanceof GroupItem && item.group.id !== RECENT_GROUP_ID
+    );
+    if (group) {
+      const payload: SSHKitDragPayload = { kind: "group", groupId: group.group.id };
+      dataTransfer.set(SSHKIT_MIME, new vscode.DataTransferItem(JSON.stringify(payload)));
     }
   }
 
-  /** Handle drop: read host IDs and update their group assignment */
+  /** Reorder a group or update host group assignments. */
   async handleDrop(
     target: vscode.TreeItem | undefined,
     dataTransfer: vscode.DataTransfer,
@@ -300,19 +347,50 @@ export class HostDragAndDropController implements vscode.TreeDragAndDropControll
     const item = dataTransfer.get(SSHKIT_MIME);
     if (!item) {return;}
 
-    let hostIds: string[];
+    let payload: SSHKitDragPayload;
     try {
-      hostIds = JSON.parse(String(item.value));
+      const parsed = JSON.parse(String(item.value)) as Partial<SSHKitDragPayload>;
+      if (parsed.kind === "hosts" && Array.isArray(parsed.hostIds)) {
+        payload = { kind: "hosts", hostIds: parsed.hostIds.filter((id): id is string => typeof id === "string") };
+      } else if (parsed.kind === "group" && typeof parsed.groupId === "string") {
+        payload = { kind: "group", groupId: parsed.groupId };
+      } else {
+        return;
+      }
     } catch {
       return;
     }
 
-    // Determine target group: real GroupItem -> that group, otherwise -> ungrouped
-    const targetGroupId = target instanceof GroupItem && target.group.id !== RECENT_GROUP_ID
-      ? target.group.id
-      : undefined;
+    if (payload.kind === "group") {
+      if (this.isGroupReorderBlocked()) {
+        vscode.window.showInformationMessage(vscode.l10n.t("Clear the host filter before reordering groups."));
+        return;
+      }
+      if (target instanceof GroupItem && target.group.id === RECENT_GROUP_ID) {
+        if (await this.storage.moveGroup(payload.groupId, "top")) {this.onChanged();}
+        return;
+      }
+      const targetGroupId = target instanceof GroupItem
+        ? target.group.id
+        : target instanceof HostItem
+          ? target.host.groupId
+          : undefined;
+      if (await this.storage.moveGroupToTarget(payload.groupId, targetGroupId)) {this.onChanged();}
+      return;
+    }
 
-    for (const id of hostIds) {
+    if (target instanceof GroupItem && target.group.id === RECENT_GROUP_ID) {return;}
+    const targetGroupId = target instanceof GroupItem
+      ? target.group.id
+      : target instanceof HostItem
+        ? target.host.groupId
+        : undefined;
+
+    const hostsById = new Map(this.storage.getAllHosts().map((host) => [host.id, host]));
+    const changedHostIds = payload.hostIds.filter((id) => hostsById.get(id)?.groupId !== targetGroupId);
+    if (changedHostIds.length === 0) {return;}
+
+    for (const id of changedHostIds) {
       await this.storage.updateHost(id, { groupId: targetGroupId });
     }
     this.onChanged();

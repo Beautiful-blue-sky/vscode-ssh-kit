@@ -35,6 +35,7 @@ try {
   await runCheck("Connection status resolves encoded authority after opening a remote folder", checkConnectionStatusEncodedFolderAuthority);
   await runCheck("Expanded host details include a copyable Host nickname", checkHostDetailNickname);
   await runCheck("Host tree filtering matches address, name, group, user, port, and tags", checkHostTreeFiltering);
+  await runCheck("Group order and host sort modes persist with stable tree ordering", checkHostAndGroupOrdering);
   await runCheck("Expanded key details expose direct private and public file actions", checkKeyDetailFileActions);
   await runCheck("Remote-SSH window context claims matching aliases only", checkRemoteWindowContextStorage);
   await runCheck("Remote-SSH alias refreshes stale identity files before connecting", checkRemoteAliasRefreshesIdentityFile);
@@ -112,6 +113,14 @@ function restoreEnv(name, value) {
 function assert(condition, message) {
   if (!condition) {
     throw new Error(message);
+  }
+}
+
+function assertDeepEqual(actual, expected) {
+  const actualJson = JSON.stringify(actual);
+  const expectedJson = JSON.stringify(expected);
+  if (actualJson !== expectedJson) {
+    throw new Error(`Expected ${expectedJson}, received ${actualJson}`);
   }
 }
 
@@ -1489,7 +1498,8 @@ async function checkBackupModesAndDataMigration() {
   });
   const storage = new StorageService(context);
   const migrated = storage.getData();
-  assert(migrated.schemaVersion === 1, "Expected legacy data to receive the current schema version");
+  assert(migrated.schemaVersion === 2, "Expected legacy data to receive the current schema version");
+  assert(migrated.sortPreferences.hostSort === "nameAsc", "Expected legacy data to receive the default host sort mode");
   assert(migrated.hosts.length === 1, "Expected unusable legacy hosts to be excluded during migration");
   assert(Array.isArray(migrated.hosts[0].tags), "Expected missing legacy tags to migrate to an empty array");
   assert(migrated.recentConnections.length === 1, "Expected stale recent host ids to be removed during migration");
@@ -1498,6 +1508,7 @@ async function checkBackupModesAndDataMigration() {
   const hostsOnly = JSON.parse(storage.exportAllData({ includeKeyFiles: false }));
   assert(hostsOnly.keyFiles.length === 0, "Expected host-only backups not to contain key files");
   assert(hostsOnly.containsPrivateKeys === false, "Expected host-only backups to declare that no private keys are present");
+  assert(hostsOnly.sortPreferences.hostSort === "nameAsc", "Expected backups to include the current host sort mode");
   assert(!JSON.stringify(hostsOnly).includes(Buffer.from(fakePrivateKey("backup-mode")).toString("base64")), "Expected host-only backup not to contain private key material");
 
   const complete = JSON.parse(storage.exportAllData({ includeKeyFiles: true }));
@@ -1530,6 +1541,32 @@ async function checkBackupModesAndDataMigration() {
   }
   assert(rejectedMalformedOptionalField, "Expected malformed optional backup fields to fail validation");
 
+  let rejectedMalformedSortPreference = false;
+  try {
+    storage.previewImport(JSON.stringify({
+      groups: [],
+      hosts: [],
+      sortPreferences: { hostSort: "unsupported" },
+    }));
+  } catch {
+    rejectedMalformedSortPreference = true;
+  }
+  assert(rejectedMalformedSortPreference, "Expected malformed sort preferences to fail validation");
+
+  await storage.commitImport(JSON.stringify({
+    groups: [
+      { id: "g-late", name: "late", order: 20 },
+      { id: "g-early", name: "early", order: 10 },
+    ],
+    hosts: [],
+    sortPreferences: { hostSort: "addressAsc" },
+  }));
+  assert(storage.getHostSortMode() === "addressAsc", "Expected restore to apply the backed-up host sort mode");
+  assertDeepEqual(
+    storage.getGroups().slice(-2).map((group) => group.name),
+    ["early", "late"]
+  );
+
   let rejectedMalformedKeyFile = false;
   try {
     storage.previewImport(JSON.stringify({
@@ -1549,6 +1586,7 @@ async function checkBackupModesAndDataMigration() {
   const futureContext = createExtensionContext({
     schemaVersion: 99,
     futureSetting: { enabled: true },
+    sortPreferences: { hostSort: "recent", futureSortSetting: "manual" },
     groups: [],
     hosts: [],
     groupCollapsedState: {},
@@ -1559,6 +1597,7 @@ async function checkBackupModesAndDataMigration() {
   const futureSaved = futureContext.globalState.get("sshKit.data");
   assert(futureSaved.schemaVersion === 99, "Expected an older extension not to downgrade future schema data");
   assert(futureSaved.futureSetting?.enabled === true, "Expected unknown future schema fields to survive normal writes");
+  assert(futureSaved.sortPreferences.futureSortSetting === "manual", "Expected unknown future sort settings to survive normal writes");
 }
 
 async function checkHostTreeFiltering() {
@@ -1578,6 +1617,8 @@ async function checkHostTreeFiltering() {
     getRecentHosts: () => [hosts[0], hosts[2]],
     getHostsByGroup: (groupId) => hosts.filter((host) => host.groupId === groupId),
     getGroupCollapsedState: () => ({}),
+    getHostSortMode: () => "nameAsc",
+    getRecentConnectionIds: () => ["h-dev", "h-api"],
   };
   const { GroupItem, HostTreeDataProvider } = loadTsModule("src/views/treeView.ts", { vscode });
   const provider = new HostTreeDataProvider(storage);
@@ -1597,6 +1638,119 @@ async function checkHostTreeFiltering() {
   assert(provider.getFilteredHostCount() === 1, "Expected HostName matching to be case-insensitive");
   provider.setFilterQuery("");
   assert(provider.getFilteredHostCount() === 3, "Expected clearing the filter to restore every host");
+}
+
+async function checkHostAndGroupOrdering() {
+  const vscode = createVSCodeMock();
+  const context = createExtensionContext({
+    schemaVersion: 1,
+    groups: [
+      { id: "g-three", name: "third", order: 30 },
+      { id: "g-one", name: "first", order: 10 },
+      { id: "g-two", name: "second", order: 20 },
+    ],
+    hosts: [
+      { id: "h-node10", name: "node10", hostname: "10.0.0.2", port: 22, username: "root", groupId: "g-one", tags: [] },
+      { id: "h-node2", name: "node2", hostname: "10.0.0.10", port: 22, username: "root", groupId: "g-one", tags: [] },
+      { id: "h-alpha", name: "alpha", hostname: "db.internal", port: 2200, username: "root", groupId: "g-one", tags: [] },
+      { id: "h-target", name: "target", hostname: "192.0.2.5", port: 22, username: "root", groupId: "g-two", tags: [] },
+    ],
+    groupCollapsedState: {},
+    recentConnections: ["h-node2", "h-node10"],
+  });
+  const { StorageService } = loadTsModule("src/core/storage.ts", { vscode });
+  const { sortGroupsByName } = loadTsModule("src/commands/groupCommands.ts", { vscode });
+  const {
+    GroupItem,
+    HostItem,
+    HostTreeDataProvider,
+    HostDragAndDropController,
+  } = loadTsModule("src/views/treeView.ts", { vscode });
+  const storage = new StorageService(context);
+  const provider = new HostTreeDataProvider(storage);
+
+  assertDeepEqual(storage.getGroups().map((group) => group.id), ["g-one", "g-two", "g-three"]);
+  assertDeepEqual(storage.getGroups().map((group) => group.order), [0, 1, 2]);
+  assert(storage.getHostSortMode() === "nameAsc", "Expected schema migration to default to natural name order");
+
+  await storage.moveGroup("g-three", "top");
+  await storage.moveGroup("g-three", "down");
+  await storage.moveGroupToTarget("g-two", "g-one");
+  assertDeepEqual(storage.getGroups().map((group) => group.id), ["g-two", "g-one", "g-three"]);
+
+  await storage.moveGroupToTarget("g-two", "g-three");
+  assertDeepEqual(storage.getGroups().map((group) => group.id), ["g-one", "g-three", "g-two"]);
+  await storage.moveGroupToTarget("g-two", "g-one");
+  assertDeepEqual(storage.getGroups().map((group) => group.id), ["g-two", "g-one", "g-three"]);
+  await storage.setGroupOrder(["g-one", "g-two", "g-three"]);
+  assertDeepEqual(storage.getGroups().map((group) => group.id), ["g-one", "g-two", "g-three"]);
+  await storage.setGroupOrder(["g-three", "g-two", "g-one"]);
+  let alphabeticalRefreshCount = 0;
+  await sortGroupsByName(storage, { refresh() { alphabeticalRefreshCount++; } });
+  assertDeepEqual(storage.getGroups().map((group) => group.id), ["g-one", "g-two", "g-three"]);
+  assert(alphabeticalRefreshCount === 1, "Expected alphabetical group sorting to refresh the tree once");
+  await storage.setGroupOrder(["g-two", "g-one", "g-three"]);
+
+  const getGroupHosts = async (groupId) => {
+    const group = new GroupItem(storage.getGroups().find((item) => item.id === groupId), 0, false);
+    return (await provider.getChildren(group)).filter((item) => item instanceof HostItem).map((item) => item.host.name);
+  };
+  assertDeepEqual(await getGroupHosts("g-one"), ["alpha", "node2", "node10"]);
+
+  await storage.setHostSortMode("nameDesc");
+  assertDeepEqual(await getGroupHosts("g-one"), ["node10", "node2", "alpha"]);
+  await storage.setHostSortMode("addressAsc");
+  assertDeepEqual(await getGroupHosts("g-one"), ["node10", "node2", "alpha"]);
+  await storage.setHostSortMode("recent");
+  assertDeepEqual(await getGroupHosts("g-one"), ["node2", "node10", "alpha"]);
+
+  provider.setFilterQuery("node");
+  assertDeepEqual(await getGroupHosts("g-one"), ["node2", "node10"]);
+  provider.setFilterQuery("");
+
+  const rootItems = await provider.getChildren();
+  const recentGroup = rootItems.find((item) => item instanceof GroupItem && item.group.id === "__recent__");
+  const realGroup = rootItems.find((item) => item instanceof GroupItem && item.group.id === "g-one");
+  assert(recentGroup?.contextValue === "recentGroup", "Expected the recent virtual group not to expose group edit actions");
+  assert(realGroup?.contextValue === "group", "Expected real groups to retain group actions");
+
+  let refreshCount = 0;
+  const controller = new HostDragAndDropController(storage, () => { refreshCount++; });
+  const transferValues = new Map();
+  const transfer = {
+    set(type, value) { transferValues.set(type, value); },
+    get(type) { return transferValues.get(type); },
+  };
+  const sourceGroup = new GroupItem(storage.getGroups().find((group) => group.id === "g-three"), 0, false);
+  const targetGroup = new GroupItem(storage.getGroups().find((group) => group.id === "g-two"), 0, false);
+  controller.handleDrag([sourceGroup], transfer, {});
+  await controller.handleDrop(targetGroup, transfer, {});
+  assertDeepEqual(storage.getGroups().map((group) => group.id), ["g-three", "g-two", "g-one"]);
+  assert(refreshCount === 1, "Expected group drag-and-drop to refresh the tree once");
+
+  const blockedController = new HostDragAndDropController(storage, () => { refreshCount++; }, () => true);
+  const blockedTransferValues = new Map();
+  const blockedTransfer = {
+    set(type, value) { blockedTransferValues.set(type, value); },
+    get(type) { return blockedTransferValues.get(type); },
+  };
+  const blockedSource = new GroupItem(storage.getGroups().find((group) => group.id === "g-one"), 0, false);
+  const blockedTarget = new GroupItem(storage.getGroups().find((group) => group.id === "g-three"), 0, false);
+  blockedController.handleDrag([blockedSource], blockedTransfer, {});
+  await blockedController.handleDrop(blockedTarget, blockedTransfer, {});
+  assertDeepEqual(storage.getGroups().map((group) => group.id), ["g-three", "g-two", "g-one"]);
+  assert(refreshCount === 1, "Expected filtered group drag-and-drop not to change or refresh the tree");
+
+  const hostTransferValues = new Map();
+  const hostTransfer = {
+    set(type, value) { hostTransferValues.set(type, value); },
+    get(type) { return hostTransferValues.get(type); },
+  };
+  const sourceHost = new HostItem(storage.getAllHosts().find((host) => host.id === "h-node2"), "group:g-one");
+  const sameGroupTarget = new GroupItem(storage.getGroups().find((group) => group.id === "g-one"), 0, false);
+  controller.handleDrag([sourceHost], hostTransfer, {});
+  await controller.handleDrop(sameGroupTarget, hostTransfer, {});
+  assert(refreshCount === 1, "Expected dropping a host into its current group to be a no-op");
 }
 
 async function checkConnectivityTestHostKeyPolicy() {
@@ -1689,6 +1843,11 @@ function createVSCodeMock() {
       for (const listener of this.listeners) {
         listener(value);
       }
+    }
+  }
+  class DataTransferItem {
+    constructor(value) {
+      this.value = value;
     }
   }
   const statusBarItem = {
@@ -1810,6 +1969,7 @@ function createVSCodeMock() {
     ThemeIcon,
     ThemeColor,
     EventEmitter,
+    DataTransferItem,
     StatusBarAlignment: {
       Left: 1,
       Right: 2,

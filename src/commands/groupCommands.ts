@@ -1,6 +1,6 @@
 // SSH Kit — Group management commands
 import * as vscode from "vscode";
-import { StorageService } from "../core/storage";
+import { GroupMoveDirection, StorageService } from "../core/storage";
 import { GroupItem, HostTreeDataProvider } from "../views/treeView";
 
 /** Add a new group */
@@ -63,4 +63,37 @@ export async function deleteGroup(
 
   await storage.deleteGroup(groupItem.group.id);
   tree.refresh();
+}
+
+export async function moveGroup(
+  groupItem: GroupItem | undefined,
+  storage: StorageService,
+  tree: HostTreeDataProvider,
+  direction: GroupMoveDirection
+): Promise<void> {
+  if (!groupItem) {
+    vscode.window.showInformationMessage(vscode.l10n.t("Run this command from a host group."));
+    return;
+  }
+  if (await storage.moveGroup(groupItem.group.id, direction)) {
+    tree.refresh();
+  }
+}
+
+export async function sortGroupsByName(
+  storage: StorageService,
+  tree: HostTreeDataProvider
+): Promise<void> {
+  const collator = new Intl.Collator(vscode.env.language || undefined, {
+    numeric: true,
+    sensitivity: "base",
+  });
+  const groups = storage.getGroups();
+  const sortedIds = [...groups]
+    .sort((left, right) => collator.compare(left.name, right.name) || left.order - right.order)
+    .map((group) => group.id);
+  if (await storage.setGroupOrder(sortedIds)) {
+    tree.refresh();
+    vscode.window.setStatusBarMessage(vscode.l10n.t("$(check) SSH Kit groups sorted by name"), 3000);
+  }
 }

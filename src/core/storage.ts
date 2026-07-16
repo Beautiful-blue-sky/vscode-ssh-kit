@@ -4,6 +4,7 @@ import {
   SSHKitData,
   SSHHost,
   SSHGroup,
+  HostSortMode,
   generateId,
 } from "./types";
 import {
@@ -25,6 +26,8 @@ const DATA_KEY = "sshKit.data";
 const WINDOW_CONNECTION_KEY = "sshKit.windowConnection";
 const PENDING_CONNECTIONS_KEY = "sshKit.pendingConnections";
 const REMOTE_AUTHORITY_CONNECTIONS_KEY = "sshKit.remoteAuthorityConnections";
+
+export type GroupMoveDirection = "top" | "up" | "down" | "bottom";
 
 /**
  * Storage service — wraps read/write operations on VS Code globalState.
@@ -69,6 +72,80 @@ export class StorageService {
     return group;
   }
 
+  /** Move a group within the persisted manual order. */
+  async moveGroup(id: string, direction: GroupMoveDirection): Promise<boolean> {
+    const data = this.getData();
+    const groups = [...data.groups].sort((left, right) => left.order - right.order);
+    const currentIndex = groups.findIndex((group) => group.id === id);
+    if (currentIndex < 0) {return false;}
+
+    const targetIndex = direction === "top"
+      ? 0
+      : direction === "bottom"
+        ? groups.length - 1
+        : direction === "up"
+          ? Math.max(0, currentIndex - 1)
+          : Math.min(groups.length - 1, currentIndex + 1);
+    if (targetIndex === currentIndex) {return false;}
+
+    const [group] = groups.splice(currentIndex, 1);
+    groups.splice(targetIndex, 0, group);
+    data.groups = normalizeGroupOrder(groups);
+    await this.saveData(data);
+    return true;
+  }
+
+  /** Move a group to another group's position, or to the end when no target is supplied. */
+  async moveGroupToTarget(id: string, targetId?: string): Promise<boolean> {
+    if (id === targetId) {return false;}
+    const data = this.getData();
+    const groups = [...data.groups].sort((left, right) => left.order - right.order);
+    const currentIndex = groups.findIndex((group) => group.id === id);
+    if (currentIndex < 0) {return false;}
+
+    const originalTargetIndex = targetId
+      ? groups.findIndex((candidate) => candidate.id === targetId)
+      : groups.length;
+    if (targetId && originalTargetIndex < 0) {return false;}
+
+    const [group] = groups.splice(currentIndex, 1);
+    const targetIndex = targetId
+      ? groups.findIndex((candidate) => candidate.id === targetId)
+      : groups.length;
+    const insertionIndex = targetId && currentIndex < originalTargetIndex
+      ? targetIndex + 1
+      : targetIndex;
+    groups.splice(insertionIndex, 0, group);
+
+    const reordered = normalizeGroupOrder(groups);
+    const changed = reordered.some((candidate) =>
+      candidate.order !== data.groups.find((existing) => existing.id === candidate.id)?.order
+    );
+    if (!changed) {return false;}
+    data.groups = reordered;
+    await this.saveData(data);
+    return true;
+  }
+
+  /** Replace the persisted manual order when every current group is present exactly once. */
+  async setGroupOrder(groupIds: readonly string[]): Promise<boolean> {
+    const data = this.getData();
+    const current = [...data.groups].sort((left, right) => left.order - right.order);
+    if (groupIds.length !== current.length || new Set(groupIds).size !== current.length) {return false;}
+
+    const groupsById = new Map(current.map((group) => [group.id, group]));
+    const reordered = groupIds.flatMap((id) => {
+      const group = groupsById.get(id);
+      return group ? [group] : [];
+    });
+    if (reordered.length !== current.length) {return false;}
+    if (reordered.every((group, index) => group.id === current[index].id)) {return false;}
+
+    data.groups = normalizeGroupOrder(reordered);
+    await this.saveData(data);
+    return true;
+  }
+
   /** Update a group name */
   async updateGroup(id: string, name: string): Promise<void> {
     const data = this.getData();
@@ -82,7 +159,7 @@ export class StorageService {
   /** Delete a group (hosts in group are moved to ungrouped) */
   async deleteGroup(id: string): Promise<void> {
     const data = this.getData();
-    data.groups = data.groups.filter((g) => g.id !== id);
+    data.groups = normalizeGroupOrder(data.groups.filter((g) => g.id !== id));
     // Unlink hosts from the deleted group
     for (const host of data.hosts) {
       if (host.groupId === id) {
@@ -102,6 +179,17 @@ export class StorageService {
   /** Get all hosts */
   getAllHosts(): SSHHost[] {
     return [...this.getData().hosts];
+  }
+
+  getHostSortMode(): HostSortMode {
+    return this.getData().sortPreferences.hostSort;
+  }
+
+  async setHostSortMode(mode: HostSortMode): Promise<void> {
+    const data = this.getData();
+    if (data.sortPreferences.hostSort === mode) {return;}
+    data.sortPreferences.hostSort = mode;
+    await this.saveData(data);
   }
 
   /** Find a host by name (used for import deduplication) */
@@ -213,6 +301,10 @@ export class StorageService {
       .slice(0, 10)
       .map((id) => hostMap.get(id))
       .filter((h): h is SSHHost => h !== undefined);
+  }
+
+  getRecentConnectionIds(): string[] {
+    return [...this.getData().recentConnections];
   }
 
   async setCurrentConnection(hostId: string, alias: string): Promise<void> {
@@ -452,7 +544,10 @@ export class StorageService {
     }
 
     const existingGroupsByName = new Map(data.groups.map((g) => [g.name, g]));
-    for (const g of source.groups) {
+    const sourceGroups = [...source.groups].sort((left, right) =>
+      (left.order ?? Number.MAX_SAFE_INTEGER) - (right.order ?? Number.MAX_SAFE_INTEGER)
+    );
+    for (const g of sourceGroups) {
       const existing = existingGroupsByName.get(g.name);
       if (existing) {
         groupIdMap.set(g.id, existing.id);
@@ -493,6 +588,10 @@ export class StorageService {
       importedHosts++;
     }
 
+    if (source.sortPreferences?.hostSort) {
+      data.sortPreferences.hostSort = source.sortPreferences.hostSort;
+    }
+
     await this.saveData(data);
 
     return {
@@ -506,6 +605,10 @@ export class StorageService {
       keyFileFailures,
     };
   }
+}
+
+function normalizeGroupOrder(groups: SSHGroup[]): SSHGroup[] {
+  return groups.map((group, index) => ({ ...group, order: index }));
 }
 
 function rewriteImportedIdentityFile(

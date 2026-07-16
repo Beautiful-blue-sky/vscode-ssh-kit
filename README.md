@@ -34,10 +34,13 @@ SSH Kit is a focused SSH host manager for VS Code. It gives you one place to org
 ### Host Management
 
 - Folders for grouping SSH hosts.
+- Reorder folders with hover actions for quick up/down moves, by dragging a folder onto the target position, or through **Group Order** in the folder context menu.
+- Arrange all folders in natural name order with one command; manual ordering remains available afterward.
 - Drag-and-drop hosts between folders.
 - Recently connected hosts at the top of the list.
+- Sort hosts inside every folder by natural name order, reverse name order, address, or recent connection activity. The selected mode is preserved across restarts and remains active while filtering.
 - Search-and-connect by host name, address, or tag.
-- Filter the host tree in place by Host alias, IP / HostName, user, port, group, or tags. Space-separated terms are combined, and the adjacent clear action restores the full tree.
+- Filter the host tree in place by Host alias, IP / HostName, user, port, group, or tags. Space-separated terms are combined, and the adjacent clear action restores the full tree. Group reordering is paused while a filter hides part of the list.
 - Batch delete and endpoint-based duplicate cleanup.
 - Batch change the associated key path for selected hosts, including clearing the key or entering a custom path.
 - Right-click a host to change only that host's associated key.
@@ -137,6 +140,8 @@ Available from `Ctrl+Shift+P`:
 | `SSH Kit: Add Group` | Create a host group |
 | `SSH Kit: Refresh` | Refresh host and key views |
 | `SSH Kit: Search Hosts` | Search hosts and connect |
+| `SSH Kit: Sort Hosts` | Sort hosts by natural name, reverse name, address, or recent connection activity |
+| `SSH Kit: Sort Groups by Name` | Arrange all real host groups in natural name order |
 | `SSH Kit: Filter Host List` | Filter the current host tree by alias, address, user, port, group, or tags |
 | `SSH Kit: Clear Host Filter` | Clear the active host-tree filter |
 | `SSH Kit: Import from SSH Config` | Import hosts from `~/.ssh/config` with a preview |

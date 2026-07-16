@@ -1,7 +1,18 @@
 import * as vscode from "vscode";
-import { createDefaultData, generateId, SSHGroup, SSHHost, SSHKitCurrentConnection, SSHKitData } from "./types";
+import {
+  createDefaultData,
+  DEFAULT_HOST_SORT_MODE,
+  generateId,
+  HOST_SORT_MODES,
+  HostSortMode,
+  SSHGroup,
+  SSHHost,
+  SSHKitCurrentConnection,
+  SSHKitData,
+  SSHKitSortPreferences,
+} from "./types";
 
-export const CURRENT_DATA_SCHEMA_VERSION = 1;
+export const CURRENT_DATA_SCHEMA_VERSION = 2;
 
 interface MigrationResult {
   data: SSHKitData;
@@ -10,7 +21,14 @@ interface MigrationResult {
 
 type UnknownRecord = Record<string, unknown>;
 
-export interface ValidatedBackupData extends SSHKitData {
+export interface ValidatedBackupData {
+  schemaVersion?: number;
+  groups: Array<Omit<SSHGroup, "order"> & { order?: number }>;
+  hosts: SSHHost[];
+  groupCollapsedState?: Record<string, boolean>;
+  recentConnections?: string[];
+  sortPreferences?: Partial<SSHKitSortPreferences>;
+  currentConnection?: SSHKitCurrentConnection;
   keyMetadata?: Array<{ name: string }>;
   keyFiles?: Array<{
     name: string;
@@ -32,6 +50,7 @@ export function migrateStoredData(raw: unknown): MigrationResult {
   const groupCollapsedState = normalizeCollapsedState(raw.groupCollapsedState, groupIds);
   const recentConnections = normalizeRecentConnections(raw.recentConnections, hostIds);
   const currentConnection = normalizeCurrentConnection(raw.currentConnection, hostIds);
+  const sortPreferences = normalizeSortPreferences(raw.sortPreferences);
   const rawVersion = typeof raw.schemaVersion === "number" && Number.isInteger(raw.schemaVersion)
     ? raw.schemaVersion
     : 0;
@@ -42,10 +61,18 @@ export function migrateStoredData(raw: unknown): MigrationResult {
     hosts,
     groupCollapsedState,
     recentConnections,
+    sortPreferences,
     ...(currentConnection ? { currentConnection } : {}),
   };
   const data = rawVersion > CURRENT_DATA_SCHEMA_VERSION
-    ? { ...raw, ...knownData, schemaVersion: rawVersion } as SSHKitData
+    ? {
+        ...raw,
+        ...knownData,
+        sortPreferences: isRecord(raw.sortPreferences)
+          ? { ...raw.sortPreferences, ...sortPreferences }
+          : sortPreferences,
+        schemaVersion: rawVersion,
+      } as SSHKitData
     : knownData;
 
   return {
@@ -94,6 +121,15 @@ export function validateBackupData(raw: unknown): asserts raw is ValidatedBackup
     }
   });
 
+  if (raw.sortPreferences !== undefined) {
+    if (
+      !isRecord(raw.sortPreferences) ||
+      (raw.sortPreferences.hostSort !== undefined && !isHostSortMode(raw.sortPreferences.hostSort))
+    ) {
+      throw new Error(vscode.l10n.t("Invalid SSH Kit backup: sort preferences are malformed."));
+    }
+  }
+
   if (raw.keyMetadata !== undefined) {
     if (!Array.isArray(raw.keyMetadata) || raw.keyMetadata.some((entry) =>
       !isRecord(entry) || !isNonEmptyString(entry.name)
@@ -137,7 +173,9 @@ function normalizeGroups(value: unknown): SSHGroup[] {
         : index,
     });
   });
-  return groups;
+  return groups
+    .sort((left, right) => left.order - right.order)
+    .map((group, index) => ({ ...group, order: index }));
 }
 
 function normalizeHosts(value: unknown, groupIds: Set<string>): SSHHost[] {
@@ -212,6 +250,18 @@ function normalizeCurrentConnection(value: unknown, hostIds: Set<string>): SSHKi
     alias: value.alias,
     connectedAt: value.connectedAt,
   };
+}
+
+function normalizeSortPreferences(value: unknown): SSHKitSortPreferences {
+  return {
+    hostSort: isRecord(value) && isHostSortMode(value.hostSort)
+      ? value.hostSort
+      : DEFAULT_HOST_SORT_MODE,
+  };
+}
+
+function isHostSortMode(value: unknown): value is HostSortMode {
+  return typeof value === "string" && HOST_SORT_MODES.some((mode) => mode === value);
 }
 
 function isRecord(value: unknown): value is UnknownRecord {

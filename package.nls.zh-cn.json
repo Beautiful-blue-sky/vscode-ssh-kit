@@ -14,6 +14,11 @@
   "commands.addGroup": "添加分组",
   "commands.renameGroup": "重命名分组",
   "commands.deleteGroup": "删除分组",
+  "commands.moveGroupTop": "分组移到顶部",
+  "commands.moveGroupUp": "分组上移",
+  "commands.moveGroupDown": "分组下移",
+  "commands.moveGroupBottom": "分组移到底部",
+  "commands.sortGroupsByName": "按名称排列分组",
   "commands.refresh": "刷新",
   "commands.connectHostInCurrentWindow": "在当前窗口连接",
   "commands.connectHostInNewWindow": "在新窗口连接",
@@ -25,6 +30,7 @@
   "commands.searchHosts": "搜索主机",
   "commands.filterHosts": "筛选主机列表",
   "commands.clearHostFilter": "清除主机筛选",
+  "commands.sortHosts": "主机排序",
   "commands.importConfig": "从 SSH Config 导入",
   "commands.exportConfig": "写入到 SSH Config",
   "commands.openSshConfig": "打开 SSH Config 文件",
@@ -46,6 +52,7 @@
   "commands.changeHostKey": "修改此主机关联密钥",
   "commands.backupData": "备份数据",
   "commands.restoreData": "恢复数据",
+  "menus.groupOrder": "调整分组顺序",
   "viewsWelcome.hosts": "还没有 SSH 主机。\n\n[添加主机](command:sshKit.addHost)  |  [从 SSH Config 导入](command:sshKit.importConfig)\n[打开 SSH Config 文件](command:sshKit.openSshConfig)",
   "viewsWelcome.keys": "没有找到 SSH 密钥。\n\n[生成 SSH 密钥](command:sshKit.generateKey)"
 }
