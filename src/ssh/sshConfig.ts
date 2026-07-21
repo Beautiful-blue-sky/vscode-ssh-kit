@@ -4,6 +4,13 @@ import * as path from "path";
 import * as os from "os";
 import * as vscode from "vscode";
 import { SSHHost, SSHGroup } from "../core/types";
+import {
+  assertSingleLineSSHConfigValue,
+  formatSSHConfigWord,
+  formatSSHDirectiveKey,
+  formatSSHIdentityFile,
+  splitSSHConfigWords,
+} from "./configText";
 
 /** Default SSH config file path */
 function defaultConfigPath(): string {
@@ -56,7 +63,7 @@ function parseSections(rawText: string): HostSection[] {
       // New Host section starts; save the previous one
       if (current) {sections.push(current);}
       current = {
-        aliases: splitSSHWords(value),
+        aliases: splitSSHConfigWords(value),
         props: {},
       };
     } else if (directive === "match") {
@@ -110,10 +117,13 @@ export function importFromSSHConfig(
     const concreteAliases = section.aliases.filter(isConcreteHostAlias);
     if (concreteAliases.length === 0) {continue;}
 
-    const hostname = getLastDirective(section.props, "hostname") ?? concreteAliases[0];
-    const port = parseInt(getLastDirective(section.props, "port") ?? "22", 10);
-    const username = getLastDirective(section.props, "user") ?? "";
-    const identityFile = getLastDirective(section.props, "identityfile");
+    const hostname = getLastDirectiveWord(section.props, "hostname") ?? concreteAliases[0];
+    const parsedPort = Number.parseInt(getLastDirectiveWord(section.props, "port") ?? "22", 10);
+    const port = Number.isInteger(parsedPort) && parsedPort >= 1 && parsedPort <= 65535
+      ? parsedPort
+      : 22;
+    const username = getLastDirectiveWord(section.props, "user") ?? "";
+    const identityFile = getLastDirectiveWord(section.props, "identityfile");
 
     for (const alias of concreteAliases) {
       hosts.push({
@@ -156,7 +166,7 @@ function readConfigWithIncludes(
       const match = line.match(includeRegex);
       if (!match) {return line;}
 
-      const includePatterns = splitSSHWords(match[1].trim());
+      const includePatterns = splitSSHConfigWords(match[1].trim());
       return includePatterns
         .map((includePattern) => resolveIncludeFiles(includePattern, resolved, visited))
         .join("\n");
@@ -202,19 +212,6 @@ function resolveIncludeFiles(
     .join("\n");
 }
 
-/** Split SSH config word lists (quotes preserve spaces). */
-function splitSSHWords(value: string): string[] {
-  const words: string[] = [];
-  const tokenRegex = /"([^"]+)"|'([^']+)'|(\S+)/g;
-  let match: RegExpExecArray | null;
-
-  while ((match = tokenRegex.exec(value)) !== null) {
-    words.push(match[1] ?? match[2] ?? match[3]);
-  }
-
-  return words;
-}
-
 function stripConnectAliasBlocks(rawText: string): string {
   return rawText.replace(
     /^# SSH Kit connect alias ([^\r\n]+) begin\r?\n[\s\S]*?^# SSH Kit connect alias \1 end\r?\n?/gm,
@@ -238,16 +235,16 @@ function globPatternToRegex(pattern: string): RegExp {
  */
 function formatHostSection(host: SSHHost): string {
   const lines: string[] = [];
-  lines.push(`Host ${formatHostPattern(host.name)}`);
-  lines.push(`  HostName ${host.hostname}`);
+  lines.push(`Host ${formatSSHConfigWord(host.name)}`);
+  lines.push(`  HostName ${formatSSHConfigWord(host.hostname)}`);
   if (host.port && host.port !== 22) {
     lines.push(`  Port ${host.port}`);
   }
   if (host.username) {
-    lines.push(`  User ${host.username}`);
+    lines.push(`  User ${formatSSHConfigWord(host.username)}`);
   }
   if (host.identityFile) {
-    lines.push(`  IdentityFile ${host.identityFile}`);
+    lines.push(`  IdentityFile ${formatSSHIdentityFile(host.identityFile)}`);
   }
   // Preserve additional config directives
   if (host.extraConfig) {
@@ -262,7 +259,8 @@ function formatHostSection(host: SSHHost): string {
       ) {continue;}
       const values = Array.isArray(value) ? value : [value];
       for (const item of values) {
-        lines.push(`  ${formatDirectiveKey(key)} ${item}`);
+        assertSingleLineSSHConfigValue(item);
+        lines.push(`  ${formatSSHDirectiveKey(key)} ${item}`);
       }
     }
   }
@@ -277,41 +275,20 @@ function getLastDirective(
   return values?.[values.length - 1];
 }
 
+function getLastDirectiveWord(
+  props: Record<string, string[]>,
+  key: string
+): string | undefined {
+  const value = getLastDirective(props, key);
+  return value ? splitSSHConfigWords(value)[0] : undefined;
+}
+
 function toExtraConfig(props: Record<string, string[]>): Record<string, string | string[]> {
   const extraConfig: Record<string, string | string[]> = {};
   for (const [key, values] of Object.entries(props)) {
     extraConfig[key] = values.length === 1 ? values[0] : [...values];
   }
   return extraConfig;
-}
-
-function formatDirectiveKey(key: string): string {
-  const canonical: Record<string, string> = {
-    addkeystoagent: "AddKeysToAgent",
-    certificatefile: "CertificateFile",
-    compression: "Compression",
-    connecttimeout: "ConnectTimeout",
-    forwardagent: "ForwardAgent",
-    identitiesonly: "IdentitiesOnly",
-    localforward: "LocalForward",
-    loglevel: "LogLevel",
-    proxycommand: "ProxyCommand",
-    proxyjump: "ProxyJump",
-    remoteforward: "RemoteForward",
-    sendenv: "SendEnv",
-    serveralivecountmax: "ServerAliveCountMax",
-    serveraliveinterval: "ServerAliveInterval",
-    stricthostkeychecking: "StrictHostKeyChecking",
-    userknownhostsfile: "UserKnownHostsFile",
-  };
-  return canonical[key.toLowerCase()] ?? key;
-}
-
-function formatHostPattern(pattern: string): string {
-  if (/[\s#"'\\]/.test(pattern)) {
-    return `"${pattern.replace(/\\/g, "\\\\").replace(/"/g, "\\\"")}"`;
-  }
-  return pattern;
 }
 
 /** Marker for SSH Kit managed blocks */
@@ -483,7 +460,7 @@ function findHostBlocks(rawText: string): HostBlock[] {
 
     const end = sections[index + 1]?.start ?? rawText.length;
     const text = rawText.slice(section.start, end);
-    const aliases = splitSSHWords(section.value);
+    const aliases = splitSSHConfigWords(section.value);
     blocks.push({
       aliases,
       text,
@@ -599,9 +576,9 @@ function getHostBlockTarget(
 ): { hostname: string; port: number; username: string } | undefined {
   const section = parseSections(text)[0];
   if (!section) {return undefined;}
-  const hostname = getLastDirective(section.props, "hostname") ?? aliases[0];
-  const port = parseInt(getLastDirective(section.props, "port") ?? "22", 10);
-  const username = getLastDirective(section.props, "user") ?? "";
+  const hostname = getLastDirectiveWord(section.props, "hostname") ?? aliases[0];
+  const port = Number.parseInt(getLastDirectiveWord(section.props, "port") ?? "22", 10);
+  const username = getLastDirectiveWord(section.props, "user") ?? "";
   return {
     hostname,
     port: Number.isFinite(port) ? port : 22,

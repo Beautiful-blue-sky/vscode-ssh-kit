@@ -3,6 +3,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import * as vscode from "vscode";
+import { formatHostEndpoint } from "../core/endpoint";
 import { SSHHost } from "../core/types";
 import { createImportedHostUpdates, findImportMatch } from "../core/hostMatching";
 import { StorageService } from "../core/storage";
@@ -126,7 +127,7 @@ function previewSSHConfigImport(
     }
     if (match === "ambiguous") {
       preview.ambiguous++;
-      pushSample(preview.ambiguousSamples, `${host.name} (${host.username}@${host.hostname}:${host.port})`);
+      pushSample(preview.ambiguousSamples, `${host.name} (${formatHostEndpoint(host)})`);
       continue;
     }
     if (match) {
@@ -155,7 +156,7 @@ function previewSSHConfigImport(
     };
     knownHosts.push(previewHost);
     touchedHostIds.add(previewHost.id);
-    pushSample(preview.importedSamples, `${host.name} (${host.username}@${host.hostname}:${host.port})`);
+    pushSample(preview.importedSamples, `${host.name} (${formatHostEndpoint(host)})`);
   }
 
   return preview;
@@ -523,7 +524,7 @@ async function resolveRestoreKeyPlan(json: string): Promise<RestoreKeyPlan | und
       continue;
     }
 
-    if (!fs.existsSync(originalTarget)) {
+    if (!keyPairTargetExists(originalTarget)) {
       plan.entries.push({ sourceName: entry.name, targetName: entry.name });
       plan.writeTargets.push(formatHomeRelativeKeyTarget(entry.name));
       continue;
@@ -600,7 +601,7 @@ async function promptCustomRestoreKeyName(sourceName: string): Promise<string | 
       if (safeName !== trimmed) {return vscode.l10n.t("Enter only a file name, without a path, spaces, or special characters");}
       const targetPath = getImportKeyTargetPath(safeName);
       if (!targetPath) {return vscode.l10n.t("File name is invalid");}
-      if (fs.existsSync(targetPath)) {return vscode.l10n.t("Target file already exists: ~/.ssh/{name}", { name: safeName });}
+      if (keyPairTargetExists(targetPath)) {return vscode.l10n.t("Target file already exists: ~/.ssh/{name}", { name: safeName });}
       return undefined;
     },
   });
@@ -613,11 +614,15 @@ function makeAvailableRestoreKeyName(sourceName: string): string {
   for (let index = 1; index <= 999; index++) {
     const candidate = index === 1 ? baseName : `${baseName}-${index}`;
     const targetPath = getImportKeyTargetPath(candidate);
-    if (targetPath && !fs.existsSync(targetPath)) {
+    if (targetPath && !keyPairTargetExists(targetPath)) {
       return candidate;
     }
   }
   return `${baseName}-${Date.now()}`;
+}
+
+function keyPairTargetExists(privatePath: string): boolean {
+  return fs.existsSync(privatePath) || fs.existsSync(`${privatePath}.pub`);
 }
 
 function formatHomeRelativeKeyTarget(name: string): string {

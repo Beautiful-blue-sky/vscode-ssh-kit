@@ -4,9 +4,17 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import * as vscode from "vscode";
+import { formatHostEndpoint } from "../core/endpoint";
 import { SSHHost } from "../core/types";
 import { StorageService } from "../core/storage";
 import { getErrorMessage } from "../core/utils";
+import {
+  assertSingleLineSSHConfigValue,
+  formatSSHConfigWord,
+  formatSSHDirectiveKey,
+  formatSSHIdentityFile,
+  splitSSHConfigWords,
+} from "../ssh/configText";
 
 // ─── VS Code Remote-SSH connection ────────────────────────────────────────
 
@@ -219,7 +227,7 @@ export async function testConnection(host: SSHHost): Promise<void> {
   ];
 
   vscode.window.showInformationMessage(
-    vscode.l10n.t("Testing {name} ({address}:{port})…", { name: host.name, address: host.hostname, port: host.port })
+    vscode.l10n.t("Testing {name} ({endpoint})…", { name: host.name, endpoint: formatHostEndpoint(host, false) })
   );
 
   try {
@@ -290,7 +298,7 @@ export async function searchHosts(storage: StorageService): Promise<void> {
 
   const items = hosts.map((h) => ({
     label: `$(server) ${h.name}`,
-    description: `${h.username}@${h.hostname}:${h.port}`,
+    description: formatHostEndpoint(h),
     detail: h.tags.length > 0 ? h.tags.join(", ") : undefined,
     host: h,
   }));
@@ -328,7 +336,7 @@ export async function connectInExternalTerminal(
   vscode.window.showInformationMessage(
     vscode.l10n.t("Connecting to {name} in an external terminal ({target})…", {
       name: host.name,
-      target: `${host.username}@${host.hostname}:${host.port}`,
+      target: formatHostEndpoint(host),
     })
   );
 
@@ -377,7 +385,7 @@ async function openVSCodeRemoteEmptyWindow(
 }
 
 function formatHostSpec(host: SSHHost): string {
-  return `${host.username}@${host.hostname}:${host.port}`;
+  return formatHostEndpoint(host);
 }
 
 function buildRemoteDisplayLabel(host: SSHHost): string {
@@ -482,10 +490,7 @@ function truncateText(value: string, maxLength: number): string {
 }
 
 function formatDisplayEndpoint(host: SSHHost): string {
-  const hostname = host.hostname.includes(":") && !host.hostname.startsWith("[")
-    ? `[${host.hostname}]`
-    : host.hostname;
-  return `${hostname}:${host.port}`;
+  return formatHostEndpoint(host, false);
 }
 
 function formatRemoteAliasEndpoint(host: SSHHost): string {
@@ -564,7 +569,7 @@ function findHostConfig(rawText: string, alias: string): Record<string, string[]
       const found = flush();
       if (found) {return found;}
       currentAliases = sectionMatch[1].toLowerCase() === "host"
-        ? splitSSHWords(sectionMatch[2])
+        ? splitSSHConfigWords(sectionMatch[2])
         : [];
       currentProps = {};
       continue;
@@ -585,18 +590,6 @@ function getLastConfigValue(props: Record<string, string[]>, key: string): strin
   return values?.[values.length - 1];
 }
 
-function splitSSHWords(value: string): string[] {
-  const words: string[] = [];
-  const tokenRegex = /"([^"]+)"|'([^']+)'|(\S+)/g;
-  let match: RegExpExecArray | null;
-
-  while ((match = tokenRegex.exec(value)) !== null) {
-    words.push(match[1] ?? match[2] ?? match[3]);
-  }
-
-  return words;
-}
-
 function getSSHConfigPath(): string {
   return path.join(os.homedir(), ".ssh", "config");
 }
@@ -604,17 +597,17 @@ function getSSHConfigPath(): string {
 function formatRemoteSshAliasBlock(host: SSHHost, alias: string): string {
   const lines = [
     aliasBlockBegin(host.id),
-    `Host ${formatSSHHostPattern(alias)}`,
-    `  HostName ${host.hostname}`,
+    `Host ${formatSSHConfigWord(alias)}`,
+    `  HostName ${formatSSHConfigWord(host.hostname)}`,
   ];
   if (host.port && host.port !== 22) {
     lines.push(`  Port ${host.port}`);
   }
   if (host.username) {
-    lines.push(`  User ${host.username}`);
+    lines.push(`  User ${formatSSHConfigWord(host.username)}`);
   }
   if (host.identityFile) {
-    lines.push(`  IdentityFile ${host.identityFile}`);
+    lines.push(`  IdentityFile ${formatSSHIdentityFile(host.identityFile)}`);
   }
   if (host.extraConfig) {
     for (const [key, value] of Object.entries(host.extraConfig)) {
@@ -622,41 +615,13 @@ function formatRemoteSshAliasBlock(host: SSHHost, alias: string): string {
       if (["host", "hostname", "port", "user", "identityfile"].includes(lowerKey)) {continue;}
       const values = Array.isArray(value) ? value : [value];
       for (const item of values) {
+        assertSingleLineSSHConfigValue(item);
         lines.push(`  ${formatSSHDirectiveKey(key)} ${item}`);
       }
     }
   }
   lines.push(aliasBlockEnd(host.id));
   return lines.join("\n");
-}
-
-function formatSSHHostPattern(alias: string): string {
-  if (/[\s#"'\\]/.test(alias)) {
-    return `"${alias.replace(/\\/g, "\\\\").replace(/"/g, "\\\"")}"`;
-  }
-  return alias;
-}
-
-function formatSSHDirectiveKey(key: string): string {
-  const canonical: Record<string, string> = {
-    addkeystoagent: "AddKeysToAgent",
-    certificatefile: "CertificateFile",
-    compression: "Compression",
-    connecttimeout: "ConnectTimeout",
-    forwardagent: "ForwardAgent",
-    identitiesonly: "IdentitiesOnly",
-    localforward: "LocalForward",
-    loglevel: "LogLevel",
-    proxycommand: "ProxyCommand",
-    proxyjump: "ProxyJump",
-    remoteforward: "RemoteForward",
-    sendenv: "SendEnv",
-    serveralivecountmax: "ServerAliveCountMax",
-    serveraliveinterval: "ServerAliveInterval",
-    stricthostkeychecking: "StrictHostKeyChecking",
-    userknownhostsfile: "UserKnownHostsFile",
-  };
-  return canonical[key.toLowerCase()] ?? key;
 }
 
 function aliasBlockBegin(hostId: string): string {
@@ -766,7 +731,7 @@ export async function connectInVSCodeTerminal(
   vscode.window.showInformationMessage(
     vscode.l10n.t("Opened {name} in the terminal ({target})", {
       name: host.name,
-      target: `${host.username}@${host.hostname}:${host.port}`,
+      target: formatHostEndpoint(host),
     })
   );
 
@@ -902,7 +867,10 @@ function buildSSHArgs(host: SSHHost, options: BuildSSHArgsOptions = {}): string[
   if (host.identityFile && !options.skipMissingIdentityFile) {
     args.push("-i", resolveIdentityFileForSSHArg(host.identityFile));
   }
-  args.push(`${host.username}@${host.hostname}`);
+  if (host.username) {
+    args.push("-l", host.username);
+  }
+  args.push(host.hostname);
   return args;
 }
 
@@ -930,7 +898,7 @@ async function connectInLocalVSCodeTerminal(
     vscode.window.showInformationMessage(
       vscode.l10n.t("Opened {name} in a local VS Code terminal ({target})", {
         name: host.name,
-        target: `${host.username}@${host.hostname}:${host.port}`,
+        target: formatHostEndpoint(host),
       })
     );
     await storage.addRecentConnection(host.id);

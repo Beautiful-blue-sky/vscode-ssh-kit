@@ -2,6 +2,25 @@
 
 [![zh-CN](https://img.shields.io/badge/CHANGELOG-中文-red)](CHANGELOG.zh-CN.md)
 
+## Unreleased
+
+## 0.0.13 — 2026-07-21
+
+### Changed
+- Make the `sshKitHosts` language model tool use the same multi-term matching as the host tree, add paged results, and shorten responses to fit the active model token budget.
+- Clarify when Agent mode can invoke the tool, what metadata it can read, and how VS Code approval settings affect host inventory sharing.
+- Localize language model invocation and key-path confirmation messages, including the requested query and page scope.
+- Accept IPv6 and common enterprise usernames in host input, and format IPv6 endpoints consistently across the tree, previews, status details, and AI results.
+- Scan only recognized OpenSSH or PEM private keys, and keep host identity-file associations synchronized when a key is renamed or deleted.
+- Share one SSH Config tokenizer and formatter across import, write-back, and generated Remote-SSH aliases, including quoted paths containing spaces.
+- Override vulnerable transitive development dependencies with patched releases.
+
+### Fixed
+- Format IPv6 endpoints unambiguously in language model results.
+- Fall back to port 22 when an imported SSH Config port is invalid or outside the valid range.
+- Reject duplicate backup identifiers and unsafe line-break, null-character, or directive-name values before they can reach SSH Config output.
+- Prevent orphan public-key files and partial key restore/rename operations from silently overwriting or desynchronizing key pairs.
+
 ## 0.0.12 — 2026-07-16
 
 ### Added

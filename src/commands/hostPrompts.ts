@@ -1,3 +1,4 @@
+import { isIP } from "node:net";
 import * as vscode from "vscode";
 import { SSHGroup, SSHHost } from "../core/types";
 import { StorageService } from "../core/storage";
@@ -23,22 +24,25 @@ function validateRequiredName(value: string): string | undefined {
   return value.trim() ? undefined : vscode.l10n.t("Name is required");
 }
 
-function validateHostAddress(value: string): string | undefined {
-  const trimmed = value.trim();
+export function validateHostAddress(value: string): string | undefined {
+  const trimmed = normalizeHostAddress(value);
   if (!trimmed) {return vscode.l10n.t("Address is required");}
   if (/\s/.test(trimmed)) {return vscode.l10n.t("Address cannot contain spaces");}
 
-  const ipv4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
-  const match = trimmed.match(ipv4);
-  if (match) {
-    return match.slice(1).some((octet) => Number(octet) > 255)
-      ? vscode.l10n.t("Each IPv4 segment must be 255 or less")
-      : undefined;
-  }
+  if (isIP(trimmed) !== 0) {return undefined;}
 
   return /^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)*$/.test(trimmed)
     ? undefined
-    : vscode.l10n.t("Enter a valid IP address or domain name");
+    : vscode.l10n.t("Enter a valid IPv4 address, IPv6 address, or domain name");
+}
+
+export function normalizeHostAddress(value: string): string {
+  const trimmed = value.trim();
+  if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+    const unwrapped = trimmed.slice(1, -1);
+    if (isIP(unwrapped) === 6) {return unwrapped;}
+  }
+  return trimmed;
 }
 
 function validatePort(value: string): string | undefined {
@@ -49,12 +53,16 @@ function validatePort(value: string): string | undefined {
     : vscode.l10n.t("Port must be between 1 and 65535");
 }
 
-function validateUsername(value: string): string | undefined {
+export function validateUsername(value: string): string | undefined {
   const trimmed = value.trim();
   if (!trimmed) {return vscode.l10n.t("Username is required");}
-  return /^[a-z_][a-z0-9_-]*$/.test(trimmed)
-    ? undefined
-    : vscode.l10n.t("Use lowercase letters, numbers, underscores, or hyphens, starting with a letter");
+  const hasControlCharacter = [...trimmed].some((character) => {
+    const codePoint = character.codePointAt(0) ?? 0;
+    return codePoint < 0x20 || (codePoint >= 0x7f && codePoint <= 0x9f);
+  });
+  return /\s/.test(trimmed) || hasControlCharacter
+    ? vscode.l10n.t("Username cannot contain spaces or control characters")
+    : undefined;
 }
 
 function parseTags(value: string): string[] {
@@ -75,7 +83,7 @@ export async function promptNewHost(
 
   const hostname = await promptInput({
     prompt: vscode.l10n.t("Host address (IP or domain name)"),
-    placeHolder: vscode.l10n.t("For example, 10.0.1.11 or my.server.com"),
+    placeHolder: vscode.l10n.t("For example, 10.0.1.11, 2001:db8::1, or my.server.com"),
     value: prefill?.hostname,
     validate: validateHostAddress,
   });
@@ -104,7 +112,7 @@ export async function promptNewHost(
 
   return {
     name: name.trim(),
-    hostname: hostname.trim(),
+    hostname: normalizeHostAddress(hostname),
     port: Number.parseInt(portText, 10),
     username: username.trim(),
     groupId: groupId || undefined,
@@ -150,11 +158,11 @@ export async function promptEditHost(
     case "hostname": {
       const value = await promptInput({
         prompt: vscode.l10n.t("Host address (IP or domain name)"),
-        placeHolder: vscode.l10n.t("For example, 10.0.1.11 or my.server.com"),
+        placeHolder: vscode.l10n.t("For example, 10.0.1.11, 2001:db8::1, or my.server.com"),
         value: host.hostname,
         validate: validateHostAddress,
       });
-      return value === undefined ? undefined : { hostname: value.trim() };
+      return value === undefined ? undefined : { hostname: normalizeHostAddress(value) };
     }
     case "port": {
       const value = await promptInput({

@@ -4,14 +4,20 @@ import { SSHHost } from "./core/types";
 import { StorageService } from "./core/storage";
 import { GroupItem, HostDetailItem, HostItem, HostTreeDataProvider, HostDragAndDropController, RECENT_GROUP_ID } from "./views/treeView";
 import { KeyTreeDataProvider, KeyItem, KeyDetailItem } from "./views/keyTreeView";
-import { readPublicKey, deleteKeyPair, renameKeyPair, regeneratePublicKey, listKeys, populateFingerprints } from "./keys/keyManager";
-import { getErrorMessage } from "./core/utils";
+import { listKeys, populateFingerprints } from "./keys/keyManager";
 import { ConnectionStatusController } from "./core/connectionStatus";
 import { connectHostInCurrentWindow, connectHostInNewWindow, promptTerminalConnect, testConnection, searchHosts, cleanupRemoteSshAliases } from "./commands/connectCommands";
 import { addHost, editHost, deleteHost, copyHostName, copyHostDetail, deduplicateHosts, batchDeleteHosts, batchChangeHostKey, changeHostKey } from "./commands/hostCommands";
 import { addGroup, renameGroup, deleteGroup, moveGroup, sortGroupsByName } from "./commands/groupCommands";
 import { importConfig, exportConfig, openSshConfig, backupKitData, restoreKitData } from "./commands/ioCommands";
-import { showKeyList, generateKey } from "./commands/keyCommands";
+import {
+  copyPublicKeyToClipboard,
+  generateKey,
+  promptDeleteKey,
+  promptRegeneratePublicKey,
+  promptRenameKey,
+  showKeyList,
+} from "./commands/keyCommands";
 import { registerAIHostTools } from "./ai/hostTool";
 import { promptEditHost, promptNewHost } from "./commands/hostPrompts";
 import { sortHosts } from "./commands/sortCommands";
@@ -73,7 +79,7 @@ export function activate(context: vscode.ExtensionContext) {
   registerGroupCommands(context, storage, treeDataProvider);
   registerConnectCommands(context, storage, connectionStatus);
   registerIOCommands(context, storage, treeDataProvider, keyTreeDataProvider);
-  registerKeyCommands(context, keyTreeDataProvider);
+  registerKeyCommands(context, storage, treeDataProvider, keyTreeDataProvider);
   registerAIHostTools(context, storage);
 }
 
@@ -301,6 +307,8 @@ function registerIOCommands(
 /** Key management */
 function registerKeyCommands(
   context: vscode.ExtensionContext,
+  storage: StorageService,
+  hostTree: HostTreeDataProvider,
   keyTree: KeyTreeDataProvider
 ): void {
   context.subscriptions.push(
@@ -359,20 +367,7 @@ function registerKeyCommands(
     // Copy public key (shared by inline button and context menu)
     vscode.commands.registerCommand(
       "sshKit.copyKeyPublic",
-      async (item: KeyItem) => {
-        const key = item.key;
-        if (!key.publicKeyPath) {
-          vscode.window.showErrorMessage(vscode.l10n.t("This key has no public key file."));
-          return;
-        }
-        try {
-          const pubKey = readPublicKey(key.publicKeyPath);
-          await vscode.env.clipboard.writeText(pubKey);
-          vscode.window.showInformationMessage(vscode.l10n.t("Copied the public key for {name}.", { name: key.name }));
-        } catch (err: unknown) {
-          vscode.window.showErrorMessage(vscode.l10n.t("Copy failed: {error}", { error: getErrorMessage(err) }));
-        }
-      }
+      (item: KeyItem) => copyPublicKeyToClipboard(item.key)
     ),
 
     vscode.commands.registerCommand(
@@ -381,79 +376,24 @@ function registerKeyCommands(
         const keyItem = item ?? await pickKeyForPublicRegeneration();
         if (!keyItem) {return;}
 
-        const key = keyItem.key;
-        const hasPublicKey = Boolean(key.publicKeyPath);
-        if (hasPublicKey) {
-          const regenerateAction = vscode.l10n.t("Regenerate");
-          const confirmed = await vscode.window.showWarningMessage(
-            vscode.l10n.t("The public key file already exists. Regenerate and overwrite “{name}.pub”?", { name: key.name }),
-            { modal: true },
-            regenerateAction
-          );
-          if (confirmed !== regenerateAction) {return;}
-        }
-        try {
-          const publicKeyPath = regeneratePublicKey(key.privateKeyPath, hasPublicKey);
-          keyTree.refresh();
-          vscode.window.showInformationMessage(vscode.l10n.t("Generated public key: {path}", { path: publicKeyPath }));
-        } catch (err: unknown) {
-          vscode.window.showErrorMessage(vscode.l10n.t("Public key generation failed: {error}", { error: getErrorMessage(err) }));
-        }
+        await promptRegeneratePublicKey(keyItem.key, keyTree);
       }
     ),
 
     // Delete key
     vscode.commands.registerCommand(
       "sshKit.deleteKey",
-      async (item: KeyItem) => {
-        const key = item.key;
-        const deleteAction = vscode.l10n.t("Delete");
-        const confirmed = await vscode.window.showWarningMessage(
-          vscode.l10n.t("Delete key “{name}”? This cannot be undone.", { name: key.name }),
-          { modal: true },
-          deleteAction
-        );
-        if (confirmed !== deleteAction) {return;}
-        try {
-          deleteKeyPair(key.privateKeyPath);
-          keyTree.refresh();
-          vscode.window.showInformationMessage(vscode.l10n.t("Deleted key: {name}", { name: key.name }));
-        } catch (err: unknown) {
-          vscode.window.showErrorMessage(vscode.l10n.t("Delete failed: {error}", { error: getErrorMessage(err) }));
-        }
-      }
+      (item: KeyItem) => promptDeleteKey(item.key, keyTree, storage, hostTree)
     ),
 
     // Rename key
     vscode.commands.registerCommand(
       "sshKit.renameKey",
-      async (item: KeyItem) => {
-        const key = item.key;
-        const newName = await vscode.window.showInputBox({
-          prompt: vscode.l10n.t("New file name (without a path)"),
-          value: key.name,
-          validateInput: (v) => {
-            if (!v.trim()) {return vscode.l10n.t("File name is required");}
-            if (/[\\/:"*?<>| ]/.test(v)) {return vscode.l10n.t("File name contains invalid characters or spaces");}
-            return undefined;
-          },
-        });
-        if (!newName || newName.trim() === key.name) {return;}
-        try {
-          renameKeyPair(key.privateKeyPath, newName.trim());
-          keyTree.refresh();
-          vscode.window.showInformationMessage(vscode.l10n.t("Renamed: {oldName} → {newName}", {
-            oldName: key.name,
-            newName: newName.trim(),
-          }));
-        } catch (err: unknown) {
-          vscode.window.showErrorMessage(vscode.l10n.t("Rename failed: {error}", { error: getErrorMessage(err) }));
-        }
-      }
+      (item: KeyItem) => promptRenameKey(item.key, keyTree, storage, hostTree)
     ),
 
     // Command Palette entry (keep QuickPick approach)
-    vscode.commands.registerCommand("sshKit.listKeys", () => showKeyList(keyTree)),
+    vscode.commands.registerCommand("sshKit.listKeys", () => showKeyList(keyTree, storage, hostTree)),
     vscode.commands.registerCommand("sshKit.generateKey", () => generateKey(keyTree))
   );
 }

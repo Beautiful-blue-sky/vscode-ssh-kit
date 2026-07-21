@@ -13,6 +13,7 @@ const expectedPackageFiles = [
   "LICENSE",
   "README.md",
   "README.zh-CN.md",
+  "SECURITY.md",
   "dist/extension.js",
   "icon.png",
   "l10n/bundle.l10n.json",
@@ -53,6 +54,8 @@ addCheck("Marketplace identity", "extension id", "lixiaoyu.ssh-kit", `${manifest
 addCheck("Marketplace identity", "version", "semver x.y.z", manifest.version, /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(manifest.version ?? ""));
 addCheck("Marketplace identity", "category", "Other", (manifest.categories ?? []).join(", "));
 addCheck("Marketplace identity", "repository", "github.com/Beautiful-blue-sky/vscode-ssh-kit", manifest.repository?.url ?? "", (manifest.repository?.url ?? "").includes("github.com/Beautiful-blue-sky/vscode-ssh-kit"));
+addCheck("Marketplace identity", "homepage", "https://github.com/Beautiful-blue-sky/vscode-ssh-kit#readme", manifest.homepage);
+addCheck("Marketplace identity", "bugs", "https://github.com/Beautiful-blue-sky/vscode-ssh-kit/issues", manifest.bugs?.url ?? "");
 addCheck("Marketplace identity", "extension kind", "ui", (manifest.extensionKind ?? []).join(", "), (manifest.extensionKind ?? []).includes("ui"));
 addCheck("Marketplace identity", "startup activation", "*", (manifest.activationEvents ?? []).join(", "), (manifest.activationEvents ?? []).includes("*"));
 

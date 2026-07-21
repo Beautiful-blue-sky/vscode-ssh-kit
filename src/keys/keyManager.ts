@@ -44,6 +44,7 @@ export function listKeys(): KeyInfo[] {
     try { isFile = fs.statSync(fullPath).isFile(); } catch { continue; }
     if (!isFile) {continue;}
     if (isSkippableSSHFile(entry)) {continue;}
+    if (!isLikelySSHPrivateKeyFile(fullPath)) {continue;}
 
     const publicKeyPath = fullPath + ".pub";
     const hasPublicKey = fs.existsSync(publicKeyPath);
@@ -186,8 +187,9 @@ export function generateKeyPair(options: KeyGenOptions): { privateKeyPath: strin
   const safeName = options.name.replace(/[\\/:"*?<>| ]/g, "_");
   const keyPath = path.join(sshDir, safeName);
 
-  if (fs.existsSync(keyPath)) {
-    throw new Error(vscode.l10n.t("Key file already exists: {path}", { path: keyPath }));
+  const existingPath = [keyPath, `${keyPath}.pub`].find((candidate) => fs.existsSync(candidate));
+  if (existingPath) {
+    throw new Error(vscode.l10n.t("Key file already exists: {path}", { path: existingPath }));
   }
 
   const args: string[] = ["-t", options.type, "-f", keyPath, "-N", options.passphrase ?? ""];
@@ -229,11 +231,11 @@ export function deleteKeyPair(privateKeyPath: string): void {
   if (!fs.existsSync(privateKeyPath)) {
     throw new Error(vscode.l10n.t("Key file does not exist: {path}", { path: privateKeyPath }));
   }
-  fs.unlinkSync(privateKeyPath);
   const pubPath = privateKeyPath + ".pub";
   if (fs.existsSync(pubPath)) {
     fs.unlinkSync(pubPath);
   }
+  fs.unlinkSync(privateKeyPath);
 }
 
 /** Rename a key pair (stays in the same directory) */
@@ -246,14 +248,22 @@ export function renameKeyPair(oldPrivatePath: string, newName: string): string {
   const newPrivatePath = path.join(dir, safeName);
   const newPublicPath = newPrivatePath + ".pub";
 
-  if (fs.existsSync(newPrivatePath)) {
-    throw new Error(vscode.l10n.t("Target file already exists: {path}", { path: newPrivatePath }));
+  const existingTarget = [newPrivatePath, newPublicPath].find((candidate) => fs.existsSync(candidate));
+  if (existingTarget) {
+    throw new Error(vscode.l10n.t("Target file already exists: {path}", { path: existingTarget }));
   }
 
-  fs.renameSync(oldPrivatePath, newPrivatePath);
   const oldPubPath = oldPrivatePath + ".pub";
-  if (fs.existsSync(oldPubPath)) {
-    fs.renameSync(oldPubPath, newPublicPath);
+  fs.renameSync(oldPrivatePath, newPrivatePath);
+  try {
+    if (fs.existsSync(oldPubPath)) {
+      fs.renameSync(oldPubPath, newPublicPath);
+    }
+  } catch (error) {
+    try { fs.renameSync(newPrivatePath, oldPrivatePath); } catch {
+      // Keep the original error; the caller will report the failed pair rename.
+    }
+    throw error;
   }
   return newPrivatePath;
 }
@@ -310,6 +320,7 @@ export interface ImportKeyFilesResult {
   reused: number;
   failed: Array<{ name: string; reason: string }>;
   restoredPaths: Array<{ sourceName: string; targetPath: string }>;
+  writtenPaths: string[];
   skippedSourceNames: string[];
   failedSourceNames: string[];
 }
@@ -395,6 +406,7 @@ export function importKeyFiles(entries: KeyFileEntry[], plan: KeyFileImportPlan[
   let reused = 0;
   const failed: ImportKeyFilesResult["failed"] = [];
   const restoredPaths: ImportKeyFilesResult["restoredPaths"] = [];
+  const writtenPaths: string[] = [];
   const skippedSourceNames: string[] = [];
   const failedSourceNames: string[] = [];
   const plansByName = new Map(plan.map((entry) => [entry.sourceName, entry]));
@@ -437,12 +449,13 @@ export function importKeyFiles(entries: KeyFileEntry[], plan: KeyFileImportPlan[
       }
     }
 
-    if (fs.existsSync(privatePath)) {
+    if (fs.existsSync(privatePath) || fs.existsSync(publicPath)) {
       if (keyFileEntryMatchesPath(entry, privatePath)) {
         reused++;
         restoredPaths.push({ sourceName: entry.name, targetPath: privatePath });
       } else if (planned?.targetName) {
-        failed.push({ name: entry.name, reason: vscode.l10n.t("The target key already exists and is not the same SSH key: {path}", { path: privatePath }) });
+        const conflictingPath = fs.existsSync(privatePath) ? privatePath : publicPath;
+        failed.push({ name: entry.name, reason: vscode.l10n.t("The target key already exists and is not the same SSH key: {path}", { path: conflictingPath }) });
         failedSourceNames.push(entry.name);
       } else {
         skipped++;
@@ -473,15 +486,20 @@ export function importKeyFiles(entries: KeyFileEntry[], plan: KeyFileImportPlan[
       }
     }
 
+    let privateWritten = false;
     try {
       fs.writeFileSync(privatePath, privateKey, { mode: privateMode });
-      written++;
-      restoredPaths.push({ sourceName: entry.name, targetPath: privatePath });
+      privateWritten = true;
 
       if (publicKey) {
         fs.writeFileSync(publicPath, publicKey, { mode: publicMode });
       }
+      written++;
+      restoredPaths.push({ sourceName: entry.name, targetPath: privatePath });
+      writtenPaths.push(privatePath);
     } catch (error) {
+      if (publicKey) {removeFileIfPresent(publicPath);}
+      if (privateWritten) {removeFileIfPresent(privatePath);}
       failed.push({
         name: entry.name,
         reason: error instanceof Error ? error.message : String(error),
@@ -489,7 +507,16 @@ export function importKeyFiles(entries: KeyFileEntry[], plan: KeyFileImportPlan[
       failedSourceNames.push(entry.name);
     }
   }
-  return { written, skipped, reused, failed, restoredPaths, skippedSourceNames, failedSourceNames };
+  return {
+    written,
+    skipped,
+    reused,
+    failed,
+    restoredPaths,
+    writtenPaths,
+    skippedSourceNames,
+    failedSourceNames,
+  };
 }
 
 function decodeBase64(value: string | undefined): Buffer | undefined {
@@ -513,6 +540,31 @@ function isLikelySSHPrivateKey(value: Buffer): boolean {
     "-----BEGIN PRIVATE KEY-----",
     "-----BEGIN ENCRYPTED PRIVATE KEY-----",
   ].some((marker) => head.includes(marker));
+}
+
+function isLikelySSHPrivateKeyFile(filePath: string): boolean {
+  try {
+    const handle = fs.openSync(filePath, "r");
+    try {
+      const head = Buffer.alloc(512);
+      const bytesRead = fs.readSync(handle, head, 0, head.length, 0);
+      return isLikelySSHPrivateKey(head.subarray(0, bytesRead));
+    } finally {
+      fs.closeSync(handle);
+    }
+  } catch {
+    return false;
+  }
+}
+
+function removeFileIfPresent(filePath: string): void {
+  try {
+    if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
+      fs.unlinkSync(filePath);
+    }
+  } catch {
+    // Best-effort rollback; the original write failure is more actionable.
+  }
 }
 
 function keyFileEntryMatchesPublicIdentity(

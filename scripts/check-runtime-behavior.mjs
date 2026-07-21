@@ -20,14 +20,19 @@ const tempHomes = [];
 try {
   await runCheck("SSH Config import ignores SSH Kit connect aliases and preserves repeated directives", checkSSHConfigImport);
   await runCheck("SSH Config import isolates Match blocks and skips Host patterns", checkSSHConfigImportBoundaries);
+  await runCheck("SSH Config normalizes quoted values and rejects unsafe output", checkSSHConfigValueSafety);
+  await runCheck("Host prompts accept IPv6 and common enterprise usernames", checkHostPromptValidation);
   await runCheck("SSH Config export prompts for an explicit backup", checkSSHConfigExportBackupPrompt);
   await runCheck("AI host tool returns filtered metadata without private key material", checkAIHostTool);
   await runCheck("Backup restore preview deduplicates hosts and reports key failures", checkBackupRestore);
+  await runCheck("Backup restore rolls back newly written keys when data storage fails", checkBackupRestoreStorageRollback);
   await runCheck("Backup restore rewrites hosts to renamed or reused key files", checkBackupRestoreKeyConflicts);
   await runCheck("Backup restore clears host key links when conflicting keys are skipped", checkBackupRestoreSkippedKeyClearsHostLink);
   await runCheck("Backups can omit private keys and stored data migrates safely", checkBackupModesAndDataMigration);
+  await runCheck("Backup validation rejects duplicate ids and config injection values", checkBackupValidation);
   await runCheck("Restore command prompts for key conflicts and rewrites imported hosts", checkRestoreCommandKeyConflictFlow);
   await runCheck("Key discovery detects generated keys and can regenerate missing public keys", checkKeyManagement);
+  await runCheck("Key rename and deletion keep host associations consistent", checkKeyAssociationUpdates);
   await runCheck("Batch host key changes update selected hosts only", checkBatchHostKeyChange);
   await runCheck("Connection status ignores stale window cache outside Remote-SSH", checkConnectionStatusCacheGate);
   await runCheck("Remote-SSH authority decoding supports plain and hex JSON host aliases", checkRemoteAuthorityDecoding);
@@ -129,6 +134,17 @@ function checkCommandExists(command, args) {
   if (result.error) {
     throw new Error(`Missing required command: ${command}`);
   }
+}
+
+function checkHostPromptValidation() {
+  const { normalizeHostAddress, validateHostAddress, validateUsername } = loadTsModule("src/commands/hostPrompts.ts");
+  assert(validateHostAddress("2001:db8::1") === undefined, "Expected raw IPv6 input to be accepted");
+  assert(validateHostAddress("[2001:db8::1]") === undefined, "Expected bracketed IPv6 input to be accepted");
+  assert(normalizeHostAddress("[2001:db8::1]") === "2001:db8::1", "Expected bracketed IPv6 input to be stored without brackets");
+  assert(validateUsername("DOMAIN\\Admin") === undefined, "Expected domain-qualified usernames to be accepted");
+  assert(validateUsername("admin@example.com") === undefined, "Expected UPN-style usernames to be accepted");
+  assert(typeof validateUsername("invalid user") === "string", "Expected whitespace in usernames to be rejected");
+  assert(typeof validateUsername("invalid\u0001user") === "string", "Expected control characters in usernames to be rejected");
 }
 
 function checkSSHConfigImport() {
@@ -240,6 +256,78 @@ function checkSSHConfigImport() {
   assert((conflictMerged.match(/^Host AIMS010-Nginx_10\.100\.1\.4$/gm) ?? []).length === 1, "Expected one SSH Kit Host block after takeover");
 }
 
+function checkSSHConfigValueSafety() {
+  const home = makeTempHome("config-values");
+  const configPath = join(home, ".ssh", "config");
+  writeFileSync(configPath, [
+    "Host quoted-values",
+    "  HostName \"server.example.com\"",
+    "  Port 70000",
+    "  User admin@example.com",
+    "  IdentityFile \"~/.ssh/id with space\"",
+    "",
+  ].join("\n"));
+
+  const { importFromSSHConfig, stringifyHosts } = loadTsModule("src/ssh/sshConfig.ts");
+  const { hosts } = importFromSSHConfig(configPath);
+  assert(hosts.length === 1, "Expected one quoted-value host");
+  assert(hosts[0].hostname === "server.example.com", "Expected quoted HostName to be unwrapped");
+  assert(hosts[0].port === 22, "Expected an out-of-range imported port to fall back to 22");
+  assert(hosts[0].identityFile === "~/.ssh/id with space", "Expected quoted IdentityFile whitespace to be preserved");
+
+  const exported = stringifyHosts([{ ...hosts[0], id: "quoted-values-id" }]);
+  assert(exported.includes('IdentityFile "~/.ssh/id with space"'), "Expected IdentityFile paths with spaces to be quoted");
+
+  let rejected = false;
+  try {
+    stringifyHosts([{ ...hosts[0], id: "unsafe-id", name: "safe\nHost injected" }]);
+  } catch {
+    rejected = true;
+  }
+  assert(rejected, "Expected line breaks in SSH Config values to be rejected");
+}
+
+function checkBackupValidation() {
+  const { validateBackupData } = loadTsModule("src/core/dataSchema.ts");
+  const valid = {
+    groups: [{ id: "group-1", name: "Production", order: 0 }],
+    hosts: [{
+      id: "host-1",
+      name: "prod-api",
+      hostname: "2001:db8::10",
+      port: 22,
+      username: "admin@example.com",
+      groupId: "group-1",
+      tags: ["prod"],
+    }],
+  };
+  validateBackupData(valid);
+
+  const rejects = (candidate, message) => {
+    let rejected = false;
+    try { validateBackupData(candidate); } catch { rejected = true; }
+    assert(rejected, message);
+  };
+  rejects({
+    ...valid,
+    hosts: [valid.hosts[0], { ...valid.hosts[0], name: "prod-api-copy" }],
+  }, "Expected duplicate host ids to be rejected");
+  rejects({
+    ...valid,
+    hosts: [{
+      ...valid.hosts[0],
+      extraConfig: { ProxyCommand: "ssh jump\nHost injected" },
+    }],
+  }, "Expected line breaks in extra SSH Config values to be rejected");
+  rejects({
+    ...valid,
+    keyFiles: [
+      { name: "id_prod", type: "ed25519", privateKey: "AAAA" },
+      { name: "ID_PROD", type: "ed25519", privateKey: "AAAA" },
+    ],
+  }, "Expected case-insensitive duplicate key file names to be rejected");
+}
+
 function checkSSHConfigImportBoundaries() {
   const home = makeTempHome("config-boundaries");
   const configPath = join(home, ".ssh", "config");
@@ -321,11 +409,11 @@ async function checkSSHConfigExportBackupPrompt() {
   assert(merged.includes("# SSH Kit managed"), "Expected written Host to include the SSH Kit marker");
 }
 
-function checkAIHostTool() {
+async function checkAIHostTool() {
   const vscode = createVSCodeMock();
   const { StorageService } = loadTsModule("src/core/storage.ts", { vscode });
-  const { buildHostToolResult } = loadTsModule("src/ai/hostTool.ts", { vscode });
-  const storage = new StorageService(createExtensionContext({
+  const { buildHostToolResult, registerAIHostTools } = loadTsModule("src/ai/hostTool.ts", { vscode });
+  const context = createExtensionContext({
     groups: [{ id: "g-prod", name: "prod", order: 0 }],
     hosts: [
       {
@@ -339,6 +427,15 @@ function checkAIHostTool() {
         identityFile: "~/.ssh/id_prod",
       },
       {
+        id: "h-nginx",
+        name: "nginx-edge",
+        hostname: "10.0.0.12",
+        port: 22,
+        username: "root",
+        groupId: "g-prod",
+        tags: ["proxy"],
+      },
+      {
         id: "h-dev",
         name: "worker-dev",
         hostname: "10.0.0.11",
@@ -346,20 +443,62 @@ function checkAIHostTool() {
         username: "ubuntu",
         tags: ["worker"],
       },
+      {
+        id: "h-v6",
+        name: "database-v6",
+        hostname: "2001:db8::10",
+        port: 2200,
+        username: "postgres",
+        tags: ["database"],
+      },
     ],
     groupCollapsedState: {},
     recentConnections: [],
-  }));
+  });
+  const storage = new StorageService(context);
 
-  const filtered = buildHostToolResult(storage, { query: "prod" });
+  const filtered = buildHostToolResult(storage, { query: "prod nginx" });
   assert(filtered.total === 1, `Expected one filtered host, got ${filtered.total}`);
-  assert(filtered.hosts[0].name === "api-prod", "Expected query to match host name/group/tag metadata");
-  assert(filtered.hosts[0].hasIdentityFile === true, "Expected AI host tool to expose key presence");
-  assert(filtered.hosts[0].identityFile === undefined, "Expected AI host tool to hide key paths by default");
+  assert(filtered.hosts[0].name === "nginx-edge", "Expected every query term to match across host and group metadata");
+
+  const firstPage = buildHostToolResult(storage, { query: "prod", limit: 1 });
+  assert(firstPage.total === 2 && firstPage.returned === 1, "Expected a one-host page from two matching hosts");
+  assert(firstPage.hasMore === true && firstPage.nextOffset === 1, "Expected pagination metadata for remaining hosts");
+  const secondPage = buildHostToolResult(storage, { query: "prod", limit: 1, offset: firstPage.nextOffset });
+  assert(secondPage.hosts[0].name === "nginx-edge", "Expected nextOffset to retrieve the next matching host");
+
+  const defaultPrivacy = buildHostToolResult(storage, { query: "api prod" });
+  assert(defaultPrivacy.hosts[0].hasIdentityFile === true, "Expected AI host tool to expose key presence");
+  assert(defaultPrivacy.hosts[0].identityFile === undefined, "Expected AI host tool to hide key paths by default");
 
   const withPath = buildHostToolResult(storage, { query: "prod", includeIdentityFilePath: true });
   assert(withPath.hosts[0].identityFile === "~/.ssh/id_prod", "Expected AI host tool to include key paths only when requested");
   assert(!JSON.stringify(withPath).includes("PRIVATE KEY"), "Expected AI host tool result not to include private key material");
+
+  const ipv6 = buildHostToolResult(storage, { query: "database-v6" });
+  assert(ipv6.hosts[0].endpoint === "postgres@[2001:db8::10]:2200", "Expected an unambiguous bracketed IPv6 endpoint");
+
+  registerAIHostTools(context, storage);
+  const registered = vscode.__registeredTools.find((entry) => entry.name === "sshKit_listHosts");
+  assert(registered, "Expected the SSH Kit language model tool to register");
+  const token = { isCancellationRequested: false };
+  const prepared = await registered.tool.prepareInvocation({
+    input: { query: "prod", limit: 1, offset: 1, includeIdentityFilePath: true },
+  }, token);
+  assert(prepared.confirmationMessages?.message.includes("prod"), "Expected key-path confirmation to name the query scope");
+  assert(prepared.confirmationMessages?.message.includes("1"), "Expected key-path confirmation to include pagination scope");
+
+  const invoked = await registered.tool.invoke({
+    input: { query: "prod", limit: 2 },
+    tokenizationOptions: {
+      tokenBudget: 10,
+      countTokens: async (value) => JSON.parse(value).hosts.length > 1 ? 100 : 1,
+    },
+  }, token);
+  const budgeted = JSON.parse(invoked.content[0].value);
+  assert(budgeted.returned === 1, "Expected the tool to shorten a page to fit the model token budget");
+  assert(budgeted.truncatedByTokenBudget === true, "Expected token-budget truncation to be reported");
+  assert(budgeted.nextOffset === 1, "Expected token-budget truncation to preserve a continuation offset");
 }
 
 async function checkBackupRestore() {
@@ -437,6 +576,55 @@ async function checkBackupRestore() {
   assert(addedHost?.groupId === staging.id, "Expected imported host groupId to map to the restored group");
   assert(addedHost?.identityFile === undefined, "Expected failed key restore to clear imported host source-machine identity path");
   assert(!existsSync(join(home, ".ssh", "id_restore")), "Invalid private key should not be written");
+}
+
+async function checkBackupRestoreStorageRollback() {
+  const home = makeTempHome("restore-storage-rollback");
+  const vscode = createVSCodeMock();
+  const { StorageService } = loadTsModule("src/core/storage.ts", { vscode });
+  const context = createExtensionContext({
+    schemaVersion: 2,
+    groups: [],
+    hosts: [],
+    groupCollapsedState: {},
+    recentConnections: [],
+    sortPreferences: { hostSort: "nameAsc" },
+  });
+  const storage = new StorageService(context);
+  storage.getData();
+  context.globalState.update = async () => {
+    throw new Error("simulated globalState failure");
+  };
+  const keyName = "id_storage_rollback";
+  const privatePath = join(home, ".ssh", keyName);
+  const backup = JSON.stringify({
+    groups: [],
+    hosts: [{
+      id: "host-storage-rollback",
+      name: "storage-rollback",
+      hostname: "192.0.2.80",
+      port: 22,
+      username: "root",
+      identityFile: `~/.ssh/${keyName}`,
+      tags: [],
+    }],
+    keyFiles: [{
+      name: keyName,
+      type: "unknown",
+      privateKey: Buffer.from(fakePrivateKey(keyName)).toString("base64"),
+      publicKey: Buffer.from(fakePublicKey(keyName)).toString("base64"),
+    }],
+  });
+
+  let rejected = false;
+  try {
+    await storage.commitImport(backup, [{ sourceName: keyName, targetName: keyName }]);
+  } catch {
+    rejected = true;
+  }
+  assert(rejected, "Expected restore to report the globalState write failure");
+  assert(!existsSync(privatePath), "Expected failed restore to remove the newly written private key");
+  assert(!existsSync(`${privatePath}.pub`), "Expected failed restore to remove the newly written public key");
 }
 
 async function checkBackupRestoreKeyConflicts() {
@@ -783,6 +971,22 @@ function checkKeyManagement() {
   checkCommandExists("ssh-keygen", ["-?"]);
   const home = makeTempHome("keys");
   const keyManager = loadTsModule("src/keys/keyManager.ts");
+  writeFileSync(join(home, ".ssh", "random-runtime-file"), "not an SSH private key\n");
+  assert(
+    !keyManager.listKeys().some((key) => key.name === "random-runtime-file"),
+    "Expected unrelated files under ~/.ssh to be excluded from key discovery"
+  );
+
+  const orphanName = "id_orphan";
+  writeFileSync(join(home, ".ssh", `${orphanName}.pub`), fakePublicKey(orphanName));
+  let orphanGenerationRejected = false;
+  try {
+    keyManager.generateKeyPair({ type: "ed25519", name: orphanName });
+  } catch {
+    orphanGenerationRejected = true;
+  }
+  assert(orphanGenerationRejected, "Expected key generation not to overwrite an orphan public key");
+
   const keyName = "custom_runtime_key";
   const generated = keyManager.generateKeyPair({
     type: "ed25519",
@@ -806,6 +1010,35 @@ function checkKeyManagement() {
   const publicKeyPath = keyManager.regeneratePublicKey(generated.privateKeyPath);
   assert(existsSync(publicKeyPath), "Expected public key to be regenerated");
 
+  const renameTarget = "renamed_runtime_key";
+  const renameTargetPublic = join(home, ".ssh", `${renameTarget}.pub`);
+  writeFileSync(renameTargetPublic, fakePublicKey(renameTarget));
+  let renameRejected = false;
+  try {
+    keyManager.renameKeyPair(generated.privateKeyPath, renameTarget);
+  } catch {
+    renameRejected = true;
+  }
+  assert(renameRejected, "Expected key rename not to overwrite an existing public key");
+  assert(existsSync(generated.privateKeyPath), "Expected a rejected rename to preserve the original private key");
+  assert(existsSync(publicKeyPath), "Expected a rejected rename to preserve the original public key");
+  assert(!existsSync(join(home, ".ssh", renameTarget)), "Expected a rejected rename not to create a target private key");
+
+  const importName = "id_import_orphan";
+  const orphanImportPublic = join(home, ".ssh", `${importName}.pub`);
+  const orphanImportContents = fakePublicKey(importName);
+  writeFileSync(orphanImportPublic, orphanImportContents);
+  const orphanImport = keyManager.importKeyFiles([{
+    name: importName,
+    type: "unknown",
+    privateKey: Buffer.from(fakePrivateKey(importName)).toString("base64"),
+    publicKey: Buffer.from(fakePublicKey(`backup-${importName}`)).toString("base64"),
+  }], [{ sourceName: importName, targetName: importName }]);
+  assert(orphanImport.written === 0, "Expected key restore not to write beside an orphan public key");
+  assert(orphanImport.failed.length === 1, "Expected an orphan public key collision to be reported");
+  assert(!existsSync(join(home, ".ssh", importName)), "Expected failed key restore not to leave a private key");
+  assert(readFileSync(orphanImportPublic, "utf8") === orphanImportContents, "Expected failed key restore to preserve the orphan public key");
+
   const invalidImport = keyManager.importKeyFiles([{
     name: "../bad key",
     type: "unknown",
@@ -815,10 +1048,72 @@ function checkKeyManagement() {
   assert(invalidImport.failed.length === 1, "Invalid key import should report a failure");
 }
 
+async function checkKeyAssociationUpdates() {
+  const home = makeTempHome("key-associations");
+  const vscode = createVSCodeMock();
+  const { promptDeleteKey, promptRenameKey } = loadTsModule("src/commands/keyCommands.ts", { vscode });
+  const privatePath = join(home, ".ssh", "id_associated");
+  const publicPath = `${privatePath}.pub`;
+  writeFileSync(privatePath, fakePrivateKey("associated"));
+  writeFileSync(publicPath, fakePublicKey("associated"));
+
+  const hosts = [{
+    id: "host-associated",
+    name: "associated-host",
+    hostname: "192.0.2.30",
+    port: 22,
+    username: "deploy",
+    identityFile: privatePath,
+    tags: [],
+  }];
+  const storage = {
+    getAllHosts() { return hosts; },
+    async updateHostsIdentityFile(hostIds, identityFile) {
+      for (const host of hosts) {
+        if (hostIds.includes(host.id)) {
+          host.identityFile = identityFile;
+        }
+      }
+      return hostIds.length;
+    },
+  };
+  let keyRefreshes = 0;
+  let hostRefreshes = 0;
+  const keyTree = { refresh() { keyRefreshes++; } };
+  const hostTree = { refresh() { hostRefreshes++; } };
+  vscode.__inputBoxHandler = () => "id_associated_renamed";
+
+  await promptRenameKey({
+    name: "id_associated",
+    type: "ed25519",
+    privateKeyPath: privatePath,
+    publicKeyPath: publicPath,
+  }, keyTree, storage, hostTree);
+
+  const renamedPrivatePath = join(home, ".ssh", "id_associated_renamed");
+  assert(existsSync(renamedPrivatePath), "Expected the private key file to be renamed");
+  assert(existsSync(`${renamedPrivatePath}.pub`), "Expected the public key file to be renamed");
+  assert(hosts[0].identityFile === renamedPrivatePath, "Expected host identity paths to follow a renamed key");
+
+  vscode.__warningHandler = (_message, items) => items.find((item) => typeof item === "string");
+  await promptDeleteKey({
+    name: "id_associated_renamed",
+    type: "ed25519",
+    privateKeyPath: renamedPrivatePath,
+    publicKeyPath: `${renamedPrivatePath}.pub`,
+  }, keyTree, storage, hostTree);
+
+  assert(!existsSync(renamedPrivatePath), "Expected the associated private key to be deleted");
+  assert(!existsSync(`${renamedPrivatePath}.pub`), "Expected the associated public key to be deleted");
+  assert(hosts[0].identityFile === undefined, "Expected key deletion to clear host identity associations");
+  assert(keyRefreshes === 2, `Expected two key tree refreshes, got ${keyRefreshes}`);
+  assert(hostRefreshes === 2, `Expected two host tree refreshes, got ${hostRefreshes}`);
+}
+
 async function checkBatchHostKeyChange() {
   const home = makeTempHome("batch-key");
   const keyPath = join(home, ".ssh", "id_batch");
-  writeFileSync(keyPath, "placeholder");
+  writeFileSync(keyPath, fakePrivateKey("batch-key"));
 
   const vscode = createVSCodeMock();
   const { StorageService } = loadTsModule("src/core/storage.ts", { vscode });
@@ -1147,7 +1442,7 @@ async function checkRemoteAliasRefreshesIdentityFile() {
   assert(restoredCommand?.args.host === restoredHost.name, `Expected restored host to keep its alias after stale SSH Kit block cleanup, got ${restoredCommand?.args.host}`);
   assert(!config.includes("old-source-host"), "Expected stale SSH Kit connect alias block from deleted host to be removed before connecting");
   assert(config.includes("# SSH Kit connect alias h-restored-dev begin"), "Expected current host connect alias block to be written");
-  assert(config.includes(`  IdentityFile ${newKeyPath}`), "Expected current host connect alias to use restored local identity file");
+  assert(config.includes(`  IdentityFile ${newKeyPath.replace(/\\/g, "/")}`), "Expected current host connect alias to use restored local identity file");
   assert(!findHostBlockText(config, restoredHost.name)?.includes(oldSourceKeyPath), "Expected restored host alias block not to keep the old source identity file");
 
   await connectHostInNewWindow(unmanagedAliasHost, storage);
@@ -1157,7 +1452,7 @@ async function checkRemoteAliasRefreshesIdentityFile() {
   assert(unmanagedCommand?.args.host === expectedAlias, `Expected unmanaged stale alias to be avoided, got ${unmanagedCommand?.args.host}`);
   assert(findHostBlockText(config, "unmanaged-dev")?.includes(oldSourceKeyPath), "Expected unmanaged user Host block to be preserved");
   assert(findHostBlockText(config, "unmanaged-dev")?.includes(otherNewKeyPath), "Expected unmanaged user Host block with mixed keys to be preserved");
-  assert(findHostBlockText(config, expectedAlias)?.includes(`IdentityFile ${otherNewKeyPath}`), "Expected generated fallback alias to use the current identity file");
+  assert(findHostBlockText(config, expectedAlias)?.includes(`IdentityFile ${otherNewKeyPath.replace(/\\/g, "/")}`), "Expected generated fallback alias to use the current identity file");
 }
 
 async function checkRemoteAlias() {
@@ -1347,6 +1642,7 @@ async function checkRemoteAlias() {
   assert(terminal, "Expected VS Code terminal to be created");
   assertIncludesSequence(terminal.shellArgs, ["-o", "StrictHostKeyChecking=accept-new"], "Expected integrated terminal SSH to auto-accept new host keys");
   assertIncludesSequence(terminal.shellArgs, ["-i", terminalKeyPath], "Expected relative identity files to resolve under ~/.ssh");
+  assertIncludesSequence(terminal.shellArgs, ["-l", "deploy", "203.0.113.10"], "Expected username and hostname to be passed as separate SSH arguments");
 
   const missingKeyHost = {
     ...terminalHost,
@@ -1370,7 +1666,7 @@ async function checkRemoteAlias() {
   assert(sendSequenceCommand, "Expected SSH command to be sent to the local VS Code terminal");
   assert(sendSequenceCommand.args.text.includes("ssh "), "Expected local terminal command text to contain ssh");
   assert(sendSequenceCommand.args.text.includes("StrictHostKeyChecking=accept-new"), "Expected local VS Code terminal SSH to auto-accept new host keys");
-  assert(sendSequenceCommand.args.text.includes("deploy@203.0.113.10"), "Expected local VS Code terminal SSH target");
+  assert(sendSequenceCommand.args.text.includes("-l deploy 203.0.113.10"), "Expected local VS Code terminal SSH target");
   vscode.env.remoteName = undefined;
   vscode.__warningChoice = undefined;
 }
@@ -1782,6 +2078,7 @@ function createExtensionContext(initialData) {
   const values = new Map([["sshKit.data", initialData]]);
   const workspaceValues = new Map();
   return {
+    subscriptions: [],
     globalState: {
       get(key, defaultValue) {
         return values.has(key) ? values.get(key) : defaultValue;
@@ -1814,6 +2111,7 @@ function createVSCodeMock() {
   const events = [];
   const messages = [];
   const terminals = [];
+  const registeredTools = [];
   class TreeItem {
     constructor(label, collapsibleState) {
       this.label = label;
@@ -1868,11 +2166,13 @@ function createVSCodeMock() {
     __events: events,
     __messages: messages,
     __terminals: terminals,
+    __registeredTools: registeredTools,
     __statusBarItem: statusBarItem,
     __infoHandler: undefined,
     __openDialogUris: undefined,
     __saveDialogUri: undefined,
     __quickPickHandler: undefined,
+    __inputBoxHandler: undefined,
     __warningHandler: undefined,
     __warningChoice: undefined,
     window: {
@@ -1921,7 +2221,10 @@ function createVSCodeMock() {
         }
         return mock.__warningChoice;
       },
-      async showInputBox() {
+      async showInputBox(options) {
+        if (typeof mock.__inputBoxHandler === "function") {
+          return mock.__inputBoxHandler(options);
+        }
         return undefined;
       },
       async showErrorMessage(message, ...items) {
@@ -1947,6 +2250,18 @@ function createVSCodeMock() {
         return String(zhTranslations[message] ?? message).replace(/\{([^}]+)\}/g, (match, name) =>
           Object.prototype.hasOwnProperty.call(values, name) ? String(values[name]) : match
         );
+      },
+    },
+    lm: {
+      registerTool(name, tool) {
+        const registration = { name, tool };
+        registeredTools.push(registration);
+        return {
+          dispose() {
+            const index = registeredTools.indexOf(registration);
+            if (index >= 0) {registeredTools.splice(index, 1);}
+          },
+        };
       },
     },
     commands: {
@@ -1978,6 +2293,17 @@ function createVSCodeMock() {
       appendMarkdown() {}
       appendCodeblock() {}
     },
+    LanguageModelTextPart: class {
+      constructor(value) {
+        this.value = value;
+      }
+    },
+    LanguageModelToolResult: class {
+      constructor(content) {
+        this.content = content;
+      }
+    },
+    CancellationError: class extends Error {},
   };
   return mock;
 }

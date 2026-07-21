@@ -1,7 +1,9 @@
 // SSH Kit — TreeView nodes and DataProvider
 import * as vscode from "vscode";
+import { formatHostEndpoint } from "../core/endpoint";
 import { SSHHost, SSHGroup } from "../core/types";
 import { StorageService } from "../core/storage";
+import { hostMatchesSearch, splitHostSearchTerms } from "../core/hostSearch";
 
 /** Virtual group ID for recent connections. */
 export const RECENT_GROUP_ID = "__recent__";
@@ -66,12 +68,12 @@ export class HostItem extends vscode.TreeItem {
   ) {
     super(host.name, vscode.TreeItemCollapsibleState.Collapsed);
     this.id = `host:${itemScope}:${host.id}`;
-    this.description = connected ? vscode.l10n.t("Connected") : `${host.hostname}:${host.port}`;
+    this.description = connected ? vscode.l10n.t("Connected") : formatHostEndpoint(host, false);
     this.iconPath = connected
       ? new vscode.ThemeIcon("remote", new vscode.ThemeColor("testing.iconPassed"))
       : new vscode.ThemeIcon("server");
     this.contextValue = "host";
-    this.tooltip = `${connected ? `${vscode.l10n.t("Connected")}\n` : ""}${host.username}@${host.hostname}:${host.port}` +
+    this.tooltip = `${connected ? `${vscode.l10n.t("Connected")}\n` : ""}${formatHostEndpoint(host)}` +
       (host.identityFile ? `\n🔑 ${host.identityFile}` : "");
   }
 }
@@ -268,26 +270,14 @@ export class HostTreeDataProvider implements vscode.TreeDataProvider<vscode.Tree
 
   private getFilterMatchIds(): Set<string> {
     if (this.filterMatchIds) {return this.filterMatchIds;}
-    const terms = this.filterQuery.toLocaleLowerCase().split(/\s+/).filter(Boolean);
+    const terms = splitHostSearchTerms(this.filterQuery);
     const groupNames = new Map(this.storage.getGroups().map((group) => [group.id, group.name]));
     this.filterMatchIds = new Set(
       this.storage.getAllHosts()
-        .filter((host) => this.matchesFilter(host, terms, groupNames))
+        .filter((host) => hostMatchesSearch(host, groupNames.get(host.groupId ?? ""), terms))
         .map((host) => host.id)
     );
     return this.filterMatchIds;
-  }
-
-  private matchesFilter(host: SSHHost, terms: string[], groupNames: Map<string, string>): boolean {
-    const haystack = [
-      host.name,
-      host.hostname,
-      host.username,
-      String(host.port),
-      host.groupId ? groupNames.get(host.groupId) ?? "" : "",
-      ...(host.tags ?? []),
-    ].join("\n").toLocaleLowerCase();
-    return terms.every((term) => haystack.includes(term));
   }
 
   private createHostItem(host: SSHHost, itemScope: string): HostItem {

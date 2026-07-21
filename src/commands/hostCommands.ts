@@ -1,5 +1,6 @@
 // SSH Kit — Host CRUD commands (add, edit, delete, copy, deduplicate, batch operations)
 import * as vscode from "vscode";
+import { formatHostEndpoint } from "../core/endpoint";
 import { SSHHost, PromptNewHostFn, PromptEditHostFn } from "../core/types";
 import { DuplicateHostGroup, findDuplicateEndpointGroups } from "../core/hostMatching";
 import { StorageService } from "../core/storage";
@@ -32,7 +33,7 @@ export async function addHost(
   await storage.addHost(host);
   tree.refresh();
   vscode.window.showInformationMessage(
-    vscode.l10n.t("Added host: {name} ({address}:{port})", { name: host.name, address: host.hostname, port: host.port })
+    vscode.l10n.t("Added host: {name} ({endpoint})", { name: host.name, endpoint: formatHostEndpoint(host, false) })
   );
 }
 
@@ -61,10 +62,9 @@ export async function deleteHost(
 ): Promise<void> {
   const deleteAction = vscode.l10n.t("Delete");
   const confirmed = await vscode.window.showWarningMessage(
-    vscode.l10n.t("Delete host “{name}” ({address}:{port})? This cannot be undone.", {
+    vscode.l10n.t("Delete host “{name}” ({endpoint})? This cannot be undone.", {
       name: host.name,
-      address: host.hostname,
-      port: host.port,
+      endpoint: formatHostEndpoint(host, false),
     }),
     { modal: true },
     deleteAction
@@ -74,7 +74,7 @@ export async function deleteHost(
   await storage.deleteHost(host.id);
   tree.refresh();
   vscode.window.showInformationMessage(
-    vscode.l10n.t("Deleted host: {name} ({address}:{port})", { name: host.name, address: host.hostname, port: host.port })
+    vscode.l10n.t("Deleted host: {name} ({endpoint})", { name: host.name, endpoint: formatHostEndpoint(host, false) })
   );
 }
 
@@ -200,7 +200,7 @@ function getGroupName(host: SSHHost, groupNames: Map<string, string>): string {
 }
 
 function formatEndpoint(host: SSHHost): string {
-  return `${host.username}@${host.hostname}:${host.port}`;
+  return formatHostEndpoint(host);
 }
 
 /** Batch delete hosts via multi-select QuickPick. Note: canPickMany checkbox flickering is a VS Code platform limitation. */
@@ -222,7 +222,7 @@ export async function batchDeleteHosts(
     for (const h of storage.getHostsByGroup(group.id)) {
       items.push({
         label: h.name,
-        description: `[${group.name}] ${h.username}@${h.hostname}:${h.port}`,
+        description: `[${group.name}] ${formatHostEndpoint(h)}`,
         _hostId: h.id,
       });
       pushed.add(h.id);
@@ -232,7 +232,7 @@ export async function batchDeleteHosts(
   for (const h of hosts.filter((h) => !pushed.has(h.id))) {
     items.push({
       label: h.name,
-      description: `[${vscode.l10n.t("Ungrouped")}] ${h.username}@${h.hostname}:${h.port}`,
+      description: `[${vscode.l10n.t("Ungrouped")}] ${formatHostEndpoint(h)}`,
       _hostId: h.id,
     });
   }

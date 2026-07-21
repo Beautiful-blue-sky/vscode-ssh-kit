@@ -3,12 +3,18 @@ import * as path from "path";
 import * as vscode from "vscode";
 import {
   listKeys, populateFingerprints, generateKeyPair, deleteKeyPair, renameKeyPair,
-  readPublicKey, regeneratePublicKey, KeyInfo, KeyType
+  readPublicKey, regeneratePublicKey, KeyInfo, KeyType, areIdentityPathsEquivalent
 } from "../keys/keyManager";
 import { getErrorMessage } from "../core/utils";
+import { StorageService } from "../core/storage";
+import { HostTreeDataProvider } from "../views/treeView";
 
 /** List and display keys found under ~/.ssh/ */
-export async function showKeyList(keyTree?: { refresh: () => void }): Promise<void> {
+export async function showKeyList(
+  keyTree?: { refresh: () => void },
+  storage?: StorageService,
+  hostTree?: HostTreeDataProvider
+): Promise<void> {
   const keys = listKeys();
   if (keys.length === 0) {
     vscode.window.showInformationMessage(
@@ -31,12 +37,17 @@ export async function showKeyList(keyTree?: { refresh: () => void }): Promise<vo
   });
 
   if (picked) {
-    await showKeyDetail(picked.key, keyTree);
+    await showKeyDetail(picked.key, keyTree, storage, hostTree);
   }
 }
 
 /** Show key detail dialog with copy/delete/rename actions */
-async function showKeyDetail(key: KeyInfo, keyTree?: { refresh: () => void }): Promise<void> {
+async function showKeyDetail(
+  key: KeyInfo,
+  keyTree?: { refresh: () => void },
+  storage?: StorageService,
+  hostTree?: HostTreeDataProvider
+): Promise<void> {
   const parts: string[] = [];
   parts.push(vscode.l10n.t("$(key) Key: {name}", { name: key.name }));
   parts.push(vscode.l10n.t("Type: {type}", { type: formatKeyType(key) }));
@@ -72,10 +83,10 @@ async function showKeyDetail(key: KeyInfo, keyTree?: { refresh: () => void }): P
       await copyPublicKeyToClipboard(key);
       break;
     case renameAction:
-      await promptRenameKey(key, keyTree);
+      await promptRenameKey(key, keyTree, storage, hostTree);
       break;
     case deleteAction:
-      await promptDeleteKey(key, keyTree);
+      await promptDeleteKey(key, keyTree, storage, hostTree);
       break;
   }
 }
@@ -85,7 +96,7 @@ function formatKeyType(key: KeyInfo): string {
 }
 
 /** Copy public key to clipboard */
-async function copyPublicKeyToClipboard(key: KeyInfo): Promise<void> {
+export async function copyPublicKeyToClipboard(key: KeyInfo): Promise<void> {
   if (!key.publicKeyPath) {
     vscode.window.showErrorMessage(vscode.l10n.t("This key has no public key file."));
     return;
@@ -100,28 +111,62 @@ async function copyPublicKeyToClipboard(key: KeyInfo): Promise<void> {
 }
 
 /** Confirm and delete a key pair */
-async function promptDeleteKey(key: KeyInfo, keyTree?: { refresh: () => void }): Promise<void> {
-  const deleteAction = vscode.l10n.t("Delete");
+export async function promptDeleteKey(
+  key: KeyInfo,
+  keyTree?: { refresh: () => void },
+  storage?: StorageService,
+  hostTree?: HostTreeDataProvider
+): Promise<void> {
+  const associatedHosts = findHostsUsingKey(storage, key.privateKeyPath);
+  const deleteAction = associatedHosts.length > 0
+    ? vscode.l10n.t("Delete and Clear Associations")
+    : vscode.l10n.t("Delete");
   const confirmed = await vscode.window.showWarningMessage(
-    vscode.l10n.t("Delete key “{name}”? This cannot be undone.\nPrivate key: {path}", {
-      name: key.name,
-      path: key.privateKeyPath,
-    }),
+    associatedHosts.length > 0
+      ? vscode.l10n.t("Delete key “{name}”? It is associated with {count} hosts. Their identity-file associations will also be cleared. This cannot be undone.\nPrivate key: {path}", {
+          name: key.name,
+          count: associatedHosts.length,
+          path: key.privateKeyPath,
+        })
+      : vscode.l10n.t("Delete key “{name}”? This cannot be undone.\nPrivate key: {path}", {
+          name: key.name,
+          path: key.privateKeyPath,
+        }),
     { modal: true },
     deleteAction
   );
   if (confirmed !== deleteAction) {return;}
 
   try {
-    deleteKeyPair(key.privateKeyPath);
+    if (storage && associatedHosts.length > 0) {
+      await storage.updateHostsIdentityFile(associatedHosts.map((host) => host.id), undefined);
+    }
+    try {
+      deleteKeyPair(key.privateKeyPath);
+    } catch (error) {
+      if (storage && associatedHosts.length > 0) {
+        try {
+          await storage.updateHostsIdentityFile(associatedHosts.map((host) => host.id), key.privateKeyPath);
+        } catch {
+          // Report the file error; association rollback may require manual repair.
+        }
+      }
+      throw error;
+    }
+    if (associatedHosts.length > 0) {hostTree?.refresh();}
     keyTree?.refresh();
-    vscode.window.showInformationMessage(vscode.l10n.t("Deleted key: {name}", { name: key.name }));
+    vscode.window.showInformationMessage(associatedHosts.length > 0
+      ? vscode.l10n.t("Deleted key: {name}. Cleared associations from {count} hosts.", {
+          name: key.name,
+          count: associatedHosts.length,
+        })
+      : vscode.l10n.t("Deleted key: {name}", { name: key.name }));
   } catch (err: unknown) {
     vscode.window.showErrorMessage(vscode.l10n.t("Delete failed: {error}", { error: getErrorMessage(err) }));
   }
 }
 
-async function promptRegeneratePublicKey(key: KeyInfo, keyTree?: { refresh: () => void }): Promise<void> {
+export async function promptRegeneratePublicKey(key: KeyInfo, keyTree?: { refresh: () => void }): Promise<void> {
   const hasPublicKey = Boolean(key.publicKeyPath);
   if (hasPublicKey) {
     const regenerateAction = vscode.l10n.t("Regenerate");
@@ -143,7 +188,12 @@ async function promptRegeneratePublicKey(key: KeyInfo, keyTree?: { refresh: () =
 }
 
 /** Rename a key pair */
-async function promptRenameKey(key: KeyInfo, keyTree?: { refresh: () => void }): Promise<void> {
+export async function promptRenameKey(
+  key: KeyInfo,
+  keyTree?: { refresh: () => void },
+  storage?: StorageService,
+  hostTree?: HostTreeDataProvider
+): Promise<void> {
   const newName = await vscode.window.showInputBox({
     prompt: vscode.l10n.t("New file name (without a path)"),
     placeHolder: vscode.l10n.t("For example, id_ed25519_new"),
@@ -156,15 +206,40 @@ async function promptRenameKey(key: KeyInfo, keyTree?: { refresh: () => void }):
   });
   if (!newName || newName.trim() === key.name) {return;}
 
+  const associatedHosts = findHostsUsingKey(storage, key.privateKeyPath);
   try {
     const newPath = renameKeyPair(key.privateKeyPath, newName.trim());
+    if (storage && associatedHosts.length > 0) {
+      try {
+        await storage.updateHostsIdentityFile(associatedHosts.map((host) => host.id), newPath);
+      } catch (error) {
+        try { renameKeyPair(newPath, path.basename(key.privateKeyPath)); } catch {
+          // Report the storage error; the user can still repair the path manually if rollback fails.
+        }
+        throw error;
+      }
+      hostTree?.refresh();
+    }
     keyTree?.refresh();
     vscode.window.showInformationMessage(
-      vscode.l10n.t("Renamed: {oldName} → {newName}", { oldName: key.name, newName: path.basename(newPath) })
+      associatedHosts.length > 0
+        ? vscode.l10n.t("Renamed: {oldName} → {newName}. Updated {count} host associations.", {
+            oldName: key.name,
+            newName: path.basename(newPath),
+            count: associatedHosts.length,
+          })
+        : vscode.l10n.t("Renamed: {oldName} → {newName}", { oldName: key.name, newName: path.basename(newPath) })
     );
   } catch (err: unknown) {
     vscode.window.showErrorMessage(vscode.l10n.t("Rename failed: {error}", { error: getErrorMessage(err) }));
   }
+}
+
+function findHostsUsingKey(storage: StorageService | undefined, privateKeyPath: string) {
+  return storage?.getAllHosts().filter((host) => {
+    const identityFile = host.identityFile;
+    return identityFile ? areIdentityPathsEquivalent(identityFile, privateKeyPath) : false;
+  }) ?? [];
 }
 
 /** Generate a new SSH key pair */

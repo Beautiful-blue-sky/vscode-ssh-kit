@@ -16,6 +16,7 @@ import {
   populateFingerprints,
   exportKeyFiles,
   importKeyFiles,
+  deleteKeyPair,
   sanitizeKeyFileName,
 } from "../keys/keyManager";
 import { findDuplicateEndpointGroups, findImportMatch } from "./hostMatching";
@@ -527,6 +528,7 @@ export class StorageService {
     let keyFilesSkipped = 0;
     let keyFilesFailed = 0;
     let keyFileFailures: Array<{ name: string; reason: string }> = [];
+    let writtenKeyPaths: string[] = [];
     const identityRewriteTargets: Array<{ sourceName: string; targetPath?: string; clear?: boolean }> = [];
 
     if (source.keyFiles && source.keyFiles.length > 0) {
@@ -536,6 +538,7 @@ export class StorageService {
       keyFilesSkipped = keyResult.skipped;
       keyFilesFailed = keyResult.failed.length;
       keyFileFailures = keyResult.failed;
+      writtenKeyPaths = keyResult.writtenPaths;
       identityRewriteTargets.push(...keyResult.restoredPaths);
       identityRewriteTargets.push(
         ...[...keyResult.skippedSourceNames, ...keyResult.failedSourceNames]
@@ -592,7 +595,18 @@ export class StorageService {
       data.sortPreferences.hostSort = source.sortPreferences.hostSort;
     }
 
-    await this.saveData(data);
+    try {
+      await this.saveData(data);
+    } catch (error) {
+      for (const privateKeyPath of [...writtenKeyPaths].reverse()) {
+        try {
+          deleteKeyPair(privateKeyPath);
+        } catch {
+          // Preserve the storage failure; rollback is best effort and never removes reused keys.
+        }
+      }
+      throw error;
+    }
 
     return {
       importedHosts,

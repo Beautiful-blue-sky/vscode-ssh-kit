@@ -12,7 +12,7 @@ SSH Kit is a focused SSH host manager for VS Code. It gives you one place to org
 
 - Keep SSH hosts grouped by project, environment, or team.
 - Open a host through Remote-SSH in the current window, a new empty window, or an external terminal.
-- See the current SSH Kit Remote-SSH connection in the status bar, with host details available from the tooltip.
+- See the current SSH Kit Remote-SSH connection in the status bar; hover for details or click to copy them.
 - Import existing SSH Config entries and preview what will be added, updated, or skipped.
 - Expand any host to copy its Host nickname, address, port, username, or key path.
 - Manage local SSH keys, copy public keys, and regenerate missing `.pub` files.
@@ -44,6 +44,7 @@ SSH Kit is a focused SSH host manager for VS Code. It gives you one place to org
 - Batch delete and endpoint-based duplicate cleanup.
 - Batch change the associated key path for selected hosts, including clearing the key or entering a custom path.
 - Right-click a host to change only that host's associated key.
+- Accept IPv4, IPv6, and domain names, plus common enterprise login forms such as `DOMAIN\\user` and `user@example.com`.
 
 ### Remote-SSH Connections
 
@@ -64,6 +65,7 @@ SSH Kit is a focused SSH host manager for VS Code. It gives you one place to org
 - Match existing hosts by name first, then by SSH endpoint, so repeated imports update existing records instead of creating obvious duplicates.
 - Ignore SSH Kit generated Remote-SSH connection alias blocks during import.
 - Preserve repeated directives such as `LocalForward` and `SendEnv`.
+- Preserve quoted values and identity-file paths containing spaces; imported invalid ports fall back to the SSH default port `22`.
 - Preview write-back impact before modifying `~/.ssh/config`.
 - Before writing an existing SSH Config file, choose where to save a backup copy. Canceling the backup cancels the write.
 - Treat SSH Kit as the source of truth when writing: same Host aliases or same `HostName` / `Port` targets are replaced by current SSH Kit entries, unmanaged matches require explicit takeover confirmation, and generated SSH Kit connection aliases are removed.
@@ -71,12 +73,14 @@ SSH Kit is a focused SSH host manager for VS Code. It gives you one place to org
 
 ### Key Management
 
-- Scan private keys from `~/.ssh/`.
+- Scan recognized OpenSSH and PEM private keys from `~/.ssh/` while ignoring unrelated files.
 - Display key type and fingerprint.
 - Generate ed25519, RSA, or ECDSA key pairs.
 - Copy public keys from the tree.
 - Open private or public key files directly from expanded key details while keeping path-copy actions available.
 - Regenerate missing public key files from private keys.
+- Rename a key pair and automatically update hosts associated with its previous path.
+- Warn before deleting an associated key and clear affected host associations after confirmation.
 
 ### SSH Kit Data Backup and Restore
 
@@ -90,7 +94,7 @@ SSH Kit is a focused SSH host manager for VS Code. It gives you one place to org
 
 ### AI and Copilot Access
 
-SSH Kit contributes a read-only VS Code language model tool named `sshKitHosts`. It lets Copilot Chat and other VS Code chat providers that support language model tools use your SSH Kit host metadata when you explicitly ask for it.
+SSH Kit contributes a read-only VS Code language model tool named `sshKitHosts`. It lets Copilot Chat and other VS Code chat providers that support language model tools use saved SSH Kit host metadata. Referencing `#sshKitHosts` is the most explicit way to invoke it; when the tool is enabled in Agent mode, Copilot may also select it automatically for a relevant request. VS Code controls tool approval according to your chat tool settings.
 
 How to use it in Copilot Chat:
 
@@ -115,6 +119,8 @@ Example prompts:
 
 If `#sshKitHosts` does not appear, update VS Code and Copilot Chat, then reload the VS Code window. The tool is declared by the extension and registered when SSH Kit activates.
 
+The tool only reads hosts stored by SSH Kit. It does not establish connections, test reachability, parse SSH Config files, or identify the current Remote-SSH window. Space-separated query terms are combined across host name, address, user, port, group, and tags. Results are paged: the default page contains up to 50 hosts, each invocation is capped at 200, and `nextOffset` is returned when more matches are available. SSH Kit may shorten a page further to stay within the active model's token budget.
+
 What the tool can return:
 
 - Host display name
@@ -128,7 +134,7 @@ What the tool does not return by default:
 - Private key contents
 - Identity file paths
 
-If key file paths are needed, Copilot can request them through the tool input. SSH Kit will ask for confirmation before sharing paths, and private key contents are never returned.
+If key file paths are needed, Copilot can request them through the tool input. SSH Kit shows the query, offset, and page limit in its confirmation before sharing paths, and private key contents are never returned.
 
 ## Command Palette
 
@@ -173,9 +179,11 @@ There are two different backup flows:
 - **SSH Config write-back backup:** when writing to `~/.ssh/config`, SSH Kit asks you to choose where to save a copy of the current SSH Config file before it writes changes. This backs up the config text only.
 - **SSH Kit data backup:** the **Backup Data** command asks whether to export host data only or include associated keys. A complete backup contains private key material; keep it in an encrypted or access-controlled location and delete temporary copies after migration.
 
-Runtime prompts and tree labels are localized for English and Simplified Chinese. Stored data carries a schema version and is validated/migrated when older extension data is loaded; malformed backup records are rejected before restore.
+Runtime prompts and tree labels are localized for English and Simplified Chinese. Stored data carries a schema version and is validated/migrated when older extension data is loaded; malformed records, duplicate identifiers, and unsafe SSH Config values are rejected before restore.
 
-The Copilot/language-model tool is read-only and does not expose private key contents. When you reference `#sshKitHosts`, selected host metadata is included in that chat request so Copilot can answer with the right SSH context.
+The Copilot/language-model tool is read-only and does not expose private key contents. When the enabled tool is invoked manually or by Agent mode, the matching page of host metadata is included in that chat request so Copilot can answer with the right SSH context. Review VS Code's tool approval settings if host inventory is sensitive.
+
+See the [security policy](SECURITY.md) before reporting a vulnerability or sharing diagnostics that may contain host or key information.
 
 ## Development
 

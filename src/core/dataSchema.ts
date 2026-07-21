@@ -92,11 +92,14 @@ export function validateBackupData(raw: unknown): asserts raw is ValidatedBackup
       !isRecord(group) ||
       !isNonEmptyString(group.id) ||
       !isNonEmptyString(group.name) ||
+      !isSafeSingleLine(group.id) ||
+      !isSafeSingleLine(group.name) ||
       (group.order !== undefined && (typeof group.order !== "number" || !Number.isFinite(group.order)))
     ) {
       throw new Error(vscode.l10n.t("Invalid SSH Kit backup: group {index} is missing an id or name.", { index: index + 1 }));
     }
   });
+  assertUniqueStrings(raw.groups.map((group) => (group as UnknownRecord).id), vscode.l10n.t("group ids"));
 
   raw.hosts.forEach((host, index) => {
     if (
@@ -105,21 +108,28 @@ export function validateBackupData(raw: unknown): asserts raw is ValidatedBackup
       !isNonEmptyString(host.name) ||
       !isNonEmptyString(host.hostname) ||
       typeof host.username !== "string" ||
+      !isSafeSingleLine(host.id) ||
+      !isSafeSingleLine(host.name) ||
+      !isSafeToken(host.hostname) ||
+      (host.username.length > 0 && !isSafeToken(host.username)) ||
       !isValidPort(host.port)
     ) {
       throw new Error(vscode.l10n.t("Invalid SSH Kit backup: host {index} has invalid required fields.", { index: index + 1 }));
     }
-    if (host.tags !== undefined && (!Array.isArray(host.tags) || host.tags.some((tag) => typeof tag !== "string"))) {
+    if (host.tags !== undefined && (!Array.isArray(host.tags) || host.tags.some((tag) =>
+      typeof tag !== "string" || !isSafeSingleLine(tag)
+    ))) {
       throw new Error(vscode.l10n.t("Invalid SSH Kit backup: host {index} has invalid tags.", { index: index + 1 }));
     }
     if (
-      (host.groupId !== undefined && typeof host.groupId !== "string") ||
-      (host.identityFile !== undefined && typeof host.identityFile !== "string") ||
+      (host.groupId !== undefined && (typeof host.groupId !== "string" || !isSafeSingleLine(host.groupId))) ||
+      (host.identityFile !== undefined && (typeof host.identityFile !== "string" || !isSafeSingleLine(host.identityFile))) ||
       !isValidExtraConfig(host.extraConfig)
     ) {
       throw new Error(vscode.l10n.t("Invalid SSH Kit backup: host {index} has invalid optional fields.", { index: index + 1 }));
     }
   });
+  assertUniqueStrings(raw.hosts.map((host) => (host as UnknownRecord).id), vscode.l10n.t("host ids"));
 
   if (raw.sortPreferences !== undefined) {
     if (
@@ -132,10 +142,11 @@ export function validateBackupData(raw: unknown): asserts raw is ValidatedBackup
 
   if (raw.keyMetadata !== undefined) {
     if (!Array.isArray(raw.keyMetadata) || raw.keyMetadata.some((entry) =>
-      !isRecord(entry) || !isNonEmptyString(entry.name)
+      !isRecord(entry) || !isNonEmptyString(entry.name) || !isSafeSingleLine(entry.name)
     )) {
       throw new Error(vscode.l10n.t("Invalid SSH Kit backup: keyMetadata must contain named key records."));
     }
+    assertUniqueStrings(raw.keyMetadata.map((entry) => (entry as UnknownRecord).name), vscode.l10n.t("key metadata names"), true);
   }
 
   if (raw.keyFiles !== undefined) {
@@ -146,13 +157,16 @@ export function validateBackupData(raw: unknown): asserts raw is ValidatedBackup
       if (
         !isRecord(entry) ||
         !isNonEmptyString(entry.name) ||
+        !isSafeSingleLine(entry.name) ||
         typeof entry.type !== "string" ||
+        !isSafeSingleLine(entry.type) ||
         !isNonEmptyString(entry.privateKey) ||
         (entry.publicKey !== undefined && typeof entry.publicKey !== "string")
       ) {
         throw new Error(vscode.l10n.t("Invalid SSH Kit backup: key file {index} is malformed.", { index: index + 1 }));
       }
     });
+    assertUniqueStrings(raw.keyFiles.map((entry) => (entry as UnknownRecord).name), vscode.l10n.t("key file names"), true);
   }
 }
 
@@ -279,10 +293,32 @@ function isValidPort(value: unknown): value is number {
 function isValidExtraConfig(value: unknown): boolean {
   if (value === undefined) {return true;}
   if (!isRecord(value)) {return false;}
-  return Object.values(value).every((entry) =>
-    typeof entry === "string" ||
-    (Array.isArray(entry) && entry.every((item) => typeof item === "string"))
+  return Object.entries(value).every(([key, entry]) =>
+    /^[A-Za-z][A-Za-z0-9]*$/.test(key) && (
+      (typeof entry === "string" && isSafeSingleLine(entry)) ||
+      (Array.isArray(entry) && entry.every((item) => typeof item === "string" && isSafeSingleLine(item)))
+    )
   );
+}
+
+function isSafeSingleLine(value: string): boolean {
+  return [...value].every((character) => {
+    const codePoint = character.codePointAt(0) ?? 0;
+    return codePoint === 0x09 || (codePoint >= 0x20 && (codePoint < 0x7f || codePoint > 0x9f));
+  });
+}
+
+function isSafeToken(value: string): boolean {
+  return isSafeSingleLine(value) && !/\s/.test(value);
+}
+
+function assertUniqueStrings(values: unknown[], label: string, ignoreCase = false): void {
+  const normalized = values
+    .filter((value): value is string => typeof value === "string")
+    .map((value) => ignoreCase ? value.toLocaleLowerCase() : value);
+  if (new Set(normalized).size !== normalized.length) {
+    throw new Error(vscode.l10n.t("Invalid SSH Kit backup: duplicate {field} were found.", { field: label }));
+  }
 }
 
 function sameJson(left: unknown, right: unknown): boolean {

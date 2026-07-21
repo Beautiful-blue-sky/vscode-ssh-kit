@@ -3,6 +3,7 @@ import * as vscode from "vscode";
 import { findHostByRemoteSshAlias } from "../commands/connectCommands";
 import { HostTreeDataProvider } from "../views/treeView";
 import { canUseCachedSshKitWindowConnection } from "./connectionState";
+import { formatHostEndpoint } from "./endpoint";
 import { decodeRemoteSshAuthority } from "./remoteAuthority";
 import { StorageService } from "./storage";
 import { SSHHost } from "./types";
@@ -100,7 +101,7 @@ export class ConnectionStatusController implements vscode.Disposable {
   }
 
   private formatConnectionDetails(host: SSHHost, alias: string): string {
-    const connection = `${host.username}@${host.hostname}:${host.port}`;
+    const connection = formatHostEndpoint(host);
     const groupName = host.groupId
       ? this.storage.getGroups().find((group) => group.id === host.groupId)?.name
       : undefined;
