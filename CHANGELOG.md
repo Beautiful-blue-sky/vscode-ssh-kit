@@ -4,6 +4,8 @@
 
 ## Unreleased
 
+## 0.1.0 — 2026-07-29
+
 ### Added
 - Add explicit per-host authentication modes for OpenSSH automatic behavior, one specified identity file, or password-only login.
 - Include the authentication mode in expanded host details, current-connection details, backups, and read-only language model host metadata.
