@@ -45,6 +45,7 @@ const nlsEn = readJson("package.nls.json");
 const nlsZh = readJson("package.nls.zh-cn.json");
 const readmeEn = readFileSync(join(root, "README.md"), "utf8");
 const readmeZh = readFileSync(join(root, "README.zh-CN.md"), "utf8");
+const extensionSource = readFileSync(join(root, "src", "extension.ts"), "utf8");
 const packageFiles = getVscePackageFiles();
 const checks = [];
 
@@ -83,8 +84,24 @@ addCheck(
 
 const contributedCommands = manifest.contributes?.commands ?? [];
 const contributedCommandIds = new Set(contributedCommands.map((command) => command.command));
+const registeredCommandIds = new Set(
+  [...extensionSource.matchAll(/registerCommand\(\s*["'](sshKit\.[^"']+)/g)]
+    .map((match) => match[1]),
+);
+const unregisteredCommands = [...contributedCommandIds]
+  .filter((command) => command.startsWith("sshKit.") && !registeredCommandIds.has(command));
+const uncontributedCommands = [...registeredCommandIds]
+  .filter((command) => !contributedCommandIds.has(command));
 const undefinedMenuCommands = menuCommandReferences()
   .filter((command) => command.startsWith("sshKit.") && !contributedCommandIds.has(command));
+const contributedSubmenuIds = new Set(
+  (manifest.contributes?.submenus ?? []).map((submenu) => submenu.id),
+);
+const referencedSubmenuIds = new Set(menuSubmenuReferences());
+const undefinedSubmenuReferences = [...referencedSubmenuIds]
+  .filter((submenu) => submenu.startsWith("sshKit.") && !contributedSubmenuIds.has(submenu));
+const unusedSubmenuDeclarations = [...contributedSubmenuIds]
+  .filter((submenu) => !referencedSubmenuIds.has(submenu));
 const hiddenCommandPaletteCommands = new Set(
   (manifest.contributes?.menus?.commandPalette ?? [])
     .filter((item) => item.when === "false")
@@ -134,10 +151,34 @@ const extraReadmeCommandsZh = [...readmeCommandsZh]
 addCheck("Contribution surface", "commands", "non-empty", String(contributedCommands.length), contributedCommands.length > 0);
 addCheck(
   "Contribution surface",
+  "runtime command registrations",
+  "matches contributed commands",
+  [...unregisteredCommands, ...uncontributedCommands].length > 0
+    ? [
+        ...unregisteredCommands.map((command) => `not registered: ${command}`),
+        ...uncontributedCommands.map((command) => `not contributed: ${command}`),
+      ].join(", ")
+    : "matches contributed commands",
+  unregisteredCommands.length === 0 && uncontributedCommands.length === 0,
+);
+addCheck(
+  "Contribution surface",
   "menu command references",
   "defined commands",
   undefinedMenuCommands.length > 0 ? [...new Set(undefinedMenuCommands)].join(", ") : "defined commands",
   undefinedMenuCommands.length === 0,
+);
+addCheck(
+  "Contribution surface",
+  "submenu references",
+  "declared and used",
+  [...undefinedSubmenuReferences, ...unusedSubmenuDeclarations].length > 0
+    ? [
+        ...undefinedSubmenuReferences.map((submenu) => `not declared: ${submenu}`),
+        ...unusedSubmenuDeclarations.map((submenu) => `not used: ${submenu}`),
+      ].join(", ")
+    : "declared and used",
+  undefinedSubmenuReferences.length === 0 && unusedSubmenuDeclarations.length === 0,
 );
 addCheck(
   "Contribution surface",
@@ -265,6 +306,13 @@ function menuCommandReferences() {
   return Object.values(manifest.contributes?.menus ?? {})
     .flat()
     .map((item) => item.command)
+    .filter(Boolean);
+}
+
+function menuSubmenuReferences() {
+  return Object.values(manifest.contributes?.menus ?? {})
+    .flat()
+    .map((item) => item.submenu)
     .filter(Boolean);
 }
 

@@ -1,6 +1,12 @@
 import { isIP } from "node:net";
 import * as vscode from "vscode";
-import { SSHGroup, SSHHost } from "../core/types";
+import {
+  resolveHostAuthMode,
+  SSHAuthMode,
+  SSHGroup,
+  SSHHost,
+  stripManagedAuthenticationConfig,
+} from "../core/types";
 import { StorageService } from "../core/storage";
 import { areIdentityPathsEquivalent, listKeys } from "../keys/keyManager";
 
@@ -75,7 +81,7 @@ export async function promptNewHost(
 ): Promise<Omit<SSHHost, "id"> | undefined> {
   const name = await promptInput({
     prompt: vscode.l10n.t("Host display name"),
-    placeHolder: vscode.l10n.t("For example, es-node1"),
+    placeHolder: vscode.l10n.t("For example, production-web-01"),
     value: prefill?.name,
     validate: validateRequiredName,
   });
@@ -107,8 +113,12 @@ export async function promptNewHost(
 
   const groupId = await promptGroup(storage, prefill?.groupId);
   if (groupId === null) {return undefined;}
-  const identityFile = await promptIdentityFile(prefill?.identityFile);
-  if (identityFile === null) {return undefined;}
+  const authentication = await promptAuthentication(prefill);
+  if (!authentication) {return undefined;}
+  const previousAuthMode = prefill ? resolveHostAuthMode(prefill) : undefined;
+  const extraConfig = previousAuthMode && previousAuthMode !== authentication.authMode
+    ? stripManagedAuthenticationConfig(prefill?.extraConfig)
+    : prefill?.extraConfig;
 
   return {
     name: name.trim(),
@@ -116,9 +126,10 @@ export async function promptNewHost(
     port: Number.parseInt(portText, 10),
     username: username.trim(),
     groupId: groupId || undefined,
-    identityFile: identityFile || undefined,
+    authMode: authentication.authMode,
+    identityFile: authentication.identityFile,
     tags: prefill?.tags ?? [],
-    extraConfig: prefill?.extraConfig,
+    extraConfig,
   };
 }
 
@@ -137,7 +148,11 @@ export async function promptEditHost(
         description: storage.getGroups().find((group) => group.id === host.groupId)?.name ?? vscode.l10n.t("Ungrouped"),
         key: "group",
       },
-      { label: vscode.l10n.t("$(key) Identity file"), description: host.identityFile ?? vscode.l10n.t("Not associated"), key: "identityFile" },
+      {
+        label: vscode.l10n.t("$(shield) Authentication"),
+        description: formatAuthenticationDescription(host),
+        key: "authentication",
+      },
       { label: vscode.l10n.t("$(tag) Tags"), description: host.tags.length > 0 ? host.tags.join(", ") : vscode.l10n.t("None"), key: "tags" },
       { label: vscode.l10n.t("$(edit) Edit all fields"), description: vscode.l10n.t("Review every field with the full wizard"), key: "full" },
     ],
@@ -149,7 +164,7 @@ export async function promptEditHost(
     case "name": {
       const value = await promptInput({
         prompt: vscode.l10n.t("Host display name"),
-        placeHolder: vscode.l10n.t("For example, es-node1"),
+        placeHolder: vscode.l10n.t("For example, production-web-01"),
         value: host.name,
         validate: validateRequiredName,
       });
@@ -186,9 +201,16 @@ export async function promptEditHost(
       const groupId = await promptGroup(storage, host.groupId);
       return groupId === null ? undefined : { groupId: groupId || undefined };
     }
-    case "identityFile": {
-      const identityFile = await promptIdentityFile(host.identityFile);
-      return identityFile === null ? undefined : { identityFile: identityFile || undefined };
+    case "authentication": {
+      const authentication = await promptAuthentication(host);
+      if (!authentication) {return undefined;}
+      return {
+        authMode: authentication.authMode,
+        identityFile: authentication.identityFile,
+        extraConfig: authentication.authMode === resolveHostAuthMode(host)
+          ? host.extraConfig
+          : stripManagedAuthenticationConfig(host.extraConfig),
+      };
     }
     case "tags": {
       const value = await vscode.window.showInputBox({
@@ -203,19 +225,56 @@ export async function promptEditHost(
   }
 }
 
+interface AuthenticationSelection {
+  authMode: SSHAuthMode;
+  identityFile?: string;
+}
+
+async function promptAuthentication(
+  prefill?: Pick<SSHHost, "authMode" | "identityFile" | "extraConfig">
+): Promise<AuthenticationSelection | undefined> {
+  const currentMode = prefill ? resolveHostAuthMode(prefill) : "auto";
+  const items: Array<vscode.QuickPickItem & { mode: SSHAuthMode }> = [
+    {
+      label: vscode.l10n.t("$(settings-gear) Automatic"),
+      description: vscode.l10n.t("Use OpenSSH defaults, ssh-agent, default keys, or password"),
+      mode: "auto",
+    },
+    {
+      label: vscode.l10n.t("$(key) Specified identity file"),
+      description: vscode.l10n.t("Use only the selected private key"),
+      mode: "identityFile",
+    },
+    {
+      label: vscode.l10n.t("$(lock) Password only"),
+      description: vscode.l10n.t("Disable public-key authentication for this host"),
+      mode: "password",
+    },
+  ];
+  const picked = await showQuickPick(
+    items,
+    vscode.l10n.t("Choose an authentication method"),
+    items.find((item) => item.mode === currentMode)
+  );
+  if (!picked) {return undefined;}
+
+  if (picked.mode !== "identityFile") {
+    return { authMode: picked.mode };
+  }
+
+  const identityFile = await promptIdentityFile(prefill?.identityFile);
+  return identityFile ? { authMode: "identityFile", identityFile } : undefined;
+}
+
 async function promptIdentityFile(prefillPath?: string): Promise<string | null> {
   const keys = listKeys();
-  if (keys.length === 0 && !prefillPath) {return "";}
-
   const matchingKey = prefillPath
     ? keys.find((key) => areIdentityPathsEquivalent(prefillPath, key.privateKeyPath))
     : undefined;
   const shouldShowCurrentPath = Boolean(
     prefillPath && (!matchingKey || matchingKey.privateKeyPath !== prefillPath)
   );
-  const items: (vscode.QuickPickItem & { path?: string })[] = [
-    { label: vscode.l10n.t("$(circle-slash) No identity file"), path: "" },
-  ];
+  const items: Array<vscode.QuickPickItem & { path?: string; custom?: boolean }> = [];
 
   let activeItem: (typeof items)[number] | undefined;
   if (prefillPath && shouldShowCurrentPath) {
@@ -228,6 +287,11 @@ async function promptIdentityFile(prefillPath?: string): Promise<string | null> 
     items.push(activeItem);
   }
 
+  items.push({
+    label: vscode.l10n.t("$(edit) Enter a custom path"),
+    description: vscode.l10n.t("For example, ~/.ssh/id_ed25519"),
+    custom: true,
+  });
   items.push(...keys.map((key) => ({
     label: `$(key) ${key.name}`,
     description: matchingKey?.privateKeyPath === key.privateKeyPath
@@ -241,8 +305,40 @@ async function promptIdentityFile(prefillPath?: string): Promise<string | null> 
     activeItem = items.find((item) => item.path === matchingKey.privateKeyPath);
   }
 
-  const picked = await showQuickPick(items, vscode.l10n.t("Choose an identity file (optional)"), activeItem);
+  const picked = await showQuickPick(
+    items,
+    vscode.l10n.t("Choose an identity file"),
+    activeItem
+  );
+  if (picked?.custom) {
+    const value = await vscode.window.showInputBox({
+      prompt: vscode.l10n.t("Enter the private key path"),
+      placeHolder: "~/.ssh/id_ed25519",
+      value: prefillPath,
+      validateInput: (input) => {
+        const trimmed = input.trim();
+        if (!trimmed) {return vscode.l10n.t("Path is required");}
+        return /[\r\n]/.test(trimmed)
+          ? vscode.l10n.t("Path cannot contain line breaks")
+          : undefined;
+      },
+    });
+    return value === undefined ? null : value.trim();
+  }
   return picked === undefined ? null : picked.path ?? "";
+}
+
+function formatAuthenticationDescription(host: SSHHost): string {
+  switch (resolveHostAuthMode(host)) {
+    case "password":
+      return vscode.l10n.t("Password only");
+    case "identityFile":
+      return host.identityFile
+        ? vscode.l10n.t("Identity file: {path}", { path: host.identityFile })
+        : vscode.l10n.t("Specified identity file");
+    default:
+      return vscode.l10n.t("Automatic (OpenSSH defaults)");
+  }
 }
 
 async function promptGroup(storage: StorageService, prefillGroupId?: string): Promise<string | null> {

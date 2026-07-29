@@ -1,4 +1,4 @@
-// SSH Kit — Data storage layer based on VS Code globalState
+// SSH Kit — File-backed catalog with VS Code Memento for preferences and window state
 import * as vscode from "vscode";
 import {
   SSHKitData,
@@ -6,6 +6,8 @@ import {
   SSHGroup,
   HostSortMode,
   generateId,
+  resolveHostAuthMode,
+  stripManagedAuthenticationConfig,
 } from "./types";
 import {
   areIdentityPathsEquivalent,
@@ -19,38 +21,108 @@ import {
   deleteKeyPair,
   sanitizeKeyFileName,
 } from "../keys/keyManager";
-import { findDuplicateEndpointGroups, findImportMatch } from "./hostMatching";
-import { CURRENT_DATA_SCHEMA_VERSION, migrateStoredData, ValidatedBackupData, validateBackupData } from "./dataSchema";
+import {
+  createImportedHostUpdates,
+  findImportMatch,
+  ImportedHost,
+} from "./hostMatching";
+import {
+  CURRENT_DATA_SCHEMA_VERSION,
+  migrateStoredData,
+  toCatalog,
+  ValidatedBackupData,
+  validateBackupData,
+} from "./dataSchema";
+import {
+  CatalogRepository,
+  CatalogSnapshotInfo,
+  mergeCatalogWithLegacyState,
+} from "./catalogRepository";
+import { ensureUniqueSSHHostAlias } from "./sshAlias";
 
 /** Key used in globalState storage */
 const DATA_KEY = "sshKit.data";
 const WINDOW_CONNECTION_KEY = "sshKit.windowConnection";
 const PENDING_CONNECTIONS_KEY = "sshKit.pendingConnections";
 const REMOTE_AUTHORITY_CONNECTIONS_KEY = "sshKit.remoteAuthorityConnections";
+const PREFERENCES_KEY = "sshKit.preferences";
+const CURRENT_CONNECTION_KEY = "sshKit.currentConnection";
+const catalogRevisions = new WeakMap<object, number>();
+
+interface StoredPreferences {
+  groupCollapsedState: SSHKitData["groupCollapsedState"];
+  recentConnections: SSHKitData["recentConnections"];
+  sortPreferences: SSHKitData["sortPreferences"];
+}
 
 export type GroupMoveDirection = "top" | "up" | "down" | "bottom";
 
 /**
- * Storage service — wraps read/write operations on VS Code globalState.
- * All data is persisted as JSON and retained when the extension is uninstalled.
+ * Storage service for the durable host catalog and lightweight VS Code state.
  */
 export class StorageService {
-  constructor(private context: vscode.ExtensionContext) {}
+  private readonly catalog: CatalogRepository;
+  private readonly changeEmitter = new vscode.EventEmitter<void>();
+  readonly onDidChange = this.changeEmitter.event;
+
+  constructor(private context: vscode.ExtensionContext) {
+    this.catalog = new CatalogRepository(context);
+    this.initializeSplitState();
+  }
 
   /** Read all data; return default empty data if none exists */
   getData(): SSHKitData {
     const raw = this.context.globalState.get<unknown>(DATA_KEY);
     const migrated = migrateStoredData(raw);
-    if (migrated.changed) {
+    if (migrated.changed && !this.catalog.isFileBacked) {
       void this.context.globalState.update(DATA_KEY, migrated.data);
     }
-    return migrated.data;
+    const preferences = this.context.globalState.get<StoredPreferences>(
+      PREFERENCES_KEY,
+      toPreferences(migrated.data)
+    );
+    const currentConnection = this.context.globalState.get<SSHKitData["currentConnection"]>(
+      CURRENT_CONNECTION_KEY,
+      migrated.data.currentConnection
+    );
+    const catalog = this.catalog.read();
+    const data = mergeCatalogWithLegacyState(catalog, {
+      ...migrated.data,
+      ...preferences,
+      ...(currentConnection ? { currentConnection } : {}),
+    });
+    catalogRevisions.set(data, catalog.revision);
+    return data;
   }
 
   /** Persist all data */
-  private async saveData(data: SSHKitData): Promise<void> {
+  private async saveData(
+    data: SSHKitData,
+    options: { snapshot?: boolean } = {}
+  ): Promise<void> {
     data.schemaVersion = Math.max(data.schemaVersion, CURRENT_DATA_SCHEMA_VERSION);
-    await this.context.globalState.update(DATA_KEY, data);
+    const expectedRevision = catalogRevisions.get(data);
+    const saved = await this.catalog.replace(toCatalog(data), {
+      snapshot: options.snapshot,
+      expectedRevision,
+    });
+    data.schemaVersion = saved.schemaVersion;
+    if (this.catalog.isFileBacked) {
+      // The Catalog is authoritative. Auxiliary Memento failures must not make
+      // callers roll back key files after the catalog commit already succeeded.
+      await Promise.allSettled([
+        this.savePreferences(data),
+        this.context.globalState.update(CURRENT_CONNECTION_KEY, data.currentConnection),
+        // Keep a schema-v4 mirror for one release so downgrades retain a rollback path.
+        this.context.globalState.update(DATA_KEY, data),
+      ]);
+    } else {
+      // In fallback mode globalState remains the authoritative persistence layer.
+      await this.savePreferences(data);
+      await this.context.globalState.update(CURRENT_CONNECTION_KEY, data.currentConnection);
+      await this.context.globalState.update(DATA_KEY, data);
+    }
+    this.changeEmitter.fire();
   }
 
   // ─── Group operations ───────────────────────────────────────────────
@@ -167,7 +239,7 @@ export class StorageService {
         host.groupId = undefined;
       }
     }
-    await this.saveData(data);
+    await this.saveData(data, { snapshot: true });
   }
 
   // ─── Host operations ────────────────────────────────────────────────
@@ -190,7 +262,9 @@ export class StorageService {
     const data = this.getData();
     if (data.sortPreferences.hostSort === mode) {return;}
     data.sortPreferences.hostSort = mode;
-    await this.saveData(data);
+    await this.savePreferences(data);
+    await this.updateLegacyMirror(data);
+    this.changeEmitter.fire();
   }
 
   /** Find a host by name (used for import deduplication) */
@@ -198,31 +272,10 @@ export class StorageService {
     return this.getData().hosts.find((h) => h.name === name);
   }
 
-  /** Remove duplicate hosts by actual SSH endpoint, keeping the first occurrence. */
-  async deduplicateHosts(): Promise<number> {
-    const data = this.getData();
-    const duplicates = findDuplicateEndpointGroups(data.hosts)
-      .flatMap((group) => group.hosts.slice(1).map((host) => host.id));
-
-    if (duplicates.length === 0) {return 0;}
-
-    data.hosts = data.hosts.filter((h) => !duplicates.includes(h.id));
-    // Also clean up duplicate IDs from recent connections
-    data.recentConnections = data.recentConnections.filter(
-      (rid) => !duplicates.includes(rid)
-    );
-    await this.saveData(data);
-    return duplicates.length;
-  }
-
   /** Add a host */
   async addHost(host: Omit<SSHHost, "id">): Promise<SSHHost> {
     const data = this.getData();
-    const newHost: SSHHost = {
-      ...host,
-      id: generateId(),
-      tags: host.tags ?? [],
-    };
+    const newHost = createStoredHost(data, host);
     data.hosts.push(newHost);
     await this.saveData(data);
     return newHost;
@@ -233,9 +286,59 @@ export class StorageService {
     const data = this.getData();
     const host = data.hosts.find((h) => h.id === id);
     if (host) {
-      Object.assign(host, updates);
+      applyStoredHostUpdates(data, host, updates);
       await this.saveData(data);
     }
+  }
+
+  /** Apply one confirmed SSH Config import as a single catalog transaction. */
+  async importSSHConfigHosts(hosts: ImportedHost[]): Promise<{
+    imported: number;
+    updated: number;
+    endpointMatched: number;
+    skipped: number;
+    ambiguous: number;
+  }> {
+    const data = this.getData();
+    const touchedHostIds = new Set<string>();
+    let imported = 0;
+    let updated = 0;
+    let endpointMatched = 0;
+    let skipped = 0;
+    let ambiguous = 0;
+
+    for (const importedHost of hosts) {
+      const match = findImportMatch(importedHost, data.hosts, touchedHostIds);
+      if (match === "already-touched") {
+        skipped++;
+        continue;
+      }
+      if (match === "ambiguous") {
+        ambiguous++;
+        continue;
+      }
+      if (match) {
+        applyStoredHostUpdates(
+          data,
+          match.host,
+          createImportedHostUpdates(match.host, importedHost, match.reason)
+        );
+        touchedHostIds.add(match.host.id);
+        updated++;
+        if (match.reason === "endpoint") {endpointMatched++;}
+        continue;
+      }
+
+      const added = createStoredHost(data, importedHost);
+      data.hosts.push(added);
+      touchedHostIds.add(added.id);
+      imported++;
+    }
+
+    if (imported > 0 || updated > 0) {
+      await this.saveData(data);
+    }
+    return { imported, updated, endpointMatched, skipped, ambiguous };
   }
 
   /** Update the associated identity file for multiple hosts in one save. */
@@ -247,10 +350,16 @@ export class StorageService {
     let updated = 0;
     for (const host of data.hosts) {
       if (!ids.has(host.id)) {continue;}
+      const previousAuthMode = resolveHostAuthMode(host);
       if (identityFile) {
         host.identityFile = identityFile;
+        host.authMode = "identityFile";
       } else {
         delete host.identityFile;
+        host.authMode = "auto";
+      }
+      if (resolveHostAuthMode(host) !== previousAuthMode) {
+        host.extraConfig = stripManagedAuthenticationConfig(host.extraConfig);
       }
       updated++;
     }
@@ -261,13 +370,97 @@ export class StorageService {
     return updated;
   }
 
-  /** Delete a host */
+  /** Soft-delete a host into the SSH Kit recycle bin. */
   async deleteHost(id: string): Promise<void> {
+    await this.deleteHosts([id]);
+  }
+
+  /** Soft-delete multiple hosts in one catalog revision and one snapshot. */
+  async deleteHosts(hostIds: Iterable<string>): Promise<number> {
     const data = this.getData();
-    data.hosts = data.hosts.filter((h) => h.id !== id);
-    // Also clean up recent connection records
-    data.recentConnections = data.recentConnections.filter((rid) => rid !== id);
-    await this.saveData(data);
+    const ids = new Set(hostIds);
+    if (ids.size === 0) {return 0;}
+    const hosts = data.hosts.filter((host) => ids.has(host.id));
+    if (hosts.length === 0) {return 0;}
+    const groupNames = new Map(data.groups.map((group) => [group.id, group.name]));
+    const deletedAt = new Date().toISOString();
+    data.deletedHosts = [
+      ...(data.deletedHosts ?? []).filter((entry) => !ids.has(entry.host.id)),
+      ...hosts.map((host) => {
+        const groupName = host.groupId ? groupNames.get(host.groupId) : undefined;
+        return {
+          host: globalThis.structuredClone(host),
+          deletedAt,
+          ...(groupName ? { groupName } : {}),
+        };
+      }),
+    ];
+    data.hosts = data.hosts.filter((host) => !ids.has(host.id));
+    data.recentConnections = data.recentConnections.filter((id) => !ids.has(id));
+    await this.saveData(data, { snapshot: true });
+    return hosts.length;
+  }
+
+  getDeletedHosts(): NonNullable<SSHKitData["deletedHosts"]> {
+    return [...(this.getData().deletedHosts ?? [])]
+      .sort((left, right) => right.deletedAt.localeCompare(left.deletedAt));
+  }
+
+  async restoreDeletedHost(hostId: string): Promise<SSHHost | undefined> {
+    const data = this.getData();
+    const deleted = data.deletedHosts?.find((entry) => entry.host.id === hostId);
+    if (!deleted) {return undefined;}
+
+    const restored = globalThis.structuredClone(deleted.host);
+    if (restored.groupId && !data.groups.some((group) => group.id === restored.groupId)) {
+      restored.groupId = deleted.groupName
+        ? data.groups.find((group) => group.name === deleted.groupName)?.id
+        : undefined;
+    }
+    restored.sshAlias = ensureUniqueSSHHostAlias(
+      restored.sshAlias || restored.name,
+      restored,
+      data.hosts.map((host) => host.sshAlias || host.name)
+    );
+    data.hosts.push(restored);
+    data.deletedHosts = data.deletedHosts?.filter((entry) => entry.host.id !== hostId);
+    await this.saveData(data, { snapshot: true });
+    return restored;
+  }
+
+  async permanentlyDeleteHost(hostId: string): Promise<boolean> {
+    const data = this.getData();
+    const previousLength = data.deletedHosts?.length ?? 0;
+    data.deletedHosts = data.deletedHosts?.filter((entry) => entry.host.id !== hostId);
+    if ((data.deletedHosts?.length ?? 0) === previousLength) {return false;}
+    await this.saveData(data, { snapshot: true });
+    return true;
+  }
+
+  async emptyRecycleBin(): Promise<number> {
+    const data = this.getData();
+    const count = data.deletedHosts?.length ?? 0;
+    if (count === 0) {return 0;}
+    data.deletedHosts = [];
+    await this.saveData(data, { snapshot: true });
+    return count;
+  }
+
+  getCatalogSnapshots(): CatalogSnapshotInfo[] {
+    return this.catalog.getSnapshotInfo();
+  }
+
+  async restoreCatalogSnapshot(snapshotPath: string): Promise<SSHKitData> {
+    const current = this.getData();
+    const catalog = await this.catalog.restoreSnapshot(
+      snapshotPath,
+      catalogRevisions.get(current)
+    );
+    const restored = mergeCatalogWithLegacyState(catalog, current);
+    catalogRevisions.set(restored, catalog.revision);
+    await this.updateLegacyMirror(restored);
+    this.changeEmitter.fire();
+    return restored;
   }
 
   // ─── Auxiliary operations ───────────────────────────────────────────
@@ -280,7 +473,8 @@ export class StorageService {
   async setGroupCollapsedState(groupId: string, collapsed: boolean): Promise<void> {
     const data = this.getData();
     data.groupCollapsedState[groupId] = collapsed;
-    await this.saveData(data);
+    await this.savePreferences(data);
+    await this.updateLegacyMirror(data);
   }
 
   /** Record a recent connection */
@@ -291,7 +485,8 @@ export class StorageService {
       hostId,
       ...data.recentConnections.filter((rid) => rid !== hostId),
     ].slice(0, 20);
-    await this.saveData(data);
+    await this.savePreferences(data);
+    await this.updateLegacyMirror(data);
   }
 
   /** Get recently connected hosts (reverse chronological, at most 10) */
@@ -315,7 +510,8 @@ export class StorageService {
       alias,
       connectedAt: new Date().toISOString(),
     };
-    await this.saveData(data);
+    await this.context.globalState.update(CURRENT_CONNECTION_KEY, data.currentConnection);
+    await this.updateLegacyMirror(data);
   }
 
   getCurrentConnection(): SSHKitData["currentConnection"] {
@@ -327,7 +523,8 @@ export class StorageService {
     if (!data.currentConnection) {return;}
     if (hostId && data.currentConnection.hostId !== hostId) {return;}
     delete data.currentConnection;
-    await this.saveData(data);
+    await this.context.globalState.update(CURRENT_CONNECTION_KEY, undefined);
+    await this.updateLegacyMirror(data);
   }
 
   async setWindowConnection(hostId: string, alias: string): Promise<void> {
@@ -426,8 +623,12 @@ export class StorageService {
     const keys = includeKeyFiles ? listKeys() : [];
     if (includeKeyFiles) {populateFingerprints(keys);}
     const data = this.getData();
+    const catalogHosts = [
+      ...data.hosts,
+      ...(data.deletedHosts ?? []).map((entry) => entry.host),
+    ];
     const keyFiles = includeKeyFiles
-      ? exportKeyFiles(data.hosts.map((host) => host.identityFile).filter(Boolean) as string[])
+      ? exportKeyFiles(catalogHosts.map((host) => host.identityFile).filter(Boolean) as string[])
       : [];
 
     const exportData = {
@@ -455,13 +656,7 @@ export class StorageService {
     keyCount: number;
     keyTargets: string[];
   } {
-    let source: ValidatedBackupData;
-    try {
-      source = JSON.parse(json);
-    } catch {
-      throw new Error(vscode.l10n.t("Invalid backup file: could not parse JSON."));
-    }
-    validateBackupData(source);
+    const source = parseBackupData(json);
 
     const data = this.getData();
     const existingGroupNames = new Set(data.groups.map((g) => g.name));
@@ -499,6 +694,32 @@ export class StorageService {
     return { importedHosts, importedGroups, skippedHosts, keyCount, keyTargets };
   }
 
+  /** Preview a replacement restore without mutating current data. */
+  previewReplace(json: string): {
+    importedHosts: number;
+    importedGroups: number;
+    replacedHosts: number;
+    replacedGroups: number;
+    keyCount: number;
+    keyTargets: string[];
+  } {
+    const source = parseBackupData(json);
+
+    const current = this.getData();
+    const keyNames = extractKeyNames(source);
+    return {
+      importedHosts: source.hosts.length,
+      importedGroups: source.groups.length,
+      replacedHosts: current.hosts.length,
+      replacedGroups: current.groups.length,
+      keyCount: keyNames.length,
+      keyTargets: keyNames
+        .map((name) => sanitizeKeyFileName(name))
+        .filter(Boolean)
+        .map((name) => `~/.ssh/${name}`),
+    };
+  }
+
   /** Execute import (write to storage + restore key files) */
   async commitImport(json: string, keyFilePlan: KeyFileImportPlan[] = []): Promise<{
     importedHosts: number;
@@ -510,13 +731,7 @@ export class StorageService {
     keyFilesFailed: number;
     keyFileFailures: Array<{ name: string; reason: string }>;
   }> {
-    let source: ValidatedBackupData & { keyFiles?: KeyFileEntry[] };
-    try {
-      source = JSON.parse(json);
-    } catch {
-      throw new Error(vscode.l10n.t("Invalid backup file: could not parse JSON."));
-    }
-    validateBackupData(source);
+    const source = parseBackupData(json);
 
     const data = this.getData();
     let importedHosts = 0;
@@ -579,16 +794,53 @@ export class StorageService {
         continue;
       }
 
+      const rewrittenIdentityFile = rewriteImportedIdentityFile(
+        h.identityFile,
+        identityRewriteTargets
+      );
       const host: SSHHost = {
         ...h,
         id: generateId(),
         groupId: h.groupId ? groupIdMap.get(h.groupId) : undefined,
-        identityFile: rewriteImportedIdentityFile(h.identityFile, identityRewriteTargets),
+        identityFile: rewrittenIdentityFile,
         tags: h.tags ?? [],
       };
+      normalizeHostAuthentication(host);
       data.hosts.push(host);
       touchedHostIds.add(host.id);
       importedHosts++;
+    }
+
+    const usedHostIds = new Set([
+      ...data.hosts.map((host) => host.id),
+      ...(data.deletedHosts ?? []).map((entry) => entry.host.id),
+    ]);
+    for (const entry of source.deletedHosts ?? []) {
+      const rewrittenIdentityFile = rewriteImportedIdentityFile(
+        entry.host.identityFile,
+        identityRewriteTargets
+      );
+      let id = entry.host.id;
+      while (usedHostIds.has(id)) {id = generateId();}
+      usedHostIds.add(id);
+      const host: SSHHost = {
+        ...entry.host,
+        id,
+        groupId: entry.host.groupId
+          ? groupIdMap.get(entry.host.groupId)
+          : undefined,
+        identityFile: rewrittenIdentityFile,
+        tags: entry.host.tags ?? [],
+      };
+      normalizeHostAuthentication(host);
+      data.deletedHosts = [
+        ...(data.deletedHosts ?? []),
+        {
+          host,
+          deletedAt: entry.deletedAt,
+          ...(entry.groupName ? { groupName: entry.groupName } : {}),
+        },
+      ];
     }
 
     if (source.sortPreferences?.hostSort) {
@@ -596,7 +848,7 @@ export class StorageService {
     }
 
     try {
-      await this.saveData(data);
+      await this.saveData(data, { snapshot: true });
     } catch (error) {
       for (const privateKeyPath of [...writtenKeyPaths].reverse()) {
         try {
@@ -619,10 +871,207 @@ export class StorageService {
       keyFileFailures,
     };
   }
+
+  /** Replace the current catalog and preferences with a validated backup. */
+  async commitReplace(
+    json: string,
+    keyFilePlan: KeyFileImportPlan[] = []
+  ): Promise<{
+    importedHosts: number;
+    importedGroups: number;
+    skippedHosts: number;
+    keyFilesRestored: number;
+    keyFilesReused: number;
+    keyFilesSkipped: number;
+    keyFilesFailed: number;
+    keyFileFailures: Array<{ name: string; reason: string }>;
+  }> {
+    const source = parseBackupData(json);
+
+    const current = this.getData();
+    const currentConnection = current.currentConnection;
+    const replacement = migrateStoredData(source).data;
+    replacement.currentConnection = currentConnection;
+    const expectedRevision = catalogRevisions.get(current);
+    if (expectedRevision !== undefined) {
+      catalogRevisions.set(replacement, expectedRevision);
+    }
+
+    let keyFilesRestored = 0;
+    let keyFilesReused = 0;
+    let keyFilesSkipped = 0;
+    let keyFilesFailed = 0;
+    let keyFileFailures: Array<{ name: string; reason: string }> = [];
+    let writtenKeyPaths: string[] = [];
+    const identityRewriteTargets: Array<{
+      sourceName: string;
+      targetPath?: string;
+      clear?: boolean;
+    }> = [];
+
+    if (source.keyFiles && source.keyFiles.length > 0) {
+      const keyResult = importKeyFiles(source.keyFiles, keyFilePlan);
+      keyFilesRestored = keyResult.written;
+      keyFilesReused = keyResult.reused;
+      keyFilesSkipped = keyResult.skipped;
+      keyFilesFailed = keyResult.failed.length;
+      keyFileFailures = keyResult.failed;
+      writtenKeyPaths = keyResult.writtenPaths;
+      identityRewriteTargets.push(...keyResult.restoredPaths);
+      identityRewriteTargets.push(
+        ...[...keyResult.skippedSourceNames, ...keyResult.failedSourceNames]
+          .map((sourceName) => ({ sourceName, clear: true }))
+      );
+    }
+
+    const replacementHosts = [
+      ...replacement.hosts,
+      ...(replacement.deletedHosts ?? []).map((entry) => entry.host),
+    ];
+    for (const host of replacementHosts) {
+      host.identityFile = rewriteImportedIdentityFile(
+        host.identityFile,
+        identityRewriteTargets
+      );
+      normalizeHostAuthentication(host);
+    }
+
+    try {
+      await this.saveData(replacement, { snapshot: true });
+    } catch (error) {
+      for (const privateKeyPath of [...writtenKeyPaths].reverse()) {
+        try {
+          deleteKeyPair(privateKeyPath);
+        } catch {
+          // Preserve the catalog failure; rollback is best effort.
+        }
+      }
+      throw error;
+    }
+
+    return {
+      importedHosts: replacement.hosts.length,
+      importedGroups: replacement.groups.length,
+      skippedHosts: 0,
+      keyFilesRestored,
+      keyFilesReused,
+      keyFilesSkipped,
+      keyFilesFailed,
+      keyFileFailures,
+    };
+  }
+
+  private initializeSplitState(): void {
+    const legacy = migrateStoredData(this.context.globalState.get<unknown>(DATA_KEY)).data;
+    if (this.context.globalState.get(PREFERENCES_KEY) === undefined) {
+      void this.context.globalState.update(PREFERENCES_KEY, toPreferences(legacy));
+    }
+    if (
+      legacy.currentConnection &&
+      this.context.globalState.get(CURRENT_CONNECTION_KEY) === undefined
+    ) {
+      void this.context.globalState.update(CURRENT_CONNECTION_KEY, legacy.currentConnection);
+    }
+  }
+
+  private async savePreferences(data: SSHKitData): Promise<void> {
+    await this.context.globalState.update(PREFERENCES_KEY, toPreferences(data));
+  }
+
+  private async updateLegacyMirror(data: SSHKitData): Promise<void> {
+    const update = this.context.globalState.update(DATA_KEY, data);
+    if (this.catalog.isFileBacked) {
+      await Promise.allSettled([update]);
+      return;
+    }
+    await update;
+  }
+}
+
+function toPreferences(data: SSHKitData): StoredPreferences {
+  return {
+    groupCollapsedState: data.groupCollapsedState,
+    recentConnections: data.recentConnections,
+    sortPreferences: data.sortPreferences,
+  };
 }
 
 function normalizeGroupOrder(groups: SSHGroup[]): SSHGroup[] {
   return groups.map((group, index) => ({ ...group, order: index }));
+}
+
+function createStoredHost(
+  data: SSHKitData,
+  host: Omit<SSHHost, "id">
+): SSHHost {
+  const stored: SSHHost = {
+    ...host,
+    id: generateId(),
+    tags: host.tags ?? [],
+  };
+  stored.sshAlias = ensureUniqueSSHHostAlias(
+    host.sshAlias || host.name,
+    stored,
+    data.hosts.map((candidate) => candidate.sshAlias || candidate.name)
+  );
+  normalizeHostAuthentication(stored);
+  return stored;
+}
+
+function applyStoredHostUpdates(
+  data: SSHKitData,
+  host: SSHHost,
+  updates: Partial<Omit<SSHHost, "id">>
+): void {
+  const stableAlias = host.sshAlias;
+  const previousAuthMode = resolveHostAuthMode(host);
+  Object.assign(host, updates);
+  if (
+    updates.authMode !== undefined &&
+    resolveHostAuthMode(host) !== previousAuthMode
+  ) {
+    host.extraConfig = stripManagedAuthenticationConfig(host.extraConfig);
+  }
+  host.sshAlias = updates.sshAlias
+    ? ensureUniqueSSHHostAlias(
+        updates.sshAlias,
+        host,
+        data.hosts
+          .filter((candidate) => candidate.id !== host.id)
+          .map((candidate) => candidate.sshAlias || candidate.name)
+      )
+    : stableAlias;
+  normalizeHostAuthentication(host);
+}
+
+function parseBackupData(
+  json: string
+): ValidatedBackupData & { keyFiles?: KeyFileEntry[] } {
+  let source: ValidatedBackupData & { keyFiles?: KeyFileEntry[] };
+  try {
+    source = JSON.parse(json);
+  } catch {
+    throw new Error(vscode.l10n.t("Invalid backup file: could not parse JSON."));
+  }
+  validateBackupData(source);
+  if (
+    source.schemaVersion !== undefined &&
+    (
+      !Number.isInteger(source.schemaVersion) ||
+      source.schemaVersion < 0
+    )
+  ) {
+    throw new Error(vscode.l10n.t("Invalid SSH Kit backup schema version."));
+  }
+  if (
+    source.schemaVersion !== undefined &&
+    source.schemaVersion > CURRENT_DATA_SCHEMA_VERSION
+  ) {
+    throw new Error(vscode.l10n.t(
+      "This backup was created by a newer SSH Kit data format. Update SSH Kit before restoring it."
+    ));
+  }
+  return source;
 }
 
 function rewriteImportedIdentityFile(
@@ -648,6 +1097,17 @@ function isIdentityFileForImportedKey(identityFile: string, keyName: string): bo
 
   const originalTarget = getImportKeyTargetPath(keyName);
   return originalTarget ? areIdentityPathsEquivalent(identityFile, originalTarget) : false;
+}
+
+function normalizeHostAuthentication(host: SSHHost): void {
+  const authMode = resolveHostAuthMode(host);
+  if (authMode === "identityFile" && host.identityFile) {
+    host.authMode = authMode;
+    return;
+  }
+
+  host.authMode = authMode === "identityFile" ? "auto" : authMode;
+  delete host.identityFile;
 }
 
 function getPortablePathBasename(filePath: string): string {

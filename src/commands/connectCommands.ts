@@ -5,16 +5,15 @@ import * as os from "os";
 import * as path from "path";
 import * as vscode from "vscode";
 import { formatHostEndpoint } from "../core/endpoint";
-import { SSHHost } from "../core/types";
+import { resolveHostAuthMode, SSHHost } from "../core/types";
 import { StorageService } from "../core/storage";
 import { getErrorMessage } from "../core/utils";
+import { ensureUniqueSSHHostAlias } from "../core/sshAlias";
 import {
-  assertSingleLineSSHConfigValue,
-  formatSSHConfigWord,
-  formatSSHDirectiveKey,
-  formatSSHIdentityFile,
-  splitSSHConfigWords,
-} from "../ssh/configText";
+  cleanupLegacyAliasBlocks,
+  ensureManagedIntegration,
+  inspectManagedIntegration,
+} from "../ssh/managedConfig";
 
 // ─── VS Code Remote-SSH connection ────────────────────────────────────────
 
@@ -63,7 +62,8 @@ async function doConnect(
 
   let alias: string | undefined;
   try {
-    alias = ensureRemoteSshAlias(host, storage.getAllHosts());
+    if (!await ensureManagedIntegration(storage.getAllHosts())) {return;}
+    alias = buildRemoteSshAlias(host, storage.getAllHosts());
     await storage.addRecentConnection(host.id);
     await storage.setRemoteAuthorityConnection(host.id, alias);
     await storage.addPendingWindowConnection(host.id, alias);
@@ -217,6 +217,13 @@ function showRemoteOpenSuccess(hostName: string, windowLabel: string): void {
  * Shows elapsed time on success; extracts the first 3 relevant error lines on failure.
  */
 export async function testConnection(host: SSHHost): Promise<void> {
+  if (resolveHostAuthMode(host) === "password") {
+    vscode.window.showInformationMessage(
+      vscode.l10n.t("Password-only hosts cannot be authenticated by the non-interactive connectivity test. Connect to the host directly to verify the password.")
+    );
+    return;
+  }
+
   const args = [
     ...buildSSHArgs(host, {
       batchMode: true,
@@ -392,88 +399,32 @@ function buildRemoteDisplayLabel(host: SSHHost): string {
   return `SSH Kit: ${sanitizeRemoteDisplayText(host.name) || "host"} | ${formatDisplayEndpoint(host)}`;
 }
 
-function ensureRemoteSshAlias(host: SSHHost, allHosts: SSHHost[] = [host]): string {
-  const configPath = getSSHConfigPath();
-  const dir = path.dirname(configPath);
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
-
-  const existing = fs.existsSync(configPath)
-    ? fs.readFileSync(configPath, "utf-8")
-    : "";
-  const activeHostIds = new Set(allHosts.map((item) => item.id));
-  const existingWithoutStaleBlocks = stripStaleRemoteAliasBlocks(existing, activeHostIds);
-  const markerPattern = remoteAliasMarkerPattern(host.id);
-  const existingWithoutOwnBlock = existingWithoutStaleBlocks.replace(markerPattern, "");
-  const alias = buildAvailableRemoteSshAlias(host, allHosts, existingWithoutOwnBlock);
-  const block = formatRemoteSshAliasBlock(host, alias);
-  const updated = configAliasMatchesHost(existingWithoutOwnBlock, alias, host)
-    ? existingWithoutOwnBlock
-    : joinConfigText(existingWithoutOwnBlock, block);
-
-  if (updated !== existing) {
-    fs.writeFileSync(configPath, updated, "utf-8");
-  }
-  return alias;
-}
-
 export function buildRemoteSshAlias(host: SSHHost, allHosts: SSHHost[] = [host]): string {
-  const candidates = buildRemoteAliasCandidates(host);
-  return candidates.find((candidate) => isRemoteAliasUnique(host, candidate, allHosts))
-    ?? candidates[candidates.length - 1];
+  if (host.sshAlias) {return host.sshAlias;}
+  return ensureUniqueSSHHostAlias(
+    host.name,
+    host,
+    allHosts
+      .filter((candidate) => candidate.id !== host.id)
+      .map((candidate) => candidate.sshAlias || candidate.name)
+  );
 }
 
 /** Find the SSH Kit host that owns a Remote-SSH authority alias. */
 export function findHostByRemoteSshAlias(alias: string, allHosts: SSHHost[]): SSHHost | undefined {
+  const storedAlias = allHosts.filter((host) => host.sshAlias === alias);
+  if (storedAlias.length === 1) {
+    return storedAlias[0];
+  }
   const exactName = allHosts.filter((host) => host.name === alias);
   if (exactName.length === 1) {
     return exactName[0];
   }
 
   const candidateMatches = allHosts.filter((host) =>
-    buildRemoteAliasCandidates(host).includes(alias)
+    buildRemoteSshAlias(host, allHosts) === alias
   );
   return candidateMatches.length === 1 ? candidateMatches[0] : undefined;
-}
-
-function buildAvailableRemoteSshAlias(
-  host: SSHHost,
-  allHosts: SSHHost[],
-  existingConfig: string
-): string {
-  const candidates = buildRemoteAliasCandidates(host);
-  return candidates.find((candidate) =>
-    isRemoteAliasUnique(host, candidate, allHosts) &&
-    (!configHasHostAlias(existingConfig, candidate) || configAliasMatchesHost(existingConfig, candidate, host))
-  ) ?? candidates[candidates.length - 1];
-}
-
-function sanitizeRemoteAliasText(value: string): string {
-  return value
-    .trim()
-    .replace(/[\r\n\t]+/g, " ")
-    .replace(/[^\p{L}\p{N} ._+-]+/gu, " ")
-    .replace(/\s+/g, " ")
-    .replace(/^[ ._+-]+|[ ._+-]+$/g, "");
-}
-
-function isRemoteAliasUnique(host: SSHHost, alias: string, allHosts: SSHHost[]): boolean {
-  return !allHosts.some((other) =>
-    other.id !== host.id && buildRemoteAliasCandidates(other).includes(alias)
-  );
-}
-
-function buildRemoteAliasCandidates(host: SSHHost): string[] {
-  const maxLength = 120;
-  const endpoint = `｜${formatRemoteAliasEndpoint(host)}`;
-  const idSuffix = `｜${host.id.slice(-6)}`;
-  const fullIdSuffix = `｜${host.id}`;
-  const name = truncateText(sanitizeRemoteAliasText(host.name), maxLength) || formatRemoteAliasEndpoint(host);
-  const nameWithEndpoint = `${truncateText(name, Math.max(8, maxLength - endpoint.length))}${endpoint}`;
-  const nameWithEndpointAndId = `${truncateText(name, Math.max(8, maxLength - endpoint.length - idSuffix.length))}${endpoint}${idSuffix}`;
-  const nameWithEndpointAndFullId = `${truncateText(name, Math.max(8, maxLength - endpoint.length - fullIdSuffix.length))}${endpoint}${fullIdSuffix}`;
-  return [name, nameWithEndpoint, nameWithEndpointAndId, nameWithEndpointAndFullId];
 }
 
 function sanitizeRemoteDisplayText(value: string): string {
@@ -484,212 +435,41 @@ function sanitizeRemoteDisplayText(value: string): string {
     .replace(/\s+/g, " ");
 }
 
-function truncateText(value: string, maxLength: number): string {
-  if (value.length <= maxLength) {return value;}
-  return value.slice(0, maxLength).trimEnd();
-}
-
 function formatDisplayEndpoint(host: SSHHost): string {
   return formatHostEndpoint(host, false);
 }
 
-function formatRemoteAliasEndpoint(host: SSHHost): string {
-  const hostname = host.hostname
-    .replace(/[^A-Za-z0-9._-]+/g, "-")
-    .replace(/-+/g, "-")
-    .replace(/^-+|-+$/g, "") || "host";
-  return `${hostname}：${host.port}`;
-}
-
-function configHasHostAlias(rawText: string, alias: string): boolean {
-  return Boolean(findHostConfig(rawText, alias));
-}
-
-function configAliasMatchesHost(rawText: string, alias: string, host: SSHHost): boolean {
-  const props = findHostConfig(rawText, alias);
-  if (!props) {return false;}
-
-  const hostname = getLastConfigValue(props, "hostname") ?? alias;
-  const port = Number.parseInt(getLastConfigValue(props, "port") ?? "22", 10);
-  const user = getLastConfigValue(props, "user") ?? "";
-  const identityFiles = props.identityfile ?? [];
-  return hostname === host.hostname &&
-    port === host.port &&
-    (!host.username || user === host.username) &&
-    configIdentityFilesMatchHost(identityFiles, host);
-}
-
-function configIdentityFilesMatchHost(identityFiles: string[], host: SSHHost): boolean {
-  if (!host.identityFile) {
-    return identityFiles.length === 0;
-  }
-  return identityFiles.length === 1 &&
-    identityPathsEquivalentForConnect(identityFiles[0], host.identityFile);
-}
-
-function identityPathsEquivalentForConnect(left: string, right: string): boolean {
-  const leftCandidates = identityPathCompareCandidatesForConnect(left);
-  const rightCandidates = identityPathCompareCandidatesForConnect(right);
-  return leftCandidates.some((candidate) => rightCandidates.includes(candidate));
-}
-
-function identityPathCompareCandidatesForConnect(filePath: string): string[] {
-  const cleaned = stripWrappingQuotes(filePath.trim());
-  if (!cleaned) {return [];}
-
-  const candidates = new Set<string>();
-  if (cleaned.startsWith("~/") || cleaned.startsWith("~\\")) {
-    candidates.add(path.join(os.homedir(), cleaned.slice(2)));
-  } else if (path.isAbsolute(cleaned)) {
-    candidates.add(cleaned);
-  } else {
-    candidates.add(path.resolve(os.homedir(), cleaned));
-    candidates.add(path.resolve(os.homedir(), ".ssh", cleaned));
-  }
-
-  return [...candidates].map((candidate) => {
-    const normalized = path.normalize(candidate);
-    return process.platform === "win32" ? normalized.toLowerCase() : normalized;
-  });
-}
-
-function findHostConfig(rawText: string, alias: string): Record<string, string[]> | undefined {
-  let currentAliases: string[] = [];
-  let currentProps: Record<string, string[]> = {};
-
-  const flush = (): Record<string, string[]> | undefined =>
-    currentAliases.includes(alias) ? currentProps : undefined;
-
-  for (const line of rawText.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#")) {continue;}
-
-    const sectionMatch = /^(Host|Match)\s+(.+)$/i.exec(trimmed);
-    if (sectionMatch) {
-      const found = flush();
-      if (found) {return found;}
-      currentAliases = sectionMatch[1].toLowerCase() === "host"
-        ? splitSSHConfigWords(sectionMatch[2])
-        : [];
-      currentProps = {};
-      continue;
-    }
-
-    if (currentAliases.length === 0) {continue;}
-    const directiveMatch = /^(\S+)\s+(.+)$/.exec(trimmed);
-    if (!directiveMatch) {continue;}
-    const key = directiveMatch[1].toLowerCase();
-    currentProps[key] = [...(currentProps[key] ?? []), directiveMatch[2].trim()];
-  }
-
-  return flush();
-}
-
-function getLastConfigValue(props: Record<string, string[]>, key: string): string | undefined {
-  const values = props[key.toLowerCase()];
-  return values?.[values.length - 1];
-}
-
-function getSSHConfigPath(): string {
-  return path.join(os.homedir(), ".ssh", "config");
-}
-
-function formatRemoteSshAliasBlock(host: SSHHost, alias: string): string {
-  const lines = [
-    aliasBlockBegin(host.id),
-    `Host ${formatSSHConfigWord(alias)}`,
-    `  HostName ${formatSSHConfigWord(host.hostname)}`,
-  ];
-  if (host.port && host.port !== 22) {
-    lines.push(`  Port ${host.port}`);
-  }
-  if (host.username) {
-    lines.push(`  User ${formatSSHConfigWord(host.username)}`);
-  }
-  if (host.identityFile) {
-    lines.push(`  IdentityFile ${formatSSHIdentityFile(host.identityFile)}`);
-  }
-  if (host.extraConfig) {
-    for (const [key, value] of Object.entries(host.extraConfig)) {
-      const lowerKey = key.toLowerCase();
-      if (["host", "hostname", "port", "user", "identityfile"].includes(lowerKey)) {continue;}
-      const values = Array.isArray(value) ? value : [value];
-      for (const item of values) {
-        assertSingleLineSSHConfigValue(item);
-        lines.push(`  ${formatSSHDirectiveKey(key)} ${item}`);
-      }
-    }
-  }
-  lines.push(aliasBlockEnd(host.id));
-  return lines.join("\n");
-}
-
-function aliasBlockBegin(hostId: string): string {
-  return `# SSH Kit connect alias ${hostId} begin`;
-}
-
-function aliasBlockEnd(hostId: string): string {
-  return `# SSH Kit connect alias ${hostId} end`;
-}
-
-function remoteAliasMarkerPattern(hostId: string): RegExp {
-  return new RegExp(
-    `^${escapeRegExp(aliasBlockBegin(hostId))}\\r?\\n[\\s\\S]*?^${escapeRegExp(aliasBlockEnd(hostId))}\\r?\\n?`,
-    "m"
-  );
-}
-
-function stripStaleRemoteAliasBlocks(rawText: string, activeHostIds: Set<string>): string {
-  const aliasBlockPattern = /^# SSH Kit connect alias ([^\r\n]+) begin\r?\n[\s\S]*?^# SSH Kit connect alias \1 end\r?\n?/gm;
-  return rawText.replace(aliasBlockPattern, (block, hostId: string) =>
-    activeHostIds.has(hostId) ? block : ""
-  );
-}
-
-function joinConfigText(existing: string, block: string): string {
-  const prefix = existing.trimEnd();
-  return prefix ? `${prefix}\n\n${block}\n` : `${block}\n`;
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-/** Remove SSH Kit connection aliases whose host no longer exists in storage. */
+/** Remove connection alias blocks written by SSH Kit versions before managed Include integration. */
 export async function cleanupRemoteSshAliases(storage: StorageService): Promise<void> {
-  const configPath = getSSHConfigPath();
-  if (!fs.existsSync(configPath)) {
-    vscode.window.showInformationMessage(vscode.l10n.t("The SSH Config file does not exist; there are no connection aliases to clean up."));
-    return;
-  }
-
-  const existing = fs.readFileSync(configPath, "utf-8");
-  const activeHostIds = new Set(storage.getAllHosts().map((host) => host.id));
-  const staleAliases: string[] = [];
-  const aliasBlockPattern = /^# SSH Kit connect alias ([^\r\n]+) begin\r?\n[\s\S]*?^# SSH Kit connect alias \1 end\r?\n?/gm;
-  const updated = existing.replace(aliasBlockPattern, (block, hostId: string) => {
-    if (activeHostIds.has(hostId)) {
-      return block;
+  void storage;
+  try {
+    const state = inspectManagedIntegration();
+    if (state.legacyAliasCount === 0) {
+      vscode.window.showInformationMessage(vscode.l10n.t("No legacy SSH Kit connection aliases were found."));
+      return;
     }
-    staleAliases.push(hostId);
-    return "";
-  });
+    const cleanupAction = vscode.l10n.t("Back Up and Clean");
+    const confirmed = await vscode.window.showWarningMessage(
+      vscode.l10n.t(
+        "Found {count} legacy SSH Kit connection aliases in {path}. SSH Kit will ask where to save a backup before removing only those marked blocks.",
+        { count: state.legacyAliasCount, path: state.configPath }
+      ),
+      { modal: true },
+      cleanupAction
+    );
+    if (confirmed !== cleanupAction) {return;}
 
-  if (staleAliases.length === 0) {
-    vscode.window.showInformationMessage(vscode.l10n.t("No stale SSH Kit connection aliases were found."));
-    return;
+    const count = await cleanupLegacyAliasBlocks();
+    if (count === undefined) {return;}
+    vscode.window.showInformationMessage(count > 0
+      ? vscode.l10n.t("Removed {count} legacy SSH Kit connection aliases.", { count })
+      : vscode.l10n.t("No legacy SSH Kit connection aliases were found."));
+  } catch (error) {
+    vscode.window.showErrorMessage(vscode.l10n.t(
+      "Failed to clean legacy SSH Kit connection aliases: {error}",
+      { error: getErrorMessage(error) }
+    ));
   }
-
-  const cleanupAction = vscode.l10n.t("Clean Up");
-  const confirmed = await vscode.window.showWarningMessage(
-    vscode.l10n.t("Remove {count} stale SSH Kit connection aliases from SSH Config? Only alias blocks generated by SSH Kit are affected.", { count: staleAliases.length }),
-    { modal: true },
-    cleanupAction
-  );
-  if (confirmed !== cleanupAction) {return;}
-
-  fs.writeFileSync(configPath, updated.replace(/\n{3,}/g, "\n\n"), "utf-8");
-  vscode.window.showInformationMessage(vscode.l10n.t("Removed {count} stale SSH Kit connection aliases.", { count: staleAliases.length }));
 }
 
 // ─── VS Code built-in terminal connection ──────────────────────────────────
@@ -850,6 +630,7 @@ interface MissingIdentityFile {
 
 /** Build raw ssh arguments shared by test, integrated terminal, and launchers. */
 function buildSSHArgs(host: SSHHost, options: BuildSSHArgsOptions = {}): string[] {
+  const authMode = resolveHostAuthMode(host);
   const args: string[] = [];
   if (options.connectTimeoutSeconds) {
     args.push("-o", `ConnectTimeout=${options.connectTimeoutSeconds}`);
@@ -864,8 +645,12 @@ function buildSSHArgs(host: SSHHost, options: BuildSSHArgsOptions = {}): string[
   }
 
   args.push("-p", String(host.port));
-  if (host.identityFile && !options.skipMissingIdentityFile) {
+  if (authMode === "identityFile" && host.identityFile && !options.skipMissingIdentityFile) {
     args.push("-i", resolveIdentityFileForSSHArg(host.identityFile));
+    args.push("-o", "IdentitiesOnly=yes");
+  } else if (authMode === "password") {
+    args.push("-o", "PubkeyAuthentication=no");
+    args.push("-o", "PreferredAuthentications=keyboard-interactive,password");
   }
   if (host.username) {
     args.push("-l", host.username);
@@ -884,12 +669,11 @@ async function connectInLocalVSCodeTerminal(
     if (!shouldContinue) {return;}
   }
 
-  const commandLine = buildSSHCommandLine(host, {
-    acceptNewHostKey: true,
-    skipMissingIdentityFile: Boolean(missingIdentity),
-  });
-
   try {
+    const commandLine = buildSSHCommandLine(host, {
+      acceptNewHostKey: true,
+      skipMissingIdentityFile: Boolean(missingIdentity),
+    });
     await vscode.commands.executeCommand("workbench.action.terminal.newLocal");
     await new Promise((resolve) => globalThis.setTimeout(resolve, 100));
     await vscode.commands.executeCommand("workbench.action.terminal.sendSequence", {
@@ -952,14 +736,22 @@ async function confirmMissingIdentityFile(
 }
 
 function quoteForLocalShellArg(value: string): string {
-  if (process.platform === "win32") {
+  const shellName = path.basename(vscode.env.shell || "").toLowerCase();
+  if (process.platform === "win32" && (shellName === "cmd" || shellName === "cmd.exe")) {
     return quoteForCmdArg(value);
+  }
+  if (
+    process.platform === "win32" &&
+    (shellName === "powershell" || shellName === "powershell.exe" ||
+      shellName === "pwsh" || shellName === "pwsh.exe")
+  ) {
+    return quoteForPowerShellArg(value);
   }
   return quoteForPosixShell(value);
 }
 
 function getMissingIdentityFile(host: SSHHost): MissingIdentityFile | undefined {
-  if (!host.identityFile) {return undefined;}
+  if (resolveHostAuthMode(host) !== "identityFile" || !host.identityFile) {return undefined;}
   const resolvedPath = resolveIdentityFileForSSHArg(host.identityFile);
   if (resolvedPath.includes("%")) {return undefined;}
   return fs.existsSync(resolvedPath)
@@ -1106,10 +898,23 @@ function quoteForPosixShell(value: string): string {
 
 /** Quote a value that will be parsed by cmd.exe. */
 function quoteForCmdArg(value: string): string {
+  if (/[\r\n\0"]/.test(value)) {
+    throw new Error(vscode.l10n.t(
+      "A host field contains a double quote or control character that cannot be safely passed to cmd.exe. Edit the host and try again."
+    ));
+  }
   if (!/[ \t&()^|<>"]/.test(value)) {
     return value;
   }
-  return `"${value.replace(/"/g, '\\"')}"`;
+  return `"${value}"`;
+}
+
+/** Quote a value for PowerShell without allowing interpolation or subexpressions. */
+function quoteForPowerShellArg(value: string): string {
+  if (/^[A-Za-z0-9_@%+=:,./\\-]+$/.test(value)) {
+    return value;
+  }
+  return `'${value.replace(/'/g, "''")}'`;
 }
 
 /** Escape text for an AppleScript double-quoted string. */

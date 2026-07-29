@@ -256,6 +256,36 @@
         "icon": "$(go-to-file)"
       },
       {
+        "command": "sshKit.openManagedSshConfig",
+        "title": "%commands.openManagedSshConfig%",
+        "category": "%commands.category%",
+        "icon": "$(file-code)"
+      },
+      {
+        "command": "sshKit.setupRemoteSshIntegration",
+        "title": "%commands.setupRemoteSshIntegration%",
+        "category": "%commands.category%",
+        "icon": "$(plug)"
+      },
+      {
+        "command": "sshKit.repairRemoteSshIntegration",
+        "title": "%commands.repairRemoteSshIntegration%",
+        "category": "%commands.category%",
+        "icon": "$(tools)"
+      },
+      {
+        "command": "sshKit.removeRemoteSshIntegration",
+        "title": "%commands.removeRemoteSshIntegration%",
+        "category": "%commands.category%",
+        "icon": "$(debug-disconnect)"
+      },
+      {
+        "command": "sshKit.showRemoteSshIntegrationStatus",
+        "title": "%commands.showRemoteSshIntegrationStatus%",
+        "category": "%commands.category%",
+        "icon": "$(info)"
+      },
+      {
         "command": "sshKit.cleanupAliases",
         "title": "%commands.cleanupAliases%",
         "category": "%commands.category%",
@@ -286,6 +316,18 @@
         "icon": "$(trash)"
       },
       {
+        "command": "sshKit.manageRecycleBin",
+        "title": "%commands.manageRecycleBin%",
+        "category": "%commands.category%",
+        "icon": "$(history)"
+      },
+      {
+        "command": "sshKit.emptyRecycleBin",
+        "title": "%commands.emptyRecycleBin%",
+        "category": "%commands.category%",
+        "icon": "$(trash)"
+      },
+      {
         "command": "sshKit.batchChangeHostKey",
         "title": "%commands.batchChangeHostKey%",
         "category": "%commands.category%",
@@ -308,6 +350,12 @@
         "title": "%commands.restoreData%",
         "category": "%commands.category%",
         "icon": "$(folder-opened)"
+      },
+      {
+        "command": "sshKit.restoreCatalogSnapshot",
+        "title": "%commands.restoreCatalogSnapshot%",
+        "category": "%commands.category%",
+        "icon": "$(history)"
       },
       {
         "command": "sshKit.copyKeyPublic",
@@ -443,6 +491,16 @@
           "group": "2_io@2"
         },
         {
+          "command": "sshKit.manageRecycleBin",
+          "when": "view == sshKit.hosts",
+          "group": "2_io@2.1"
+        },
+        {
+          "command": "sshKit.emptyRecycleBin",
+          "when": "view == sshKit.hosts",
+          "group": "2_io@2.2"
+        },
+        {
           "command": "sshKit.batchChangeHostKey",
           "when": "view == sshKit.hosts",
           "group": "2_io@3"
@@ -458,9 +516,9 @@
           "group": "2_io@5"
         },
         {
-          "command": "sshKit.cleanupAliases",
+          "command": "sshKit.restoreCatalogSnapshot",
           "when": "view == sshKit.hosts",
-          "group": "2_io@6"
+          "group": "2_io@5.1"
         },
         {
           "command": "sshKit.generateKey",

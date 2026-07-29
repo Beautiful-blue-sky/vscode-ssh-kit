@@ -1,7 +1,7 @@
 // SSH Kit — TreeView nodes and DataProvider
 import * as vscode from "vscode";
 import { formatHostEndpoint } from "../core/endpoint";
-import { SSHHost, SSHGroup } from "../core/types";
+import { resolveHostAuthMode, SSHHost, SSHGroup } from "../core/types";
 import { StorageService } from "../core/storage";
 import { hostMatchesSearch, splitHostSearchTerms } from "../core/hostSearch";
 
@@ -59,6 +59,17 @@ export class HostDetailItem extends vscode.TreeItem {
   }
 }
 
+function formatHostAuthentication(host: SSHHost): string {
+  switch (resolveHostAuthMode(host)) {
+    case "password":
+      return vscode.l10n.t("Password only");
+    case "identityFile":
+      return vscode.l10n.t("Specified identity file");
+    default:
+      return vscode.l10n.t("Automatic (OpenSSH defaults)");
+  }
+}
+
 /** Host node — expand for details, inline buttons for connection */
 export class HostItem extends vscode.TreeItem {
   constructor(
@@ -74,6 +85,7 @@ export class HostItem extends vscode.TreeItem {
       : new vscode.ThemeIcon("server");
     this.contextValue = "host";
     this.tooltip = `${connected ? `${vscode.l10n.t("Connected")}\n` : ""}${formatHostEndpoint(host)}` +
+      `\n${vscode.l10n.t("Authentication: {method}", { method: formatHostAuthentication(host) })}` +
       (host.identityFile ? `\n🔑 ${host.identityFile}` : "");
   }
 }
@@ -166,6 +178,13 @@ export class HostTreeDataProvider implements vscode.TreeDataProvider<vscode.Tree
       vscode.l10n.t("Status"),
       hostItem.connected ? vscode.l10n.t("Connected") : vscode.l10n.t("Not connected"),
       "pulse",
+      false,
+      parentItemId
+    ));
+    children.push(new HostDetailItem(
+      vscode.l10n.t("Authentication"),
+      formatHostAuthentication(h),
+      "shield",
       false,
       parentItemId
     ));

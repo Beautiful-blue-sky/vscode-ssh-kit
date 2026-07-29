@@ -6,7 +6,7 @@ import { canUseCachedSshKitWindowConnection } from "./connectionState";
 import { formatHostEndpoint } from "./endpoint";
 import { decodeRemoteSshAuthority } from "./remoteAuthority";
 import { StorageService } from "./storage";
-import { SSHHost } from "./types";
+import { resolveHostAuthMode, SSHHost } from "./types";
 
 interface CurrentConnectionInfo {
   host: SSHHost;
@@ -111,6 +111,9 @@ export class ConnectionStatusController implements vscode.Disposable {
       vscode.l10n.t("Address: {address}", { address: host.hostname }),
       vscode.l10n.t("Port: {port}", { port: host.port }),
       vscode.l10n.t("User: {user}", { user: host.username }),
+      vscode.l10n.t("Authentication: {method}", {
+        method: formatAuthenticationMode(host),
+      }),
       groupName ? vscode.l10n.t("Group: {group}", { group: groupName }) : "",
       host.identityFile ? vscode.l10n.t("Identity file: {path}", { path: host.identityFile }) : "",
       host.tags.length > 0 ? vscode.l10n.t("Tags: {tags}", { tags: host.tags.join(", ") }) : "",
@@ -163,6 +166,17 @@ export class ConnectionStatusController implements vscode.Disposable {
     }
 
     return undefined;
+  }
+}
+
+function formatAuthenticationMode(host: SSHHost): string {
+  switch (resolveHostAuthMode(host)) {
+    case "password":
+      return vscode.l10n.t("Password only");
+    case "identityFile":
+      return vscode.l10n.t("Specified identity file");
+    default:
+      return vscode.l10n.t("Automatic (OpenSSH defaults)");
   }
 }
 

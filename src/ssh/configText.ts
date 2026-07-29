@@ -46,6 +46,8 @@ export function splitSSHConfigWords(value: string): string[] {
 
     if (char === "\"" || char === "'") {
       quote = char;
+    } else if (char === "#") {
+      break;
     } else if (/\s/.test(char)) {
       if (word) {
         words.push(word);

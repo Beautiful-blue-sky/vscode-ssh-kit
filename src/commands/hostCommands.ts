@@ -1,7 +1,7 @@
 // SSH Kit — Host CRUD commands (add, edit, delete, copy, deduplicate, batch operations)
 import * as vscode from "vscode";
 import { formatHostEndpoint } from "../core/endpoint";
-import { SSHHost, PromptNewHostFn, PromptEditHostFn } from "../core/types";
+import { resolveHostAuthMode, SSHHost, PromptNewHostFn, PromptEditHostFn } from "../core/types";
 import { DuplicateHostGroup, findDuplicateEndpointGroups } from "../core/hostMatching";
 import { StorageService } from "../core/storage";
 import { HostTreeDataProvider } from "../views/treeView";
@@ -60,9 +60,9 @@ export async function deleteHost(
   storage: StorageService,
   tree: HostTreeDataProvider
 ): Promise<void> {
-  const deleteAction = vscode.l10n.t("Delete");
+  const deleteAction = vscode.l10n.t("Move to Recycle Bin");
   const confirmed = await vscode.window.showWarningMessage(
-    vscode.l10n.t("Delete host “{name}” ({endpoint})? This cannot be undone.", {
+    vscode.l10n.t("Move host “{name}” ({endpoint}) to the SSH Kit recycle bin?", {
       name: host.name,
       endpoint: formatHostEndpoint(host, false),
     }),
@@ -74,8 +74,117 @@ export async function deleteHost(
   await storage.deleteHost(host.id);
   tree.refresh();
   vscode.window.showInformationMessage(
-    vscode.l10n.t("Deleted host: {name} ({endpoint})", { name: host.name, endpoint: formatHostEndpoint(host, false) })
+    vscode.l10n.t("Moved host to recycle bin: {name} ({endpoint})", {
+      name: host.name,
+      endpoint: formatHostEndpoint(host, false),
+    })
   );
+}
+
+/** Browse deleted hosts and restore or permanently remove one. */
+export async function manageRecycleBin(
+  storage: StorageService,
+  tree: HostTreeDataProvider
+): Promise<void> {
+  const deletedHosts = storage.getDeletedHosts();
+  if (deletedHosts.length === 0) {
+    vscode.window.showInformationMessage(vscode.l10n.t("The SSH Kit recycle bin is empty."));
+    return;
+  }
+
+  const picked = await vscode.window.showQuickPick(
+    deletedHosts.map((entry) => ({
+      label: `$(trash) ${entry.host.name}`,
+      description: formatHostEndpoint(entry.host),
+      detail: [
+        entry.groupName
+          ? vscode.l10n.t("Previous group: {name}", { name: entry.groupName })
+          : vscode.l10n.t("Previous group: Ungrouped"),
+        vscode.l10n.t("Deleted: {time}", {
+          time: new Date(entry.deletedAt).toLocaleString(),
+        }),
+      ].join(" · "),
+      entry,
+    })),
+    {
+      title: vscode.l10n.t("SSH Kit Recycle Bin"),
+      placeHolder: vscode.l10n.t("Choose a deleted host to restore or permanently delete"),
+      matchOnDescription: true,
+      matchOnDetail: true,
+    }
+  );
+  if (!picked) {return;}
+
+  const restoreAction = vscode.l10n.t("Restore");
+  const permanentAction = vscode.l10n.t("Delete Permanently");
+  const action = await vscode.window.showQuickPick(
+    [
+      {
+        label: `$(discard) ${restoreAction}`,
+        description: vscode.l10n.t("Return the host to its previous group when possible"),
+        action: "restore" as const,
+      },
+      {
+        label: `$(trash) ${permanentAction}`,
+        description: vscode.l10n.t("Remove this host from the recycle bin"),
+        action: "delete" as const,
+      },
+    ],
+    { title: picked.entry.host.name }
+  );
+  if (!action) {return;}
+
+  if (action.action === "restore") {
+    const restored = await storage.restoreDeletedHost(picked.entry.host.id);
+    if (restored) {
+      tree.refresh();
+      vscode.window.showInformationMessage(vscode.l10n.t("Restored host: {name}", {
+        name: restored.name,
+      }));
+    }
+    return;
+  }
+
+  const confirmed = await vscode.window.showWarningMessage(
+    vscode.l10n.t("Permanently delete host “{name}”? An internal snapshot will be kept temporarily.", {
+      name: picked.entry.host.name,
+    }),
+    { modal: true },
+    permanentAction
+  );
+  if (confirmed !== permanentAction) {return;}
+  if (await storage.permanentlyDeleteHost(picked.entry.host.id)) {
+    tree.refresh();
+    vscode.window.showInformationMessage(vscode.l10n.t("Permanently deleted host: {name}", {
+      name: picked.entry.host.name,
+    }));
+  }
+}
+
+export async function emptyRecycleBin(
+  storage: StorageService,
+  tree: HostTreeDataProvider
+): Promise<void> {
+  const count = storage.getDeletedHosts().length;
+  if (count === 0) {
+    vscode.window.showInformationMessage(vscode.l10n.t("The SSH Kit recycle bin is empty."));
+    return;
+  }
+
+  const emptyAction = vscode.l10n.t("Empty Recycle Bin");
+  const confirmed = await vscode.window.showWarningMessage(
+    vscode.l10n.t("Permanently delete {count} hosts from the recycle bin? An internal snapshot will be kept temporarily.", {
+      count,
+    }),
+    { modal: true },
+    emptyAction
+  );
+  if (confirmed !== emptyAction) {return;}
+  const deleted = await storage.emptyRecycleBin();
+  tree.refresh();
+  vscode.window.showInformationMessage(vscode.l10n.t("Permanently deleted {count} hosts.", {
+    count: deleted,
+  }));
 }
 
 /** Copy hostname to clipboard */
@@ -125,17 +234,17 @@ export async function deduplicateHosts(
 
   if (deleteIds.size === 0) {
     vscode.window.showInformationMessage(skipped > 0
-      ? vscode.l10n.t("No duplicate hosts were deleted; {count} groups were skipped.", { count: skipped })
-      : vscode.l10n.t("No duplicate hosts were deleted."));
+      ? vscode.l10n.t("No duplicate hosts were moved; {count} groups were skipped.", { count: skipped })
+      : vscode.l10n.t("No duplicate hosts were moved."));
     return;
   }
 
   const toDelete = hosts.filter((host) => deleteIds.has(host.id));
   const preview = toDelete.slice(0, 8).map((host) => `“${host.name}”`).join(", ");
   const more = toDelete.length > 8 ? vscode.l10n.t(" and {count} hosts total", { count: toDelete.length }) : "";
-  const confirmDeleteAction = vscode.l10n.t("Confirm Delete");
+  const confirmDeleteAction = vscode.l10n.t("Move to Recycle Bin");
   const confirmed = await vscode.window.showWarningMessage(
-    vscode.l10n.t("Delete {count} duplicate hosts: {preview}{more}. This cannot be undone.", {
+    vscode.l10n.t("Move {count} duplicate hosts to the recycle bin: {preview}{more}.", {
       count: toDelete.length,
       preview,
       more,
@@ -145,11 +254,9 @@ export async function deduplicateHosts(
   );
   if (confirmed !== confirmDeleteAction) {return;}
 
-  for (const host of toDelete) {
-    await storage.deleteHost(host.id);
-  }
+  await storage.deleteHosts(toDelete.map((host) => host.id));
   tree.refresh();
-  vscode.window.showInformationMessage(vscode.l10n.t("Removed {count} duplicate hosts.", { count: toDelete.length }));
+  vscode.window.showInformationMessage(vscode.l10n.t("Moved {count} duplicate hosts to the recycle bin.", { count: toDelete.length }));
 }
 
 async function promptHostToKeep(
@@ -169,6 +276,9 @@ async function promptHostToKeep(
       label: host.name,
       description: `[${getGroupName(host, groupNames)}] ${formatEndpoint(host)}`,
       detail: [
+        vscode.l10n.t("Authentication: {method}", {
+          method: formatHostAuthentication(host),
+        }),
         host.identityFile
           ? vscode.l10n.t("Identity file: {path}", { path: host.identityFile })
           : vscode.l10n.t("Identity file: not associated"),
@@ -186,7 +296,7 @@ async function promptHostToKeep(
   const picked = await vscode.window.showQuickPick(items, {
     matchOnDescription: true,
     matchOnDetail: true,
-    placeHolder: vscode.l10n.t("Duplicate target {index}/{total}: choose the host to keep; the others will be deleted", { index, total }),
+    placeHolder: vscode.l10n.t("Duplicate target {index}/{total}: choose the host to keep; the others will move to the recycle bin", { index, total }),
   });
   if (!picked) {return undefined;}
   if (picked.skip) {return "skip";}
@@ -250,19 +360,19 @@ export async function batchDeleteHosts(
   const toDelete = hosts.filter((h) => ids.has(h.id));
   if (toDelete.length === 0) {return;}
 
-  const batchDeleteAction = vscode.l10n.t("Delete");
+  const batchDeleteAction = vscode.l10n.t("Move to Recycle Bin");
   const confirmed = await vscode.window.showWarningMessage(
-    vscode.l10n.t("Delete the {count} selected hosts? This cannot be undone.", { count: toDelete.length }),
+    vscode.l10n.t("Move the {count} selected hosts to the recycle bin?", { count: toDelete.length }),
     { modal: true },
     batchDeleteAction
   );
   if (confirmed !== batchDeleteAction) {return;}
 
-  for (const host of toDelete) {
-    await storage.deleteHost(host.id);
-  }
+  await storage.deleteHosts(toDelete.map((host) => host.id));
   tree.refresh();
-  vscode.window.showInformationMessage(vscode.l10n.t("Deleted {count} hosts.", { count: toDelete.length }));
+  vscode.window.showInformationMessage(vscode.l10n.t("Moved {count} hosts to the recycle bin.", {
+    count: toDelete.length,
+  }));
 }
 
 /** Change selected hosts to a new associated identity file. */
@@ -305,7 +415,7 @@ async function applyHostKeyChange(
   const identityFile = await pickIdentityFileForHosts(targets);
   if (identityFile === null) {return;}
 
-  const label = identityFile || vscode.l10n.t("No identity file");
+  const label = identityFile || vscode.l10n.t("OpenSSH automatic (no specified identity file)");
   const preview = targets.slice(0, 8).map((host) => `“${host.name}”`).join(", ");
   const more = targets.length > 8 ? vscode.l10n.t(" and {count} hosts total", { count: targets.length }) : "";
   const confirmChangeAction = vscode.l10n.t("Confirm Change");
@@ -364,9 +474,11 @@ function hostToPickItem(host: SSHHost, groupName: string): HostPickItem {
   return {
     label: host.name,
     description: `[${groupName}] ${formatEndpoint(host)}`,
-    detail: host.identityFile
+    detail: `${vscode.l10n.t("Authentication: {method}", {
+      method: formatHostAuthentication(host),
+    })} · ${host.identityFile
       ? vscode.l10n.t("Current identity file: {path}", { path: host.identityFile })
-      : vscode.l10n.t("No identity file is currently associated"),
+      : vscode.l10n.t("No identity file is currently associated")}`,
     _hostId: host.id,
   };
 }
@@ -381,7 +493,7 @@ async function pickIdentityFileForHosts(hosts: SSHHost[]): Promise<string | null
 
   const items: IdentityPickItem[] = [
     {
-      label: vscode.l10n.t("$(circle-slash) No identity file"),
+      label: vscode.l10n.t("$(settings-gear) OpenSSH automatic"),
       description: currentSummary,
       action: "clear",
       path: "",
@@ -422,4 +534,15 @@ async function pickIdentityFileForHosts(hosts: SSHHost[]): Promise<string | null
   }
 
   return picked.path ?? "";
+}
+
+function formatHostAuthentication(host: SSHHost): string {
+  switch (resolveHostAuthMode(host)) {
+    case "password":
+      return vscode.l10n.t("Password only");
+    case "identityFile":
+      return vscode.l10n.t("Specified identity file");
+    default:
+      return vscode.l10n.t("Automatic (OpenSSH defaults)");
+  }
 }

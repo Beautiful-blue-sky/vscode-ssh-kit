@@ -8,7 +8,15 @@ import { SSHHost } from "../core/types";
 import { createImportedHostUpdates, findImportMatch } from "../core/hostMatching";
 import { StorageService } from "../core/storage";
 import { getErrorMessage } from "../core/utils";
-import { importFromSSHConfig, exportToSSHConfig, analyzeExport } from "../ssh/sshConfig";
+import { importFromSSHConfig, exportToSSHConfig } from "../ssh/sshConfig";
+import {
+  getEffectiveSSHConfigPath,
+  getManagedConfigPath,
+  inspectManagedIntegration,
+  repairManagedIntegration,
+  setupManagedIntegration,
+  uninstallManagedIntegration,
+} from "../ssh/managedConfig";
 import { HostTreeDataProvider } from "../views/treeView";
 import {
   KeyFileEntry,
@@ -18,13 +26,15 @@ import {
   sanitizeKeyFileName,
 } from "../keys/keyManager";
 
+const MAX_BACKUP_FILE_SIZE = 64 * 1024 * 1024;
+
 /** Import hosts from SSH config */
 export async function importConfig(
   storage: StorageService,
   tree: HostTreeDataProvider
 ): Promise<void> {
   try {
-    const { hosts } = importFromSSHConfig();
+    const { hosts } = importFromSSHConfig(getEffectiveSSHConfigPath());
     if (hosts.length === 0) {
       vscode.window.showInformationMessage(vscode.l10n.t("No importable hosts were found in SSH Config."));
       return;
@@ -34,39 +44,13 @@ export async function importConfig(
     const confirmed = await confirmSSHConfigImport(preview);
     if (!confirmed) {return;}
 
-    let imported = 0;
-    let updated = 0;
-    let endpointMatched = 0;
-    let skipped = 0;
-    let ambiguous = 0;
-    const touchedHostIds = new Set<string>();
-    const knownHosts = storage.getAllHosts();
-
-    for (const host of hosts) {
-      const match = findImportMatch(host, knownHosts, touchedHostIds);
-      if (match === "already-touched") {
-        skipped++;
-        continue;
-      }
-      if (match === "ambiguous") {
-        ambiguous++;
-        continue;
-      }
-      if (match) {
-        const updates = createImportedHostUpdates(match.host, host, match.reason);
-        await storage.updateHost(match.host.id, updates);
-        Object.assign(match.host, updates);
-        touchedHostIds.add(match.host.id);
-        updated++;
-        if (match.reason === "endpoint") {endpointMatched++;}
-        continue;
-      }
-
-      const added = await storage.addHost(host);
-      knownHosts.push(added);
-      touchedHostIds.add(added.id);
-      imported++;
-    }
+    const {
+      imported,
+      updated,
+      endpointMatched,
+      skipped,
+      ambiguous,
+    } = await storage.importSSHConfigHosts(hosts);
 
     tree.refresh();
 
@@ -99,6 +83,8 @@ interface SSHConfigImportPreview {
   importedSamples: string[];
   updatedSamples: string[];
   ambiguousSamples: string[];
+  riskyDirectiveCount: number;
+  riskyDirectiveSamples: string[];
 }
 
 function previewSSHConfigImport(
@@ -117,9 +103,19 @@ function previewSSHConfigImport(
     importedSamples: [],
     updatedSamples: [],
     ambiguousSamples: [],
+    riskyDirectiveCount: 0,
+    riskyDirectiveSamples: [],
   };
 
   for (const host of hosts) {
+    const riskyDirectives = getRiskyDirectiveNames(host);
+    if (riskyDirectives.length > 0) {
+      preview.riskyDirectiveCount += riskyDirectives.length;
+      pushSample(
+        preview.riskyDirectiveSamples,
+        `${host.name}: ${riskyDirectives.join(", ")}`
+      );
+    }
     const match = findImportMatch(host, knownHosts, touchedHostIds);
     if (match === "already-touched") {
       preview.skipped++;
@@ -188,6 +184,16 @@ async function confirmSSHConfigImport(preview: SSHConfigImportPreview): Promise<
     formatPreviewSamples(vscode.l10n.t("Add examples"), preview.importedSamples),
     formatPreviewSamples(vscode.l10n.t("Update examples"), preview.updatedSamples),
     formatPreviewSamples(vscode.l10n.t("Conflict examples"), preview.ambiguousSamples),
+    preview.riskyDirectiveCount > 0
+      ? vscode.l10n.t(
+          "⚠ Found {count} command-capable SSH directives. They will be preserved and may execute local or remote commands when connecting.",
+          { count: preview.riskyDirectiveCount }
+        )
+      : "",
+    formatPreviewSamples(
+      vscode.l10n.t("Review command-capable directives"),
+      preview.riskyDirectiveSamples
+    ),
   ].filter(Boolean);
 
   const importAction = vscode.l10n.t("Import");
@@ -209,120 +215,71 @@ function formatPreviewSamples(label: string, samples: string[]): string {
   return samples.length > 0 ? `  ${label}: ${samples.join("; ")}` : "";
 }
 
-/** Export all hosts to SSH config with change preview and confirmation */
+function getRiskyDirectiveNames(host: Omit<SSHHost, "id">): string[] {
+  const risky = new Set([
+    "proxycommand",
+    "localcommand",
+    "remotecommand",
+    "knownhostscommand",
+  ]);
+  return Object.keys(host.extraConfig ?? {})
+    .filter((key) => risky.has(key.toLocaleLowerCase()))
+    .sort((left, right) => left.localeCompare(right));
+}
+
+/** Export all hosts to a standalone SSH config selected by the user. */
 export async function exportConfig(storage: StorageService): Promise<void> {
   try {
     const hosts = storage.getAllHosts();
     if (hosts.length === 0) {
-      vscode.window.showInformationMessage(vscode.l10n.t("There are no hosts to write."));
+      vscode.window.showInformationMessage(vscode.l10n.t("There are no hosts to export."));
       return;
     }
 
-    const stats = analyzeExport(hosts);
-    if (!stats) {
-      vscode.window.showErrorMessage(vscode.l10n.t("Could not analyze the pending SSH Config changes."));
+    const uri = await vscode.window.showSaveDialog({
+      title: vscode.l10n.t("Export SSH Kit hosts"),
+      defaultUri: vscode.Uri.file(path.join(os.homedir(), "ssh-kit-hosts.conf")),
+      saveLabel: vscode.l10n.t("Export"),
+      filters: {
+        [vscode.l10n.t("SSH Config")]: ["conf", "config", "txt"],
+        [vscode.l10n.t("All files")]: ["*"],
+      },
+    });
+    if (!uri) {return;}
+
+    const effectiveConfig = getEffectiveSSHConfigPath();
+    const protectedConfigPaths = [effectiveConfig, getManagedConfigPath()]
+      .map(normalizePathForCompare);
+    if (protectedConfigPaths.includes(normalizePathForCompare(uri.fsPath))) {
+      vscode.window.showErrorMessage(vscode.l10n.t(
+        "Choose a separate export file. SSH Kit will not replace your active SSH Config."
+      ));
       return;
     }
 
-    let overwriteUnmanaged = false;
-    if (stats.conflicts.length > 0) {
-      const preview = stats.conflicts.slice(0, 8).join(", ");
-      const more = stats.conflicts.length > 8 ? vscode.l10n.t(" and {count} total", { count: stats.conflicts.length }) : "";
-      const takeoverAction = vscode.l10n.t("Take Over and Overwrite");
-      const takeover = await vscode.window.showWarningMessage(
-        [
-          vscode.l10n.t("Found {count} existing Host blocks with the same alias or connection endpoint that are not managed by SSH Kit:", { count: stats.conflicts.length }),
-          `${preview}${more}`,
-          "",
-          vscode.l10n.t("SSH Kit identifies the same connection target by Host alias or HostName/Port."),
-          vscode.l10n.t("After takeover, these Host blocks will be regenerated from the current SSH Kit host list."),
-        ].join("\n"),
-        { modal: true },
-        takeoverAction
-      );
-      if (takeover !== takeoverAction) {return;}
-      overwriteUnmanaged = true;
-    }
-
-    const lines = [
-      vscode.l10n.t("Write {count} hosts to ~/.ssh/config:", { count: hosts.length }),
-      stats.added > 0 ? vscode.l10n.t("  Add {count}", { count: stats.added }) : "",
-      stats.synced > 0 ? vscode.l10n.t("  Sync {count} existing hosts", { count: stats.synced }) : "",
-      stats.conflicts.length > 0 ? vscode.l10n.t("  Take over {count} Host blocks with matching aliases or endpoints", { count: stats.conflicts.length }) : "",
-      stats.removedAliases > 0 ? vscode.l10n.t("  Remove {count} temporary SSH Kit connection aliases", { count: stats.removedAliases }) : "",
-      stats.preserved > 0 ? vscode.l10n.t("  Preserve {count} unrelated existing hosts", { count: stats.preserved }) : "",
-      "",
-      vscode.l10n.t("If SSH Config already exists, you must choose a backup location before writing. Cancelling the backup cancels the write."),
-    ].filter(Boolean);
-
-    const writeAction = vscode.l10n.t("Write");
-    const confirmed = await vscode.window.showInformationMessage(
-      lines.join("\n"),
-      { modal: true },
-      writeAction
+    const filePath = exportToSSHConfig(hosts, uri.fsPath);
+    vscode.window.showInformationMessage(
+      vscode.l10n.t("Exported {count} hosts to {path}", { count: hosts.length, path: filePath })
     );
-    if (confirmed !== writeAction) {return;}
-
-    const backupPath = await backupSSHConfigBeforeWrite();
-    if (backupPath === null) {return;}
-
-    const filePath = exportToSSHConfig(hosts, undefined, { overwriteUnmanaged });
-    vscode.window.showInformationMessage(backupPath
-      ? vscode.l10n.t("Wrote {count} hosts to {path}. Backup: {backup}", { count: hosts.length, path: filePath, backup: backupPath })
-      : vscode.l10n.t("Wrote {count} hosts to {path}", { count: hosts.length, path: filePath }));
   } catch (err: unknown) {
-    vscode.window.showErrorMessage(vscode.l10n.t("Write failed: {error}", { error: getErrorMessage(err) }));
+    vscode.window.showErrorMessage(vscode.l10n.t("Export failed: {error}", { error: getErrorMessage(err) }));
   }
-}
-
-async function backupSSHConfigBeforeWrite(): Promise<string | null | undefined> {
-  const configPath = path.join(os.homedir(), ".ssh", "config");
-  if (!fs.existsSync(configPath)) {
-    return undefined;
-  }
-
-  const chooseBackupAction = vscode.l10n.t("Choose Backup Location");
-  const confirmed = await vscode.window.showWarningMessage(
-    [
-      vscode.l10n.t("The current SSH Config must be backed up before writing."),
-      vscode.l10n.t("Choose a backup location you can find later. Cancelling the backup cancels the write."),
-    ].join("\n"),
-    { modal: true },
-    chooseBackupAction
-  );
-  if (confirmed !== chooseBackupAction) {return null;}
-
-  const uri = await vscode.window.showSaveDialog({
-    defaultUri: vscode.Uri.file(path.join(os.homedir(), `ssh-config-backup-${formatBackupTimestamp()}`)),
-    saveLabel: vscode.l10n.t("Back Up and Continue"),
-    title: vscode.l10n.t("Save SSH Config Backup"),
-  });
-  if (!uri) {return null;}
-
-  const normalizedSource = normalizePathForCompare(configPath);
-  const normalizedTarget = normalizePathForCompare(uri.fsPath);
-  if (normalizedSource === normalizedTarget) {
-    vscode.window.showErrorMessage(vscode.l10n.t("The backup location cannot be the SSH Config file itself."));
-    return null;
-  }
-
-  fs.copyFileSync(configPath, uri.fsPath);
-  protectSensitiveFile(uri.fsPath);
-  return uri.fsPath;
-}
-
-function formatBackupTimestamp(): string {
-  return new Date().toISOString().slice(0, 19).replace(/[-:]/g, "").replace("T", "-");
 }
 
 function normalizePathForCompare(filePath: string): string {
   const resolved = path.resolve(filePath);
-  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+  let comparable = resolved;
+  try {
+    comparable = fs.realpathSync.native(resolved);
+  } catch {
+    // Non-existent export targets are compared by their resolved path.
+  }
+  return process.platform === "win32" ? comparable.toLowerCase() : comparable;
 }
 
-/** Open the SSH config file (~/.ssh/config) */
+/** Open the effective SSH config selected by Remote-SSH. */
 export async function openSshConfig(): Promise<void> {
-  const configPath = path.join(os.homedir(), ".ssh", "config");
+  const configPath = getEffectiveSSHConfigPath();
   if (!fs.existsSync(configPath)) {
     vscode.window.showInformationMessage(
       vscode.l10n.t("SSH Config file does not exist: {path}", { path: configPath })
@@ -331,6 +288,70 @@ export async function openSshConfig(): Promise<void> {
   }
   const doc = await vscode.workspace.openTextDocument(configPath);
   await vscode.window.showTextDocument(doc);
+}
+
+/** Open SSH Kit's generated projection used by Remote-SSH. */
+export async function openManagedSshConfig(): Promise<void> {
+  const configPath = getManagedConfigPath();
+  if (!fs.existsSync(configPath)) {
+    vscode.window.showInformationMessage(
+      vscode.l10n.t("SSH Kit managed config does not exist yet: {path}", { path: configPath })
+    );
+    return;
+  }
+  const doc = await vscode.workspace.openTextDocument(configPath);
+  await vscode.window.showTextDocument(doc);
+}
+
+export async function setupRemoteSshIntegration(storage: StorageService): Promise<void> {
+  try {
+    await setupManagedIntegration(storage.getAllHosts());
+  } catch (error) {
+    showIntegrationError(error);
+  }
+}
+
+export async function repairRemoteSshIntegration(storage: StorageService): Promise<void> {
+  try {
+    await repairManagedIntegration(storage.getAllHosts());
+  } catch (error) {
+    showIntegrationError(error);
+  }
+}
+
+export async function removeRemoteSshIntegration(): Promise<void> {
+  try {
+    await uninstallManagedIntegration();
+  } catch (error) {
+    showIntegrationError(error);
+  }
+}
+
+export async function showRemoteSshIntegrationStatus(): Promise<void> {
+  try {
+    const state = inspectManagedIntegration();
+    vscode.window.showInformationMessage([
+      state.installed && state.effective
+        ? vscode.l10n.t("SSH Kit Remote-SSH integration is enabled.")
+        : state.installed
+          ? vscode.l10n.t("SSH Kit Remote-SSH integration needs repair because its Include appears after other directives.")
+        : vscode.l10n.t("SSH Kit Remote-SSH integration is not enabled."),
+      vscode.l10n.t("SSH Config: {path}", { path: state.configPath }),
+      vscode.l10n.t("Managed hosts: {path}", { path: state.managedConfigPath }),
+      state.legacyAliasCount > 0
+        ? vscode.l10n.t("Legacy connection aliases remaining: {count}", { count: state.legacyAliasCount })
+        : "",
+    ].filter(Boolean).join("\n"));
+  } catch (error) {
+    showIntegrationError(error);
+  }
+}
+
+function showIntegrationError(error: unknown): void {
+  vscode.window.showErrorMessage(vscode.l10n.t(
+    "Remote-SSH integration operation failed: {error}",
+    { error: getErrorMessage(error) }
+  ));
 }
 
 /** Backup SSH Kit data, optionally including associated key files. */
@@ -410,17 +431,58 @@ export async function restoreKitData(
   if (!uris || uris.length === 0) {return;}
 
   try {
+    if (fs.statSync(uris[0].fsPath).size > MAX_BACKUP_FILE_SIZE) {
+      throw new Error(vscode.l10n.t(
+        "The selected backup is larger than 64 MB. Choose a smaller SSH Kit backup."
+      ));
+    }
     const json = fs.readFileSync(uris[0].fsPath, "utf-8");
-    const preview = storage.previewImport(json);
+    const mode = await vscode.window.showQuickPick(
+      [
+        {
+          label: vscode.l10n.t("$(git-merge) Merge with current data"),
+          description: vscode.l10n.t("Add missing groups and hosts; keep current items"),
+          mode: "merge" as const,
+        },
+        {
+          label: vscode.l10n.t("$(replace-all) Replace current data"),
+          description: vscode.l10n.t("Replace current groups and hosts; create an internal snapshot first"),
+          mode: "replace" as const,
+        },
+      ],
+      {
+        title: vscode.l10n.t("Choose how to restore the SSH Kit backup"),
+        placeHolder: vscode.l10n.t("Merge combines data; replace reproduces the selected backup"),
+      }
+    );
+    if (!mode) {return;}
+
+    const mergePreview = mode.mode === "merge" ? storage.previewImport(json) : undefined;
+    const replacePreview = mode.mode === "replace" ? storage.previewReplace(json) : undefined;
+    const preview = mergePreview ?? replacePreview;
+    if (!preview) {return;}
     const keyPlan = await resolveRestoreKeyPlan(json);
     if (!keyPlan) {return;}
 
     const lines = [
-      vscode.l10n.t("Import {hostCount} hosts and {groupCount} groups", {
-        hostCount: preview.importedHosts,
-        groupCount: preview.importedGroups,
-      }),
-      preview.skippedHosts > 0 ? vscode.l10n.t("Skip {count} existing hosts", { count: preview.skippedHosts }) : "",
+      mode.mode === "replace"
+        ? vscode.l10n.t("Replace current data with {hostCount} hosts and {groupCount} groups", {
+            hostCount: preview.importedHosts,
+            groupCount: preview.importedGroups,
+          })
+        : vscode.l10n.t("Merge {hostCount} hosts and {groupCount} groups", {
+            hostCount: preview.importedHosts,
+            groupCount: preview.importedGroups,
+          }),
+      replacePreview
+        ? vscode.l10n.t("Current data being replaced: {hostCount} hosts and {groupCount} groups", {
+            hostCount: replacePreview.replacedHosts,
+            groupCount: replacePreview.replacedGroups,
+          })
+        : "",
+      mergePreview && mergePreview.skippedHosts > 0
+        ? vscode.l10n.t("Skip {count} existing hosts", { count: mergePreview.skippedHosts })
+        : "",
       formatRestoreKeyOverview(preview.keyCount, keyPlan),
       formatRestoreKeyPlanSummary(keyPlan),
       formatRestoreKeyTargets(vscode.l10n.t("Key files to write:"), keyPlan.writeTargets),
@@ -428,27 +490,38 @@ export async function restoreKitData(
       keyPlan.entries.length === 0 && keyPlan.writeTargets.length === 0 && keyPlan.reuseTargets.length === 0
         ? formatRestoreKeyTargets(vscode.l10n.t("Key names recorded in the backup:"), preview.keyTargets)
         : "",
-      vscode.l10n.t("Existing items will be skipped and not overwritten."),
+      mode.mode === "replace"
+        ? vscode.l10n.t("SSH Kit will save an internal catalog snapshot before replacing current data.")
+        : vscode.l10n.t("Existing items will be skipped and not overwritten."),
       "",
       vscode.l10n.t("⚠ Only restore backups from a trusted source; the file may contain private keys."),
     ].filter(Boolean);
 
-    const importAction = vscode.l10n.t("Import");
+    const restoreAction = mode.mode === "replace"
+      ? vscode.l10n.t("Replace and Restore")
+      : vscode.l10n.t("Merge and Restore");
     const confirmed = await vscode.window.showInformationMessage(
       lines.join("\n"),
       { modal: true },
-      importAction
+      restoreAction
     );
-    if (confirmed !== importAction) {return;}
+    if (confirmed !== restoreAction) {return;}
 
-    const result = await storage.commitImport(json, keyPlan.entries);
+    const result = mode.mode === "replace"
+      ? await storage.commitReplace(json, keyPlan.entries)
+      : await storage.commitImport(json, keyPlan.entries);
     tree.refresh();
     keyTree?.refresh();
 
-    const parts = [vscode.l10n.t("Imported {hostCount} hosts and {groupCount} groups", {
-      hostCount: result.importedHosts,
-      groupCount: result.importedGroups,
-    })];
+    const parts = [mode.mode === "replace"
+      ? vscode.l10n.t("Restored {hostCount} hosts and {groupCount} groups by replacement", {
+          hostCount: result.importedHosts,
+          groupCount: result.importedGroups,
+        })
+      : vscode.l10n.t("Merged {hostCount} hosts and {groupCount} groups", {
+          hostCount: result.importedHosts,
+          groupCount: result.importedGroups,
+        })];
     if (result.skippedHosts > 0) {
       parts.push(vscode.l10n.t("Skipped {count} existing hosts", { count: result.skippedHosts }));
     }
@@ -480,6 +553,64 @@ export async function restoreKitData(
     }
   } catch (err: unknown) {
     vscode.window.showErrorMessage(vscode.l10n.t("Restore failed: {error}", { error: getErrorMessage(err) }));
+  }
+}
+
+/** Restore a catalog-only internal snapshot created before a destructive operation. */
+export async function restoreCatalogSnapshot(
+  storage: StorageService,
+  tree: HostTreeDataProvider
+): Promise<void> {
+  const snapshots = storage.getCatalogSnapshots();
+  if (snapshots.length === 0) {
+    await vscode.window.showInformationMessage(
+      vscode.l10n.t("No internal snapshots are available. SSH Kit creates them before deleting a group, moving hosts to or from the recycle bin, permanently deleting recycle-bin items, restoring data, or restoring another snapshot."),
+      { modal: true }
+    );
+    return;
+  }
+
+  const picked = await vscode.window.showQuickPick(
+    snapshots.map((snapshot) => ({
+      label: `$(history) ${new Date(snapshot.createdAt).toLocaleString()}`,
+      description: vscode.l10n.t("{hostCount} hosts · {groupCount} groups · revision {revision}", {
+        hostCount: snapshot.hostCount,
+        groupCount: snapshot.groupCount,
+        revision: snapshot.revision,
+      }),
+      detail: snapshot.path,
+      snapshot,
+    })),
+    {
+      title: vscode.l10n.t("Restore an SSH Kit Internal Snapshot"),
+      placeHolder: vscode.l10n.t("Snapshots contain host catalog data only, never private key contents"),
+      matchOnDescription: true,
+    }
+  );
+  if (!picked) {return;}
+
+  const restoreAction = vscode.l10n.t("Restore Snapshot");
+  const confirmed = await vscode.window.showWarningMessage(
+    vscode.l10n.t(
+      "Replace the current host catalog with this snapshot? SSH Kit will snapshot the current catalog first."
+    ),
+    { modal: true },
+    restoreAction
+  );
+  if (confirmed !== restoreAction) {return;}
+
+  try {
+    const restored = await storage.restoreCatalogSnapshot(picked.snapshot.path);
+    tree.refresh();
+    vscode.window.showInformationMessage(vscode.l10n.t(
+      "Restored internal snapshot: {hostCount} hosts and {groupCount} groups.",
+      { hostCount: restored.hosts.length, groupCount: restored.groups.length }
+    ));
+  } catch (error) {
+    vscode.window.showErrorMessage(vscode.l10n.t(
+      "Failed to restore internal snapshot: {error}",
+      { error: getErrorMessage(error) }
+    ));
   }
 }
 

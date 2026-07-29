@@ -4,6 +4,37 @@
 
 ## Unreleased
 
+### Added
+- Add explicit per-host authentication modes for OpenSSH automatic behavior, one specified identity file, or password-only login.
+- Include the authentication mode in expanded host details, current-connection details, backups, and read-only language model host metadata.
+- Move hosts, groups, and deleted items into an independent revisioned catalog with a cross-process write lock, atomic writes, and corruption fallback. Legacy `globalState` data migrates automatically with a rollback copy.
+- Add a host recycle bin, the latest 10 key-free internal snapshots, and an internal snapshot restore command.
+- Add commands to enable, inspect, repair, remove, and open the managed Remote-SSH integration.
+- Let backup restore explicitly merge or replace data, with an internal snapshot before replacement.
+
+### Changed
+- Use `IdentitiesOnly=yes` for specified keys and disable public-key authentication for password-only connections across Remote-SSH and terminal launchers.
+- Treat the independent catalog as the source of truth. Everyday host changes rebuild only `~/.ssh/ssh-kit/hosts.conf`; the main config receives one marked Include only after an explicit backup.
+- Change the former SSH Config write command into a standalone export that refuses to overwrite the active config.
+- Skip SSH Kit's generated managed file during import and warn about command-capable SSH directives.
+- Clean legacy connection aliases only after showing their count, receiving confirmation, and saving a user-selected backup.
+- Refuse backups created by a newer data format instead of silently dropping unknown fields.
+- Commit a confirmed SSH Config import in one catalog transaction instead of rewriting storage and the managed projection once per host.
+- Remove Remote-SSH integration maintenance actions from the host view menu. Connection attempts prepare or repair the managed configuration when needed; advanced maintenance remains available in the Command Palette.
+- Explain why the active SSH Config needs a one-time backup before managed setup, and clarify exactly which catalog operations create internal snapshots.
+
+### Fixed
+- Persist one stable, unique Remote-SSH Host alias per host, updating the same managed Host block after connection details change.
+- Avoid applying Unix `0600` mode to generated config files on Windows, which could make OpenSSH reject their ACL or owner.
+- Recover a corrupt primary catalog from the previous valid copy without overwriting that fallback with corrupt data.
+- Keep using legacy data when the catalog directory or migration is unavailable, and protect newer catalogs from downgrade writes.
+- Detect an Include placed too late to override earlier SSH directives, and normalize it to an effective position after an explicit backup.
+- Parse standard `Keyword=value` syntax and trailing comments, and use the first value for single-valued directives to match OpenSSH behavior.
+- Reject stale replace and internal-snapshot restores when another VS Code window has already changed the catalog.
+- Save SSH Config backups directly under an existing drive root without trying to recreate the drive directory, and report folder selections or copy failures clearly.
+- Show an explanatory dialog when the internal snapshot restore command has no snapshots instead of appearing to do nothing.
+- Quote local-terminal SSH arguments for the actual PowerShell, cmd.exe, or POSIX shell, and reject values that cmd.exe cannot represent safely.
+
 ## 0.0.13 — 2026-07-21
 
 ### Changed
@@ -122,7 +153,7 @@
 
 ### Fixed
 - Use SCP-safe Remote-SSH aliases without colons so VS Code can upload the remote server archive after the initial SSH connection succeeds.
-- Open Remote-SSH through the native Remote-SSH command host argument so aliases such as `nginx+redis+safeline` stay readable without `%2B` escaping or `+` truncation.
+- Open Remote-SSH through the native Remote-SSH command host argument so aliases such as `web+cache+gateway` stay readable without `%2B` escaping or `+` truncation.
 - Prefer the native Host alias for Remote-SSH display, adding endpoint details only when names would collide.
 - Declare the extension as a UI extension so it can keep using local SSH config and key files from local and remote windows.
 - Show the current SSH Kit connection in the host tree and status bar, with a selectable plain-text status tooltip for connection details.

@@ -5,14 +5,20 @@ import {
   generateId,
   HOST_SORT_MODES,
   HostSortMode,
+  resolveHostAuthMode,
+  SSH_AUTH_MODES,
+  SSHAuthMode,
+  DeletedSSHHost,
   SSHGroup,
   SSHHost,
+  SSHKitCatalog,
   SSHKitCurrentConnection,
   SSHKitData,
   SSHKitSortPreferences,
 } from "./types";
+import { normalizeStoredSSHAliases, sanitizeSSHHostAlias } from "./sshAlias";
 
-export const CURRENT_DATA_SCHEMA_VERSION = 2;
+export const CURRENT_DATA_SCHEMA_VERSION = 4;
 
 interface MigrationResult {
   data: SSHKitData;
@@ -29,6 +35,7 @@ export interface ValidatedBackupData {
   recentConnections?: string[];
   sortPreferences?: Partial<SSHKitSortPreferences>;
   currentConnection?: SSHKitCurrentConnection;
+  deletedHosts?: DeletedSSHHost[];
   keyMetadata?: Array<{ name: string }>;
   keyFiles?: Array<{
     name: string;
@@ -45,7 +52,7 @@ export function migrateStoredData(raw: unknown): MigrationResult {
 
   const groups = normalizeGroups(raw.groups);
   const groupIds = new Set(groups.map((group) => group.id));
-  const hosts = normalizeHosts(raw.hosts, groupIds);
+  const hosts = normalizeStoredSSHAliases(normalizeHosts(raw.hosts, groupIds));
   const hostIds = new Set(hosts.map((host) => host.id));
   const groupCollapsedState = normalizeCollapsedState(raw.groupCollapsedState, groupIds);
   const recentConnections = normalizeRecentConnections(raw.recentConnections, hostIds);
@@ -62,6 +69,7 @@ export function migrateStoredData(raw: unknown): MigrationResult {
     groupCollapsedState,
     recentConnections,
     sortPreferences,
+    deletedHosts: normalizeDeletedHosts(raw.deletedHosts, groupIds),
     ...(currentConnection ? { currentConnection } : {}),
   };
   const data = rawVersion > CURRENT_DATA_SCHEMA_VERSION
@@ -80,6 +88,67 @@ export function migrateStoredData(raw: unknown): MigrationResult {
     changed: rawVersion <= CURRENT_DATA_SCHEMA_VERSION &&
       (rawVersion < CURRENT_DATA_SCHEMA_VERSION || !sameJson(raw, data)),
   };
+}
+
+export function toCatalog(data: SSHKitData): SSHKitCatalog {
+  return {
+    schemaVersion: Math.max(data.schemaVersion, CURRENT_DATA_SCHEMA_VERSION),
+    revision: 0,
+    groups: data.groups,
+    hosts: normalizeStoredSSHAliases(data.hosts),
+    deletedHosts: data.deletedHosts ?? [],
+  };
+}
+
+export function validateCatalog(raw: unknown): asserts raw is SSHKitCatalog {
+  if (!isRecord(raw)) {
+    throw new Error(vscode.l10n.t("Invalid SSH Kit catalog."));
+  }
+  if (
+    typeof raw.schemaVersion !== "number" ||
+    !Number.isInteger(raw.schemaVersion) ||
+    typeof raw.revision !== "number" ||
+    !Number.isInteger(raw.revision) ||
+    raw.revision < 0
+  ) {
+    throw new Error(vscode.l10n.t("Invalid SSH Kit catalog version."));
+  }
+  validateBackupData({
+    schemaVersion: raw.schemaVersion,
+    groups: raw.groups,
+    hosts: raw.hosts,
+  });
+  if (!Array.isArray(raw.deletedHosts)) {
+    throw new Error(vscode.l10n.t("Invalid SSH Kit catalog recycle bin."));
+  }
+  raw.deletedHosts.forEach((entry, index) => {
+    if (
+      !isRecord(entry) ||
+      !isRecord(entry.host) ||
+      !isNonEmptyString(entry.deletedAt) ||
+      !isSafeSingleLine(entry.deletedAt) ||
+      Number.isNaN(Date.parse(entry.deletedAt)) ||
+      (entry.groupName !== undefined &&
+        (typeof entry.groupName !== "string" || !isSafeSingleLine(entry.groupName)))
+    ) {
+      throw new Error(vscode.l10n.t(
+        "Invalid SSH Kit catalog recycle-bin item {index}.",
+        { index: index + 1 }
+      ));
+    }
+    validateBackupData({
+      schemaVersion: raw.schemaVersion,
+      groups: raw.groups,
+      hosts: [entry.host],
+    });
+  });
+  assertUniqueStrings(
+    [
+      ...(raw.hosts as SSHHost[]).map((host) => host.id),
+      ...(raw.deletedHosts as DeletedSSHHost[]).map((entry) => entry.host.id),
+    ],
+    vscode.l10n.t("active and deleted host ids")
+  );
 }
 
 export function validateBackupData(raw: unknown): asserts raw is ValidatedBackupData {
@@ -123,13 +192,53 @@ export function validateBackupData(raw: unknown): asserts raw is ValidatedBackup
     }
     if (
       (host.groupId !== undefined && (typeof host.groupId !== "string" || !isSafeSingleLine(host.groupId))) ||
+      (host.sshAlias !== undefined && (
+        !isNonEmptyString(host.sshAlias) ||
+        sanitizeSSHHostAlias(host.sshAlias) !== host.sshAlias
+      )) ||
+      (host.authMode !== undefined && !isSSHAuthMode(host.authMode)) ||
       (host.identityFile !== undefined && (typeof host.identityFile !== "string" || !isSafeSingleLine(host.identityFile))) ||
+      (host.authMode === "identityFile" && !isNonEmptyString(host.identityFile)) ||
       !isValidExtraConfig(host.extraConfig)
     ) {
       throw new Error(vscode.l10n.t("Invalid SSH Kit backup: host {index} has invalid optional fields.", { index: index + 1 }));
     }
   });
   assertUniqueStrings(raw.hosts.map((host) => (host as UnknownRecord).id), vscode.l10n.t("host ids"));
+
+  if (raw.deletedHosts !== undefined) {
+    if (!Array.isArray(raw.deletedHosts)) {
+      throw new Error(vscode.l10n.t("Invalid SSH Kit backup: deletedHosts must be an array."));
+    }
+    raw.deletedHosts.forEach((entry, index) => {
+      if (
+        !isRecord(entry) ||
+        !isRecord(entry.host) ||
+        !isNonEmptyString(entry.deletedAt) ||
+        !isSafeSingleLine(entry.deletedAt) ||
+        Number.isNaN(Date.parse(entry.deletedAt)) ||
+        (entry.groupName !== undefined &&
+          (typeof entry.groupName !== "string" || !isSafeSingleLine(entry.groupName)))
+      ) {
+        throw new Error(vscode.l10n.t(
+          "Invalid SSH Kit backup: recycle-bin item {index} is malformed.",
+          { index: index + 1 }
+        ));
+      }
+      validateBackupData({
+        schemaVersion: raw.schemaVersion,
+        groups: raw.groups,
+        hosts: [entry.host],
+      });
+    });
+    assertUniqueStrings(
+      [
+        ...raw.hosts.map((host) => (host as UnknownRecord).id),
+        ...raw.deletedHosts.map((entry) => (entry as DeletedSSHHost).host.id),
+      ],
+      vscode.l10n.t("active and deleted host ids")
+    );
+  }
 
   if (raw.sortPreferences !== undefined) {
     if (
@@ -207,13 +316,23 @@ function normalizeHosts(value: unknown, groupIds: Set<string>): SSHHost[] {
       : undefined;
     const identityFile = isNonEmptyString(candidate.identityFile) ? candidate.identityFile.trim() : undefined;
     const extraConfig = normalizeExtraConfig(candidate.extraConfig);
+    const authMode = resolveHostAuthMode({
+      authMode: isSSHAuthMode(candidate.authMode) ? candidate.authMode : undefined,
+      identityFile,
+      extraConfig,
+    });
+    const normalizedAuthMode = authMode === "identityFile" && !identityFile
+      ? "auto"
+      : authMode;
     hosts.push({
       id,
       name: isNonEmptyString(candidate.name) ? candidate.name.trim() : hostname,
+      ...(isNonEmptyString(candidate.sshAlias) ? { sshAlias: candidate.sshAlias.trim() } : {}),
       hostname,
       port: isValidPort(candidate.port) ? candidate.port : 22,
       username: typeof candidate.username === "string" ? candidate.username.trim() : "",
-      ...(identityFile ? { identityFile } : {}),
+      authMode: normalizedAuthMode,
+      ...(normalizedAuthMode === "identityFile" && identityFile ? { identityFile } : {}),
       ...(groupId ? { groupId } : {}),
       tags: Array.isArray(candidate.tags)
         ? [...new Set(candidate.tags.filter((tag): tag is string => typeof tag === "string").map((tag) => tag.trim()).filter(Boolean))]
@@ -222,6 +341,27 @@ function normalizeHosts(value: unknown, groupIds: Set<string>): SSHHost[] {
     });
   }
   return hosts;
+}
+
+function normalizeDeletedHosts(
+  value: unknown,
+  groupIds: Set<string>
+): SSHKitData["deletedHosts"] {
+  if (!Array.isArray(value)) {return [];}
+  const result: NonNullable<SSHKitData["deletedHosts"]> = [];
+  for (const candidate of value) {
+    if (!isRecord(candidate) || !isRecord(candidate.host) || !isNonEmptyString(candidate.deletedAt)) {
+      continue;
+    }
+    const normalized = normalizeHosts([candidate.host], groupIds)[0];
+    if (!normalized) {continue;}
+    result.push({
+      host: normalized,
+      deletedAt: candidate.deletedAt,
+      ...(isNonEmptyString(candidate.groupName) ? { groupName: candidate.groupName } : {}),
+    });
+  }
+  return result;
 }
 
 function normalizeExtraConfig(value: unknown): Record<string, string | string[]> | undefined {
@@ -276,6 +416,10 @@ function normalizeSortPreferences(value: unknown): SSHKitSortPreferences {
 
 function isHostSortMode(value: unknown): value is HostSortMode {
   return typeof value === "string" && HOST_SORT_MODES.some((mode) => mode === value);
+}
+
+function isSSHAuthMode(value: unknown): value is SSHAuthMode {
+  return typeof value === "string" && SSH_AUTH_MODES.some((mode) => mode === value);
 }
 
 function isRecord(value: unknown): value is UnknownRecord {

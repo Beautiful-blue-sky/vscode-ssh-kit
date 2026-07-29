@@ -49,6 +49,7 @@ export function createImportedHostUpdates(
     hostname: imported.hostname,
     port: imported.port,
     username: imported.username,
+    authMode: imported.authMode,
     identityFile: imported.identityFile,
     extraConfig: imported.extraConfig,
   };

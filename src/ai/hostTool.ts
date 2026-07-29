@@ -3,6 +3,7 @@ import * as vscode from "vscode";
 import { formatHostEndpoint } from "../core/endpoint";
 import { StorageService } from "../core/storage";
 import { hostMatchesSearch, splitHostSearchTerms } from "../core/hostSearch";
+import { resolveHostAuthMode, SSHAuthMode } from "../core/types";
 
 interface ListHostsToolInput {
   query?: string;
@@ -28,6 +29,7 @@ interface HostToolResult {
     endpoint: string;
     group?: string;
     tags: string[];
+    authMode: SSHAuthMode;
     hasIdentityFile: boolean;
     identityFile?: string;
   }>;
@@ -110,6 +112,7 @@ export function buildHostToolResult(
     endpoint: formatHostEndpoint(host),
     group: groups.get(host.groupId ?? ""),
     tags: [...(host.tags ?? [])],
+    authMode: resolveHostAuthMode(host),
     hasIdentityFile: Boolean(host.identityFile),
     ...(input.includeIdentityFilePath && host.identityFile ? { identityFile: host.identityFile } : {}),
   }));

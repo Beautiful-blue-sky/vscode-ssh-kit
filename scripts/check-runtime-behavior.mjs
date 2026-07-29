@@ -22,13 +22,20 @@ try {
   await runCheck("SSH Config import isolates Match blocks and skips Host patterns", checkSSHConfigImportBoundaries);
   await runCheck("SSH Config normalizes quoted values and rejects unsafe output", checkSSHConfigValueSafety);
   await runCheck("Host prompts accept IPv6 and common enterprise usernames", checkHostPromptValidation);
-  await runCheck("SSH Config export prompts for an explicit backup", checkSSHConfigExportBackupPrompt);
+  await runCheck("SSH Config export writes a separate file without replacing active config", checkSSHConfigExportBackupPrompt);
   await runCheck("AI host tool returns filtered metadata without private key material", checkAIHostTool);
   await runCheck("Backup restore preview deduplicates hosts and reports key failures", checkBackupRestore);
   await runCheck("Backup restore rolls back newly written keys when data storage fails", checkBackupRestoreStorageRollback);
   await runCheck("Backup restore rewrites hosts to renamed or reused key files", checkBackupRestoreKeyConflicts);
   await runCheck("Backup restore clears host key links when conflicting keys are skipped", checkBackupRestoreSkippedKeyClearsHostLink);
   await runCheck("Backups can omit private keys and stored data migrates safely", checkBackupModesAndDataMigration);
+  await runCheck("Legacy globalState migrates to a recoverable file-backed catalog", checkFileBackedCatalogMigration);
+  await runCheck("SSH Config import commits all host changes in one catalog revision", checkTransactionalSSHConfigImport);
+  await runCheck("Catalog writes reject stale revisions across windows", checkCatalogConcurrency);
+  await runCheck("Managed SSH config preserves custom config text and skips self-import", checkManagedSSHConfigIntegration);
+  await runCheck("SSH Config backup reuses an existing root directory", checkManagedSSHConfigBackupAtExistingRoot);
+  await runCheck("Recycle bin and replacement restore preserve recoverability", checkRecycleBinAndReplacementRestore);
+  await runCheck("Internal snapshot restore explains an empty snapshot list", checkInternalSnapshotEmptyState);
   await runCheck("Backup validation rejects duplicate ids and config injection values", checkBackupValidation);
   await runCheck("Restore command prompts for key conflicts and rewrites imported hosts", checkRestoreCommandKeyConflictFlow);
   await runCheck("Key discovery detects generated keys and can regenerate missing public keys", checkKeyManagement);
@@ -157,10 +164,13 @@ function checkSSHConfigImport() {
     "  User root",
     "# SSH Kit connect alias stale-host end",
     "",
-    "Host multi",
-    "  HostName 10.0.0.5",
+    "Host=multi # trailing comments must not create aliases",
+    "  HostName=10.0.0.5",
+    "  HostName 10.0.0.99",
     "  User root",
+    "  User ignored-user",
     "  Port 2222",
+    "  Port 2299",
     "  IdentityFile ~/.ssh/id_multi",
     "  LocalForward 127.0.0.1:8080 127.0.0.1:80",
     "  LocalForward 127.0.0.1:8443 127.0.0.1:443",
@@ -169,10 +179,13 @@ function checkSSHConfigImport() {
     "",
   ].join("\n"));
 
-  const { analyzeExport, exportToSSHConfig, importFromSSHConfig, stringifyHosts } = loadTsModule("src/ssh/sshConfig.ts");
+  const { exportToSSHConfig, importFromSSHConfig, stringifyHosts } = loadTsModule("src/ssh/sshConfig.ts");
   const { hosts } = importFromSSHConfig(configPath);
   assert(hosts.length === 1, `Expected one imported host, got ${hosts.length}`);
   assert(hosts[0].name === "multi", `Expected host "multi", got "${hosts[0].name}"`);
+  assert(hosts[0].hostname === "10.0.0.5", "Expected the first HostName value to match OpenSSH semantics");
+  assert(hosts[0].username === "root", "Expected the first User value to match OpenSSH semantics");
+  assert(hosts[0].port === 2222, "Expected the first Port value to match OpenSSH semantics");
   assert(Array.isArray(hosts[0].extraConfig.localforward), "Expected repeated LocalForward values to be an array");
   assert(hosts[0].extraConfig.localforward.length === 2, "Expected two LocalForward directives");
   assert(Array.isArray(hosts[0].extraConfig.sendenv), "Expected repeated SendEnv values to be an array");
@@ -184,25 +197,36 @@ function checkSSHConfigImport() {
   const exportedWithSpace = stringifyHosts([{ ...hosts[0], id: "space-id", name: "space host" }]);
   assert(exportedWithSpace.includes('Host "space host"'), "Expected Host aliases with spaces to be quoted");
 
+  const passwordOnly = stringifyHosts([{
+    ...hosts[0],
+    id: "password-id",
+    name: "password-only",
+    authMode: "password",
+    identityFile: undefined,
+  }]);
+  assert(passwordOnly.includes("  PubkeyAuthentication no"), "Expected password-only config to disable public-key authentication");
+  assert(passwordOnly.includes("  PreferredAuthentications keyboard-interactive,password"), "Expected password-only config to prefer interactive password methods");
+  assert(!passwordOnly.includes("IdentityFile"), "Expected password-only config not to emit an identity file");
+
   const exportPath = join(home, ".ssh", "export_config");
   writeFileSync(exportPath, [
-    "Host 175.27.233.248_AIMS010-Nginx_10.100.1.4",
-    "  HostName 175.27.233.248",
+    "Host 198.51.100.48_edge-nginx_10.0.1.4",
+    "  HostName 198.51.100.48",
     "  Port 35264",
     "  User root",
     "  IdentityFile ~/.ssh/id_rsa",
     "  # SSH Kit managed",
     "",
-    "Host AIMS010-Nginx_10.100.1.4",
-    "  HostName 175.27.233.248",
+    "Host edge-nginx_10.0.1.4",
+    "  HostName 198.51.100.48",
     "  Port 35264",
     "  User root",
     "  IdentityFile ~/.ssh/id_rsa",
     "  # SSH Kit managed",
     "",
     "# SSH Kit connect alias mqggfb9qc991lz begin",
-    "Host AIMS010-Nginx_10.100.1.4｜175.27.233.248：35264",
-    "  HostName 175.27.233.248",
+    "Host edge-nginx_10.0.1.4｜198.51.100.48：35264",
+    "  HostName 198.51.100.48",
     "  Port 35264",
     "  User root",
     "# SSH Kit connect alias mqggfb9qc991lz end",
@@ -210,50 +234,21 @@ function checkSSHConfigImport() {
   ].join("\n"));
   const managedHost = {
     id: "managed-endpoint",
-    name: "AIMS010-Nginx_10.100.1.4",
-    hostname: "175.27.233.248",
+    name: "edge-nginx_10.0.1.4",
+    hostname: "198.51.100.48",
     port: 35264,
     username: "root",
+    authMode: "identityFile",
     identityFile: "~/.ssh/id_rsa",
     tags: [],
   };
-  const exportStats = analyzeExport([managedHost], exportPath);
-  assert(exportStats.synced === 1, `Expected endpoint-matched managed blocks to count as one sync, got ${exportStats.synced}`);
-  assert(exportStats.conflicts.length === 0, "Expected managed endpoint duplicates not to be reported as conflicts");
-  assert(exportStats.removedAliases === 1, `Expected one generated connection alias to be removed, got ${exportStats.removedAliases}`);
   exportToSSHConfig([managedHost], exportPath);
   const merged = readFileSync(exportPath, "utf8");
-  assert(!merged.includes("Host 175.27.233.248_AIMS010-Nginx_10.100.1.4"), "Expected old same-endpoint managed alias to be replaced");
-  assert((merged.match(/^Host AIMS010-Nginx_10\.100\.1\.4$/gm) ?? []).length === 1, "Expected one generated managed Host block");
+  assert(!merged.includes("Host 198.51.100.48_edge-nginx_10.0.1.4"), "Expected old same-endpoint managed alias to be replaced");
+  assert((merged.match(/^Host edge-nginx_10\.0\.1\.4$/gm) ?? []).length === 1, "Expected one generated managed Host block");
   assert(!merged.includes("# SSH Kit connect alias mqggfb9qc991lz begin"), "Expected generated connection alias blocks to be removed during export");
-
-  const conflictPath = join(home, ".ssh", "conflict_config");
-  writeFileSync(conflictPath, [
-    "Host legacy-AIMS010",
-    "  HostName 175.27.233.248",
-    "  Port 35264",
-    "  User deploy",
-    "",
-    "Host unrelated",
-    "  HostName 203.0.113.10",
-    "  Port 22",
-    "  User root",
-    "",
-  ].join("\n"));
-  const conflictStats = analyzeExport([managedHost], conflictPath);
-  assert(conflictStats.conflicts.includes("legacy-AIMS010"), "Expected same HostName/Port unmanaged alias to require takeover confirmation");
-  let takeoverRequired = false;
-  try {
-    exportToSSHConfig([managedHost], conflictPath);
-  } catch {
-    takeoverRequired = true;
-  }
-  assert(takeoverRequired, "Expected unmanaged same-target export to require overwriteUnmanaged");
-  exportToSSHConfig([managedHost], conflictPath, { overwriteUnmanaged: true });
-  const conflictMerged = readFileSync(conflictPath, "utf8");
-  assert(!conflictMerged.includes("Host legacy-AIMS010"), "Expected unmanaged same-target alias to be replaced after takeover");
-  assert(conflictMerged.includes("Host unrelated"), "Expected unrelated Host blocks to be preserved");
-  assert((conflictMerged.match(/^Host AIMS010-Nginx_10\.100\.1\.4$/gm) ?? []).length === 1, "Expected one SSH Kit Host block after takeover");
+  assert(merged.includes("  IdentitiesOnly yes"), "Expected explicit key authentication to use only the selected identity file");
+  assert(!merged.includes("# SSH Kit managed"), "Expected a standalone export not to claim ownership of the selected file");
 }
 
 function checkSSHConfigValueSafety() {
@@ -363,7 +358,7 @@ function checkSSHConfigImportBoundaries() {
 async function checkSSHConfigExportBackupPrompt() {
   const home = makeTempHome("export-backup");
   const configPath = join(home, ".ssh", "config");
-  const backupPath = join(home, "chosen-ssh-config-backup");
+  const exportPath = join(home, "ssh-kit-export.conf");
   writeFileSync(configPath, [
     "Host old-dev",
     "  HostName 10.0.0.5",
@@ -373,13 +368,7 @@ async function checkSSHConfigExportBackupPrompt() {
   ].join("\n"));
 
   const vscode = createVSCodeMock();
-  vscode.__saveDialogUri = { fsPath: backupPath };
-  vscode.__infoHandler = (message) => (
-    String(message).includes("即将写入") ? "确认写入" : undefined
-  );
-  vscode.__warningHandler = (message) => (
-    String(message).includes("备份当前配置文件") ? "选择备份位置" : "接管并覆盖"
-  );
+  vscode.__saveDialogUri = { fsPath: exportPath };
 
   const { StorageService } = loadTsModule("src/core/storage.ts", { vscode });
   const { exportConfig } = loadTsModule("src/commands/ioCommands.ts", { vscode });
@@ -399,14 +388,22 @@ async function checkSSHConfigExportBackupPrompt() {
 
   await exportConfig(storage);
 
-  assert(existsSync(backupPath), "Expected export command to create the user-selected backup file");
-  assert(readFileSync(backupPath, "utf8").includes("Host old-dev"), "Expected backup file to contain the original SSH config");
+  assert(existsSync(exportPath), "Expected export command to create the user-selected file");
+  const exported = readFileSync(exportPath, "utf8");
+  assert(exported.includes("Host managed-dev"), "Expected selected export file to contain SSH Kit hosts");
+  assert(!exported.includes("# SSH Kit managed"), "Expected a standalone export not to claim SSH Kit ownership");
   assert(!readdirSync(join(home, ".ssh")).some((name) => /^config\.bak\./.test(name)), "Expected export command not to create silent config.bak.* files");
+  assert(readFileSync(configPath, "utf8").includes("Host old-dev"), "Expected active SSH Config to remain unchanged");
 
-  const merged = readFileSync(configPath, "utf8");
-  assert(!merged.includes("Host old-dev"), "Expected confirmed takeover to replace same-target unmanaged Host");
-  assert(merged.includes("Host managed-dev"), "Expected SSH Kit Host to be written");
-  assert(merged.includes("# SSH Kit managed"), "Expected written Host to include the SSH Kit marker");
+  const unchanged = [
+    "Host keep-when-backup-cancelled",
+    "  HostName 10.0.0.9",
+    "",
+  ].join("\n");
+  writeFileSync(configPath, unchanged);
+  vscode.__saveDialogUri = undefined;
+  await exportConfig(storage);
+  assert(readFileSync(configPath, "utf8") === unchanged, "Expected cancelling export to leave active SSH Config untouched");
 }
 
 async function checkAIHostTool() {
@@ -470,6 +467,7 @@ async function checkAIHostTool() {
   const defaultPrivacy = buildHostToolResult(storage, { query: "api prod" });
   assert(defaultPrivacy.hosts[0].hasIdentityFile === true, "Expected AI host tool to expose key presence");
   assert(defaultPrivacy.hosts[0].identityFile === undefined, "Expected AI host tool to hide key paths by default");
+  assert(defaultPrivacy.hosts[0].authMode === "identityFile", "Expected AI host metadata to describe the host authentication mode");
 
   const withPath = buildHostToolResult(storage, { query: "prod", includeIdentityFilePath: true });
   assert(withPath.hosts[0].identityFile === "~/.ssh/id_prod", "Expected AI host tool to include key paths only when requested");
@@ -542,7 +540,7 @@ async function checkBackupRestore() {
         port: 2222,
         username: "deploy",
         groupId: "g-source-stage",
-        identityFile: "C:\\Users\\22073\\.ssh\\id_restore",
+        identityFile: "C:\\Users\\source-user\\.ssh\\id_restore",
         tags: ["stage"],
       },
     ],
@@ -625,6 +623,51 @@ async function checkBackupRestoreStorageRollback() {
   assert(rejected, "Expected restore to report the globalState write failure");
   assert(!existsSync(privatePath), "Expected failed restore to remove the newly written private key");
   assert(!existsSync(`${privatePath}.pub`), "Expected failed restore to remove the newly written public key");
+
+  const fileHome = makeTempHome("restore-file-catalog-mirror-failure");
+  const fileContext = createExtensionContext({
+    schemaVersion: 3,
+    groups: [],
+    hosts: [],
+    groupCollapsedState: {},
+    recentConnections: [],
+    sortPreferences: { hostSort: "nameAsc" },
+  }, { globalStoragePath: join(fileHome, "global-storage") });
+  const fileStorage = new StorageService(fileContext);
+  fileContext.globalState.update = async () => {
+    throw new Error("simulated compatibility-mirror failure");
+  };
+  const fileKeyName = "id_file_catalog_commit";
+  const fileBackup = JSON.stringify({
+    groups: [],
+    hosts: [{
+      id: "host-file-catalog",
+      name: "file-catalog",
+      hostname: "192.0.2.81",
+      port: 22,
+      username: "root",
+      identityFile: `~/.ssh/${fileKeyName}`,
+      tags: [],
+    }],
+    keyFiles: [{
+      name: fileKeyName,
+      type: "unknown",
+      privateKey: Buffer.from(fakePrivateKey(fileKeyName)).toString("base64"),
+      publicKey: Buffer.from(fakePublicKey(fileKeyName)).toString("base64"),
+    }],
+  });
+  await fileStorage.commitImport(fileBackup, [{
+    sourceName: fileKeyName,
+    targetName: fileKeyName,
+  }]);
+  assert(
+    existsSync(join(fileHome, ".ssh", fileKeyName)),
+    "Expected an authoritative Catalog commit not to roll back keys when only the compatibility mirror fails"
+  );
+  assert(
+    fileStorage.getAllHosts().some((host) => host.name === "file-catalog"),
+    "Expected the file-backed Catalog to retain the restored host"
+  );
 }
 
 async function checkBackupRestoreKeyConflicts() {
@@ -682,7 +725,7 @@ async function checkBackupRestoreKeyConflicts() {
         hostname: "10.20.0.4",
         port: 22,
         username: "root",
-        identityFile: "C:\\Users\\22073\\.ssh\\id_written_abs",
+        identityFile: "C:\\Users\\source-user\\.ssh\\id_written_abs",
         tags: [],
       },
     ],
@@ -737,7 +780,7 @@ async function checkBackupRestoreKeyConflicts() {
   const sourceIdRsaPrivate = fakePrivateKey("source-id-rsa");
   const localIdRsaPrivate = fakePrivateKey("local-id-rsa-different");
   const samePublicKey = fakePublicKey("source-id-rsa");
-  const sourceWindowsIdRsaPath = "C:\\Users\\22073\\.ssh\\id_rsa";
+  const sourceWindowsIdRsaPath = "C:\\Users\\source-user\\.ssh\\id_rsa";
   writeFileSync(join(aliasHome, ".ssh", "id_rsa"), localIdRsaPrivate);
   writeFileSync(join(aliasHome, ".ssh", "id_rsa_ivy"), fakePrivateKey("same-public-different-private-bytes"));
   writeFileSync(join(aliasHome, ".ssh", "id_rsa_ivy.pub"), samePublicKey);
@@ -913,6 +956,8 @@ async function checkRestoreCommandKeyConflictFlow() {
   let keyRefreshes = 0;
   let restoreConfirmMessage = "";
   vscode.__openDialogUris = [{ fsPath: backupPath }];
+  vscode.__quickPickHandler = (items) =>
+    items.find((item) => item.mode === "merge");
   vscode.__warningHandler = (message) => {
     const text = String(message);
     if (text.includes("id_rsa")) {
@@ -920,11 +965,11 @@ async function checkRestoreCommandKeyConflictFlow() {
     }
     return text.includes("id_conflict") ? "自动重命名" : undefined;
   };
-  vscode.__infoHandler = (message) => {
+  vscode.__infoHandler = (message, items) => {
     const text = String(message);
-    if (text.includes("即将导入")) {
+    if (text.includes("包含 3 个备份密钥")) {
       restoreConfirmMessage = text;
-      return "确认导入";
+      return items.find((item) => typeof item === "string");
     }
     return undefined;
   };
@@ -1128,6 +1173,12 @@ async function checkBatchHostKeyChange() {
         port: 22,
         username: "root",
         groupId: "g-prod",
+        authMode: "password",
+        extraConfig: {
+          PubkeyAuthentication: "no",
+          PreferredAuthentications: "keyboard-interactive,password",
+          ServerAliveInterval: "30",
+        },
         tags: [],
       },
       {
@@ -1171,6 +1222,9 @@ async function checkBatchHostKeyChange() {
   let saved = context.globalState.get("sshKit.data");
   assert(saved.hosts.find((host) => host.id === "h-batch-1")?.identityFile === keyPath, "Expected first selected host key to update");
   assert(saved.hosts.find((host) => host.id === "h-batch-2")?.identityFile === keyPath, "Expected second selected host key to update");
+  assert(saved.hosts.find((host) => host.id === "h-batch-1")?.authMode === "identityFile", "Expected assigning a key to switch the host to identity-file authentication");
+  assert(saved.hosts.find((host) => host.id === "h-batch-1")?.extraConfig?.PubkeyAuthentication === undefined, "Expected key assignment to remove stale password-only directives");
+  assert(saved.hosts.find((host) => host.id === "h-batch-1")?.extraConfig?.ServerAliveInterval === "30", "Expected key assignment to preserve unrelated SSH directives");
   assert(saved.hosts.find((host) => host.id === "h-batch-3")?.identityFile === undefined, "Expected unselected host key to remain unchanged");
   assert(refreshCount === 1, `Expected one tree refresh after batch change, got ${refreshCount}`);
 
@@ -1193,6 +1247,7 @@ async function checkBatchHostKeyChange() {
   await changeHostKey(saved.hosts.find((host) => host.id === "h-batch-1"), storage, tree);
   saved = context.globalState.get("sshKit.data");
   assert(saved.hosts.find((host) => host.id === "h-batch-1")?.identityFile === undefined, "Expected single-host key change to clear identity file");
+  assert(saved.hosts.find((host) => host.id === "h-batch-1")?.authMode === "auto", "Expected clearing a key to restore OpenSSH automatic authentication");
   assert(saved.hosts.find((host) => host.id === "h-batch-2")?.identityFile === keyPath, "Expected other selected host key to remain unchanged");
 }
 
@@ -1392,6 +1447,8 @@ async function checkRemoteAliasRefreshesIdentityFile() {
   const vscode = createVSCodeMock();
   const { connectHostInNewWindow } = loadTsModule("src/commands/connectCommands.ts", { vscode });
   const configPath = join(home, ".ssh", "config");
+  const managedPath = join(home, ".ssh", "ssh-kit", "hosts.conf");
+  const backupPath = join(home, "ssh-config-before-managed-include");
   const newKeyPath = join(home, ".ssh", "id_rsa_ivynow");
   const otherNewKeyPath = join(home, ".ssh", "id_rsa_other_now");
   const oldSourceKeyPath = "C:\\Users\\source\\.ssh\\id_rsa";
@@ -1399,15 +1456,15 @@ async function checkRemoteAliasRefreshesIdentityFile() {
   writeFileSync(otherNewKeyPath, "placeholder");
   writeFileSync(configPath, [
     "# SSH Kit connect alias old-source-host begin",
-    "Host 103.184.47.185_dev",
-    "  HostName 103.184.47.185",
+    "Host dev-app",
+    "  HostName 203.0.113.185",
     "  Port 27488",
     "  User root",
     `  IdentityFile ${oldSourceKeyPath}`,
     "# SSH Kit connect alias old-source-host end",
     "",
     "Host unmanaged-dev",
-    "  HostName 103.184.47.186",
+    "  HostName 203.0.113.186",
     "  Port 27489",
     "  User root",
     `  IdentityFile ${oldSourceKeyPath}`,
@@ -1417,8 +1474,9 @@ async function checkRemoteAliasRefreshesIdentityFile() {
 
   const restoredHost = {
     id: "h-restored-dev",
-    name: "103.184.47.185_dev",
-    hostname: "103.184.47.185",
+    name: "dev-app",
+    sshAlias: "dev-app",
+    hostname: "203.0.113.185",
     port: 27488,
     username: "root",
     identityFile: newKeyPath,
@@ -1427,7 +1485,8 @@ async function checkRemoteAliasRefreshesIdentityFile() {
   const unmanagedAliasHost = {
     id: "h-unmanaged-dev",
     name: "unmanaged-dev",
-    hostname: "103.184.47.186",
+    sshAlias: "unmanaged-dev",
+    hostname: "203.0.113.186",
     port: 27489,
     username: "root",
     identityFile: otherNewKeyPath,
@@ -1435,24 +1494,48 @@ async function checkRemoteAliasRefreshesIdentityFile() {
   };
   const hosts = [restoredHost, unmanagedAliasHost];
   const storage = createConnectionStorageMock(hosts, vscode);
+  vscode.__saveDialogUri = { fsPath: backupPath };
+  vscode.__warningHandler = (_message, items) =>
+    items.find((item) => typeof item === "string");
 
   await connectHostInNewWindow(restoredHost, storage);
   const restoredCommand = lastCommand(vscode, "opensshremotes.openEmptyWindow");
   let config = readFileSync(configPath, "utf8");
+  let managed = readFileSync(managedPath, "utf8");
   assert(restoredCommand?.args.host === restoredHost.name, `Expected restored host to keep its alias after stale SSH Kit block cleanup, got ${restoredCommand?.args.host}`);
-  assert(!config.includes("old-source-host"), "Expected stale SSH Kit connect alias block from deleted host to be removed before connecting");
-  assert(config.includes("# SSH Kit connect alias h-restored-dev begin"), "Expected current host connect alias block to be written");
-  assert(config.includes(`  IdentityFile ${newKeyPath.replace(/\\/g, "/")}`), "Expected current host connect alias to use restored local identity file");
-  assert(!findHostBlockText(config, restoredHost.name)?.includes(oldSourceKeyPath), "Expected restored host alias block not to keep the old source identity file");
+  assert(config.includes("Include ssh-kit/hosts.conf"), "Expected active SSH Config to include the SSH Kit managed file");
+  assert(config.includes("old-source-host"), "Expected upgrade not to delete legacy alias blocks without explicit cleanup");
+  assert(readFileSync(backupPath, "utf8").includes("old-source-host"), "Expected setup to save the user-selected SSH Config backup");
+  assert(managed.includes(`  IdentityFile ${newKeyPath.replace(/\\/g, "/")}`), "Expected managed host to use restored local identity file");
+  assert(managed.includes("  IdentitiesOnly yes"), "Expected managed host to restrict SSH to the selected identity file");
+  assert(!findHostBlockText(managed, restoredHost.sshAlias)?.includes(oldSourceKeyPath), "Expected managed host not to keep the old source identity file");
+
+  restoredHost.name = "renamed-password-dev";
+  restoredHost.hostname = "203.0.113.187";
+  restoredHost.port = 27500;
+  restoredHost.username = "deploy";
+  restoredHost.authMode = "password";
+  delete restoredHost.identityFile;
+  await connectHostInNewWindow(restoredHost, storage);
+  managed = readFileSync(managedPath, "utf8");
+  const refreshedBlock = findHostBlockText(managed, restoredHost.sshAlias);
+  assert((managed.match(/^Host dev-app$/gm) ?? []).length === 1, "Expected edited host reconnect to replace its managed Host block");
+  assert(refreshedBlock?.includes("HostName 203.0.113.187"), "Expected edited host alias to use the new address");
+  assert(refreshedBlock?.includes("Port 27500"), "Expected edited host alias to use the new port");
+  assert(refreshedBlock?.includes("User deploy"), "Expected edited host alias to use the new username");
+  assert(refreshedBlock?.includes("PubkeyAuthentication no"), "Expected password-only Remote-SSH aliases to disable public-key authentication");
+  assert(refreshedBlock?.includes("PreferredAuthentications keyboard-interactive,password"), "Expected password-only Remote-SSH aliases to prefer interactive password methods");
+  assert(!refreshedBlock?.includes("IdentityFile"), "Expected password-only Remote-SSH aliases not to retain the old key");
 
   await connectHostInNewWindow(unmanagedAliasHost, storage);
   const unmanagedCommand = lastCommand(vscode, "opensshremotes.openEmptyWindow");
-  const expectedAlias = "unmanaged-dev｜103.184.47.186：27489";
+  const expectedAlias = "unmanaged-dev";
   config = readFileSync(configPath, "utf8");
-  assert(unmanagedCommand?.args.host === expectedAlias, `Expected unmanaged stale alias to be avoided, got ${unmanagedCommand?.args.host}`);
+  managed = readFileSync(managedPath, "utf8");
+  assert(unmanagedCommand?.args.host === expectedAlias, `Expected the stable SSH Kit alias to be used, got ${unmanagedCommand?.args.host}`);
   assert(findHostBlockText(config, "unmanaged-dev")?.includes(oldSourceKeyPath), "Expected unmanaged user Host block to be preserved");
   assert(findHostBlockText(config, "unmanaged-dev")?.includes(otherNewKeyPath), "Expected unmanaged user Host block with mixed keys to be preserved");
-  assert(findHostBlockText(config, expectedAlias)?.includes(`IdentityFile ${otherNewKeyPath.replace(/\\/g, "/")}`), "Expected generated fallback alias to use the current identity file");
+  assert(findHostBlockText(managed, expectedAlias)?.includes(`IdentityFile ${otherNewKeyPath.replace(/\\/g, "/")}`), "Expected generated managed alias to use the current identity file");
 }
 
 async function checkRemoteAlias() {
@@ -1467,12 +1550,15 @@ async function checkRemoteAlias() {
   } = loadTsModule("src/commands/connectCommands.ts", { vscode });
   const host = {
     id: "h-remote",
-    name: "10.0.1.11_nginx+redis+safeline",
-    hostname: "211.154.20.113",
+    name: "prod-web+cache+gateway",
+    sshAlias: "prod-web+cache+gateway",
+    hostname: "198.51.100.113",
     port: 15578,
     username: "root",
     tags: [],
   };
+  vscode.__warningHandler = (_message, items) =>
+    items.find((item) => typeof item === "string");
   const hosts = [host];
   const storage = {
     async addRecentConnection(hostId) {
@@ -1531,7 +1617,7 @@ async function checkRemoteAlias() {
   await connectHostInNewWindow(host, storage);
   const command = lastCommand(vscode, "opensshremotes.openEmptyWindow");
   assert(command, "Expected Remote-SSH openEmptyWindow to be called");
-  const alias = "10.0.1.11_nginx+redis+safeline";
+  const alias = "prod-web+cache+gateway";
   assert(command.args.host === alias, `Unexpected Remote-SSH host argument: ${command.args.host}`);
   assert(!vscode.__events.includes(`current:${alias}`), "Expected new-window connections not to overwrite global current connection");
   assert(
@@ -1548,20 +1634,24 @@ async function checkRemoteAlias() {
 
   const configPath = join(home, ".ssh", "config");
   const config = readFileSync(configPath, "utf8");
-  assert(config.includes(`Host ${alias}`), "Expected SSH Kit alias Host block in SSH config");
+  const managedPath = join(home, ".ssh", "ssh-kit", "hosts.conf");
+  const managed = readFileSync(managedPath, "utf8");
+  assert(config.includes("Include ssh-kit/hosts.conf"), "Expected active SSH Config to include managed hosts");
+  assert(managed.includes(`Host ${alias}`), "Expected SSH Kit alias Host block in the managed config");
 
-  const result = spawnSync("ssh", ["-G", "-F", configPath, alias], {
+  const result = spawnSync("ssh", ["-G", "-F", managedPath, alias], {
     encoding: "utf8",
   });
   assert(result.status === 0, result.stderr || "ssh -G failed");
   const settings = result.stdout.toLowerCase();
-  assert(settings.includes("hostname 211.154.20.113"), "Expected OpenSSH to resolve HostName from the alias block");
+  assert(settings.includes("hostname 198.51.100.113"), "Expected OpenSSH to resolve HostName from the alias block");
   assert(settings.includes("port 15578"), "Expected OpenSSH to resolve Port from the alias block");
   assert(settings.includes("user root"), "Expected OpenSSH to resolve User from the alias block");
 
   const ipv6Host = {
     id: "h-remote-ipv6",
     name: "prod/api#1 \"blue\"+root",
+    sshAlias: "prod_api_1_blue_+root",
     hostname: "2001:db8::1",
     port: 2222,
     username: "deploy",
@@ -1570,12 +1660,12 @@ async function checkRemoteAlias() {
   hosts.push(ipv6Host);
   await connectHostInNewWindow(ipv6Host, storage);
   const ipv6Command = lastCommand(vscode, "opensshremotes.openEmptyWindow");
-  const ipv6Alias = "prod api 1 blue +root";
+  const ipv6Alias = "prod_api_1_blue_+root";
   assert(ipv6Command, "Expected Remote-SSH openEmptyWindow to be called for IPv6 host");
   assert(ipv6Command.args.host === ipv6Alias, `Unexpected IPv6 Remote-SSH host argument: ${ipv6Command.args.host}`);
   assertRemoteAliasScpSafe(ipv6Alias);
 
-  const ipv6Result = spawnSync("ssh", ["-G", "-F", configPath, ipv6Alias], {
+  const ipv6Result = spawnSync("ssh", ["-G", "-F", managedPath, ipv6Alias], {
     encoding: "utf8",
   });
   assert(ipv6Result.status === 0, ipv6Result.stderr || "ssh -G failed for IPv6 alias");
@@ -1587,7 +1677,8 @@ async function checkRemoteAlias() {
   const duplicateNameHost = {
     id: "h-remote-duplicate",
     name: host.name,
-    hostname: "211.154.20.114",
+    sshAlias: "prod-web+cache+gateway__198.51.100.114_10274",
+    hostname: "198.51.100.114",
     port: 10274,
     username: "root",
     tags: [],
@@ -1595,7 +1686,7 @@ async function checkRemoteAlias() {
   hosts.push(duplicateNameHost);
   await connectHostInNewWindow(duplicateNameHost, storage);
   const duplicateCommand = lastCommand(vscode, "opensshremotes.openEmptyWindow");
-  const duplicateAlias = "10.0.1.11_nginx+redis+safeline｜211.154.20.114：10274";
+  const duplicateAlias = duplicateNameHost.sshAlias;
   assert(duplicateCommand, "Expected Remote-SSH openEmptyWindow to be called for duplicate-name host");
   assert(duplicateCommand.args.host === duplicateAlias, `Unexpected duplicate Remote-SSH host argument: ${duplicateCommand.args.host}`);
   assert(findHostByRemoteSshAlias(duplicateAlias, hosts)?.id === duplicateNameHost.id, "Expected duplicate-name authority alias to resolve to the endpoint-qualified host");
@@ -1605,7 +1696,7 @@ async function checkRemoteAlias() {
   await connectHostInCurrentWindow(host, storage);
   const currentCommand = lastCommand(vscode, "opensshremotes.openEmptyWindowInCurrentWindow");
   const currentEvents = vscode.__events.slice(currentWindowEventStart);
-  const currentAlias = "10.0.1.11_nginx+redis+safeline｜211.154.20.113：15578";
+  const currentAlias = host.sshAlias;
   assert(currentCommand, "Expected Remote-SSH current-window command to be called");
   assert(currentCommand.args.host === currentAlias, `Unexpected current-window host argument: ${currentCommand.args.host}`);
   assert(
@@ -1642,7 +1733,23 @@ async function checkRemoteAlias() {
   assert(terminal, "Expected VS Code terminal to be created");
   assertIncludesSequence(terminal.shellArgs, ["-o", "StrictHostKeyChecking=accept-new"], "Expected integrated terminal SSH to auto-accept new host keys");
   assertIncludesSequence(terminal.shellArgs, ["-i", terminalKeyPath], "Expected relative identity files to resolve under ~/.ssh");
+  assertIncludesSequence(terminal.shellArgs, ["-o", "IdentitiesOnly=yes"], "Expected explicit identity-file terminal SSH to ignore unrelated agent and default keys");
   assertIncludesSequence(terminal.shellArgs, ["-l", "deploy", "203.0.113.10"], "Expected username and hostname to be passed as separate SSH arguments");
+
+  const passwordHost = {
+    ...terminalHost,
+    id: "h-terminal-password",
+    name: "terminal-password",
+    authMode: "password",
+    identityFile: undefined,
+  };
+  hosts.push(passwordHost);
+  await connectInVSCodeTerminal(passwordHost, storage);
+  const passwordTerminal = lastTerminal(vscode);
+  assert(passwordTerminal, "Expected a password-only terminal to be created");
+  assertIncludesSequence(passwordTerminal.shellArgs, ["-o", "PubkeyAuthentication=no"], "Expected password-only terminal SSH to disable public keys");
+  assertIncludesSequence(passwordTerminal.shellArgs, ["-o", "PreferredAuthentications=keyboard-interactive,password"], "Expected password-only terminal SSH to prefer password methods");
+  assert(!passwordTerminal.shellArgs.includes("-i"), "Expected password-only terminal SSH not to pass an identity file");
 
   const missingKeyHost = {
     ...terminalHost,
@@ -1667,6 +1774,34 @@ async function checkRemoteAlias() {
   assert(sendSequenceCommand.args.text.includes("ssh "), "Expected local terminal command text to contain ssh");
   assert(sendSequenceCommand.args.text.includes("StrictHostKeyChecking=accept-new"), "Expected local VS Code terminal SSH to auto-accept new host keys");
   assert(sendSequenceCommand.args.text.includes("-l deploy 203.0.113.10"), "Expected local VS Code terminal SSH target");
+
+  vscode.env.shell = "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
+  const powerShellHost = {
+    ...terminalHost,
+    id: "h-terminal-powershell-quoting",
+    username: "deploy$(Write-Output-injected)",
+  };
+  hosts.push(powerShellHost);
+  await connectInVSCodeTerminal(powerShellHost, storage);
+  const powerShellSequence = lastCommand(vscode, "workbench.action.terminal.sendSequence");
+  assert(
+    powerShellSequence.args.text.includes("-l 'deploy$(Write-Output-injected)' 203.0.113.10"),
+    "Expected PowerShell metacharacters to remain inside a literal argument"
+  );
+
+  vscode.env.shell = "C:\\Windows\\System32\\cmd.exe";
+  const cmdHost = {
+    ...terminalHost,
+    id: "h-terminal-cmd-quoting",
+    username: "deploy&whoami",
+  };
+  hosts.push(cmdHost);
+  await connectInVSCodeTerminal(cmdHost, storage);
+  const cmdSequence = lastCommand(vscode, "workbench.action.terminal.sendSequence");
+  assert(
+    cmdSequence.args.text.includes('-l "deploy&whoami" 203.0.113.10'),
+    "Expected cmd.exe metacharacters to remain inside a quoted argument"
+  );
   vscode.env.remoteName = undefined;
   vscode.__warningChoice = undefined;
 }
@@ -1788,16 +1923,28 @@ async function checkBackupModesAndDataMigration() {
         port: 70000,
         username: "root",
       },
+      {
+        id: "h-password",
+        name: "password",
+        hostname: "10.30.0.11",
+        port: 22,
+        username: "root",
+        extraConfig: {
+          PreferredAuthentications: "keyboard-interactive,password",
+        },
+      },
     ],
     groupCollapsedState: { "g-valid": true, missing: true },
     recentConnections: ["h-valid", "missing"],
   });
   const storage = new StorageService(context);
   const migrated = storage.getData();
-  assert(migrated.schemaVersion === 2, "Expected legacy data to receive the current schema version");
+  assert(migrated.schemaVersion === 4, "Expected legacy data to receive the current schema version");
   assert(migrated.sortPreferences.hostSort === "nameAsc", "Expected legacy data to receive the default host sort mode");
-  assert(migrated.hosts.length === 1, "Expected unusable legacy hosts to be excluded during migration");
+  assert(migrated.hosts.length === 2, "Expected unusable legacy hosts to be excluded during migration");
   assert(Array.isArray(migrated.hosts[0].tags), "Expected missing legacy tags to migrate to an empty array");
+  assert(migrated.hosts[0].authMode === "identityFile", "Expected legacy hosts with a key to migrate to explicit identity-file authentication");
+  assert(migrated.hosts[1].authMode === "password", "Expected legacy password-only preferences to migrate to password authentication");
   assert(migrated.recentConnections.length === 1, "Expected stale recent host ids to be removed during migration");
   assert(migrated.groupCollapsedState.missing === undefined, "Expected stale collapsed group state to be removed");
 
@@ -1810,6 +1957,21 @@ async function checkBackupModesAndDataMigration() {
   const complete = JSON.parse(storage.exportAllData({ includeKeyFiles: true }));
   assert(complete.keyFiles.length === 1, "Expected complete backups to include the associated key");
   assert(complete.containsPrivateKeys === true, "Expected complete backups to declare private key content");
+
+  await storage.updateHost("h-valid", {
+    name: "api-prod-renamed",
+    hostname: "10.30.0.12",
+    port: 2222,
+    username: "deploy",
+    authMode: "password",
+    identityFile: undefined,
+  });
+  const editedHosts = storage.getAllHosts();
+  const editedHost = editedHosts.find((host) => host.id === "h-valid");
+  assert(editedHosts.length === 2, "Expected editing a host to update the existing record rather than add another one");
+  assert(editedHost?.name === "api-prod-renamed", "Expected host edits to preserve the id and replace the name");
+  assert(editedHost?.hostname === "10.30.0.12" && editedHost.port === 2222 && editedHost.username === "deploy", "Expected host edits to replace connection fields in place");
+  assert(editedHost?.authMode === "password" && editedHost.identityFile === undefined, "Expected switching to password authentication to clear the previous key association");
 
   let rejectedMalformedBackup = false;
   try {
@@ -1836,6 +1998,24 @@ async function checkBackupModesAndDataMigration() {
     rejectedMalformedOptionalField = true;
   }
   assert(rejectedMalformedOptionalField, "Expected malformed optional backup fields to fail validation");
+
+  let rejectedMalformedAuthMode = false;
+  try {
+    storage.previewImport(JSON.stringify({
+      groups: [],
+      hosts: [{
+        id: "bad-auth",
+        name: "bad-auth",
+        hostname: "10.30.0.21",
+        port: 22,
+        username: "root",
+        authMode: "unknown",
+      }],
+    }));
+  } catch {
+    rejectedMalformedAuthMode = true;
+  }
+  assert(rejectedMalformedAuthMode, "Expected unsupported authentication modes in backups to fail validation");
 
   let rejectedMalformedSortPreference = false;
   try {
@@ -1879,6 +2059,19 @@ async function checkBackupModesAndDataMigration() {
   }
   assert(rejectedMalformedKeyFile, "Expected malformed key-file metadata to fail validation");
 
+  let rejectedFutureBackup = false;
+  try {
+    storage.previewImport(JSON.stringify({
+      schemaVersion: 99,
+      groups: [],
+      hosts: [],
+      futureBackupSetting: true,
+    }));
+  } catch {
+    rejectedFutureBackup = true;
+  }
+  assert(rejectedFutureBackup, "Expected an older extension to reject a backup from a newer data schema");
+
   const futureContext = createExtensionContext({
     schemaVersion: 99,
     futureSetting: { enabled: true },
@@ -1894,6 +2087,404 @@ async function checkBackupModesAndDataMigration() {
   assert(futureSaved.schemaVersion === 99, "Expected an older extension not to downgrade future schema data");
   assert(futureSaved.futureSetting?.enabled === true, "Expected unknown future schema fields to survive normal writes");
   assert(futureSaved.sortPreferences.futureSortSetting === "manual", "Expected unknown future sort settings to survive normal writes");
+}
+
+async function checkFileBackedCatalogMigration() {
+  const home = makeTempHome("catalog-migration");
+  const globalStoragePath = join(home, "global-storage");
+  const legacyData = {
+    schemaVersion: 2,
+    groups: [{ id: "g-legacy", name: "legacy", order: 0 }],
+    hosts: [{
+      id: "h-legacy",
+      name: "legacy host",
+      hostname: "192.0.2.80",
+      port: 2222,
+      username: "root",
+      groupId: "g-legacy",
+      tags: [],
+    }],
+    groupCollapsedState: { "g-legacy": true },
+    recentConnections: ["h-legacy"],
+    currentConnection: {
+      hostId: "h-legacy",
+      alias: "legacy_host",
+      connectedAt: "2026-07-28T00:00:00.000Z",
+    },
+  };
+  const vscode = createVSCodeMock();
+  const { StorageService } = loadTsModule("src/core/storage.ts", { vscode });
+  const context = createExtensionContext(legacyData, { globalStoragePath });
+  const storage = new StorageService(context);
+  const migrated = storage.getData();
+  const catalogPath = join(globalStoragePath, "catalog.json");
+
+  assert(existsSync(catalogPath), "Expected first activation to create a file-backed catalog");
+  assert(migrated.hosts.length === 1, "Expected legacy hosts to remain available after migration");
+  assert(migrated.hosts[0].sshAlias === "legacy_host", "Expected migration to assign a stable SSH alias");
+  assertDeepEqual(context.globalState.get("sshKit.legacyDataBackup"), legacyData);
+  assert(context.globalState.get("sshKit.catalogMigration")?.schemaVersion === 4, "Expected migration state to be recorded");
+  assert(context.globalState.get("sshKit.preferences")?.recentConnections[0] === "h-legacy", "Expected preferences to migrate separately");
+  assert(context.globalState.get("sshKit.currentConnection")?.hostId === "h-legacy", "Expected runtime connection state to migrate separately");
+
+  await storage.updateHost("h-legacy", { username: "deploy" });
+  await storage.deleteHost("h-legacy");
+  assert(storage.getDeletedHosts().length === 1, "Expected deleted migrated hosts to enter the recycle bin");
+  assert(storage.getCatalogSnapshots().length > 0, "Expected destructive catalog writes to create snapshots");
+
+  writeFileSync(catalogPath, "{broken-json");
+  const recoveredStorage = new StorageService(context);
+  const recovered = recoveredStorage.getData();
+  assert(recovered.hosts.some((host) => host.id === "h-legacy"), "Expected a corrupt catalog to recover from catalog.previous.json");
+  assert(JSON.parse(readFileSync(catalogPath, "utf8")).hosts.length === 1, "Expected recovery to heal the primary catalog file");
+
+  const blockedStoragePath = join(home, "not-a-directory");
+  writeFileSync(blockedStoragePath, "blocked");
+  const fallbackContext = createExtensionContext(legacyData, {
+    globalStoragePath: blockedStoragePath,
+  });
+  const fallbackStorage = new StorageService(fallbackContext);
+  assert(fallbackStorage.getAllHosts().length === 1, "Expected migration write failure to keep legacy hosts readable");
+  await fallbackStorage.updateHost("h-legacy", { username: "fallback-user" });
+  assert(
+    fallbackContext.globalState.get("sshKit.data").hosts[0].username === "fallback-user",
+    "Expected migration fallback to keep legacy globalState writable"
+  );
+
+  const futureStoragePath = join(home, "future-global-storage");
+  const futureCatalogPath = join(futureStoragePath, "catalog.json");
+  mkdirSync(futureStoragePath, { recursive: true });
+  const futureCatalog = {
+    schemaVersion: 99,
+    revision: 7,
+    groups: [],
+    hosts: [],
+    deletedHosts: [],
+    futureCatalogSetting: { enabled: true },
+  };
+  const futureCatalogText = `${JSON.stringify(futureCatalog, null, 2)}\n`;
+  writeFileSync(futureCatalogPath, futureCatalogText);
+  const futureLegacy = {
+    schemaVersion: 99,
+    futureSetting: { enabled: true },
+    groups: [],
+    hosts: [],
+    groupCollapsedState: {},
+    recentConnections: [],
+    sortPreferences: { hostSort: "nameAsc" },
+  };
+  const futureContext = createExtensionContext(futureLegacy, {
+    globalStoragePath: futureStoragePath,
+  });
+  const futureStorage = new StorageService(futureContext);
+  await futureStorage.addGroup("preserved-by-fallback");
+  assert(
+    readFileSync(futureCatalogPath, "utf8") === futureCatalogText,
+    "Expected an older extension not to rewrite a future file-backed catalog"
+  );
+  assert(
+    futureContext.globalState.get("sshKit.data").futureSetting?.enabled === true,
+    "Expected fallback writes to preserve unknown future globalState fields"
+  );
+}
+
+async function checkCatalogConcurrency() {
+  const home = makeTempHome("catalog-concurrency");
+  const globalStoragePath = join(home, "global-storage");
+  const vscode = createVSCodeMock();
+  const { CatalogRepository } = loadTsModule("src/core/catalogRepository.ts", { vscode });
+  const context = createExtensionContext({
+    schemaVersion: 3,
+    groups: [],
+    hosts: [],
+    groupCollapsedState: {},
+    recentConnections: [],
+  }, { globalStoragePath });
+  const first = new CatalogRepository(context);
+  const second = new CatalogRepository(context);
+  const firstRead = first.read();
+  const staleRead = second.read();
+  firstRead.hosts.push({
+    id: "h-first-window",
+    name: "first-window",
+    sshAlias: "first-window",
+    hostname: "192.0.2.81",
+    port: 22,
+    username: "root",
+    authMode: "auto",
+    tags: [],
+  });
+  await first.replace(firstRead, {
+    expectedRevision: firstRead.revision,
+    snapshot: true,
+  });
+
+  let rejected = false;
+  try {
+    await second.replace(staleRead, { expectedRevision: staleRead.revision });
+  } catch {
+    rejected = true;
+  }
+  assert(rejected, "Expected a stale second-window write to be rejected");
+  assert(first.read().hosts.some((host) => host.id === "h-first-window"), "Expected the accepted window update not to be overwritten");
+
+  const staleRestoreRevision = second.read().revision;
+  const latest = first.read();
+  latest.hosts.push({
+    id: "h-latest-window",
+    name: "latest-window",
+    sshAlias: "latest-window",
+    hostname: "192.0.2.82",
+    port: 22,
+    username: "root",
+    authMode: "auto",
+    tags: [],
+  });
+  await first.replace(latest, { expectedRevision: latest.revision });
+
+  let staleRestoreRejected = false;
+  try {
+    await second.restoreSnapshot(second.listSnapshots()[0], staleRestoreRevision);
+  } catch {
+    staleRestoreRejected = true;
+  }
+  assert(staleRestoreRejected, "Expected stale snapshot restore to be rejected");
+  assert(first.read().hosts.some((host) => host.id === "h-latest-window"), "Expected a stale snapshot restore not to overwrite a newer window update");
+}
+
+async function checkTransactionalSSHConfigImport() {
+  const home = makeTempHome("transactional-config-import");
+  const globalStoragePath = join(home, "global-storage");
+  const vscode = createVSCodeMock();
+  const { StorageService } = loadTsModule("src/core/storage.ts", { vscode });
+  const context = createExtensionContext({
+    schemaVersion: 4,
+    groups: [],
+    hosts: [{
+      id: "h-existing",
+      name: "existing",
+      sshAlias: "existing",
+      hostname: "192.0.2.100",
+      port: 22,
+      username: "root",
+      authMode: "auto",
+      tags: [],
+    }],
+    groupCollapsedState: {},
+    recentConnections: [],
+    sortPreferences: { hostSort: "nameAsc" },
+  }, { globalStoragePath });
+  const storage = new StorageService(context);
+  const before = JSON.parse(readFileSync(join(globalStoragePath, "catalog.json"), "utf8"));
+
+  const result = await storage.importSSHConfigHosts([
+    {
+      name: "existing",
+      hostname: "192.0.2.101",
+      port: 2222,
+      username: "deploy",
+      authMode: "password",
+      tags: [],
+    },
+    {
+      name: "added",
+      hostname: "198.51.100.101",
+      port: 22,
+      username: "root",
+      authMode: "auto",
+      tags: [],
+    },
+  ]);
+  const after = JSON.parse(readFileSync(join(globalStoragePath, "catalog.json"), "utf8"));
+
+  assert(result.imported === 1 && result.updated === 1, "Expected one imported and one updated host");
+  assert(after.revision === before.revision + 1, "Expected the whole SSH Config import to use one catalog revision");
+  assert(after.hosts.length === 2, "Expected both imported changes to commit together");
+  assert(after.hosts.find((host) => host.id === "h-existing")?.hostname === "192.0.2.101", "Expected the matched host to update in the transaction");
+}
+
+async function checkManagedSSHConfigIntegration() {
+  const home = makeTempHome("managed-config");
+  const customConfigPath = join(home, "custom-ssh", "config");
+  const backupPath = join(home, "ssh-config-before-integration");
+  const removalBackupPath = join(home, "ssh-config-before-removal");
+  const repairBackupPath = join(home, "ssh-config-before-repair");
+  mkdirSync(dirname(customConfigPath), { recursive: true });
+  const original = [
+    "\uFEFFHost unmanaged-prod",
+    "  HostName 198.51.100.20",
+    "  User deploy",
+    "",
+    "Match host *.internal",
+    "  ServerAliveInterval 30",
+    "",
+  ].join("\r\n");
+  writeFileSync(customConfigPath, original);
+
+  const vscode = createVSCodeMock();
+  vscode.__configuration["remote.SSH.configFile"] = customConfigPath;
+  vscode.__saveDialogUri = { fsPath: backupPath };
+  const {
+    inspectManagedIntegration,
+    repairManagedIntegration,
+    setupManagedIntegration,
+    uninstallManagedIntegration,
+  } = loadTsModule("src/ssh/managedConfig.ts", { vscode });
+  const hosts = [{
+    id: "h-managed-prod",
+    name: "managed prod",
+    sshAlias: "managed_prod",
+    hostname: "203.0.113.20",
+    port: 2200,
+    username: "root",
+    authMode: "auto",
+    tags: [],
+  }];
+
+  assert(await setupManagedIntegration(hosts), "Expected managed integration setup to succeed");
+  assert(readFileSync(backupPath, "utf8") === original, "Expected the selected backup to preserve the exact original config");
+  const integrated = readFileSync(customConfigPath, "utf8");
+  assert(integrated.startsWith("\uFEFF# SSH Kit integration begin\r\n"), "Expected BOM and CRLF to be preserved with the Include at the top");
+  assert(integrated.includes(original.slice(1)), "Expected unmanaged Host, Match, comments, and directives to remain unchanged");
+  assert(inspectManagedIntegration().installed, "Expected custom remote.SSH.configFile integration to be detected");
+
+  const managedPath = join(home, ".ssh", "ssh-kit", "hosts.conf");
+  assert(readFileSync(managedPath, "utf8").includes("Host managed_prod"), "Expected hosts.conf to contain the stable SSH alias");
+  const { importFromSSHConfig } = loadTsModule("src/ssh/sshConfig.ts", { vscode });
+  const imported = importFromSSHConfig(customConfigPath).hosts;
+  assert(imported.some((host) => host.name === "unmanaged-prod"), "Expected user-managed hosts to remain importable");
+  assert(!imported.some((host) => host.name === "managed_prod"), "Expected import to skip SSH Kit's generated Include file");
+
+  vscode.__saveDialogUri = { fsPath: removalBackupPath };
+  assert(await uninstallManagedIntegration(), "Expected managed integration removal to succeed");
+  assert(readFileSync(customConfigPath, "utf8") === original, "Expected removing integration to restore the exact BOM/CRLF user config");
+  assert(existsSync(managedPath), "Expected removing integration to keep SSH Kit data and its generated projection");
+
+  const misplacedInclude = `${original}Include ssh-kit/hosts.conf\r\n`;
+  writeFileSync(customConfigPath, misplacedInclude);
+  assert(
+    inspectManagedIntegration().installed && !inspectManagedIntegration().effective,
+    "Expected an Include after Host/Match directives to be detected as ineffective"
+  );
+  vscode.__saveDialogUri = { fsPath: repairBackupPath };
+  assert(await repairManagedIntegration(hosts), "Expected repair to normalize a misplaced unmarked Include");
+  assert(readFileSync(repairBackupPath, "utf8") === misplacedInclude, "Expected repair to back up the exact misplaced config");
+  const repaired = readFileSync(customConfigPath, "utf8");
+  assert(repaired.startsWith("\uFEFF# SSH Kit integration begin\r\n"), "Expected repair to move the managed Include before other directives");
+  assert((repaired.match(/^Include ssh-kit\/hosts\.conf\r?$/gm) ?? []).length === 1, "Expected repair to leave exactly one managed Include");
+  assert(inspectManagedIntegration().effective, "Expected repaired integration to be effective");
+}
+
+async function checkManagedSSHConfigBackupAtExistingRoot() {
+  const home = makeTempHome("managed-backup-root");
+  const configPath = join(home, ".ssh", "config");
+  const backupPath = join(home, "ssh-config-backup-test.bak");
+  const original = "Host existing-test\n  HostName 192.0.2.20\n";
+  writeFileSync(configPath, original);
+
+  const nodeFs = require("node:fs");
+  const fsMock = {
+    ...nodeFs,
+    mkdirSync(directory, options) {
+      if (directory === home) {
+        const error = new Error(`EPERM: operation not permitted, mkdir '${directory}'`);
+        error.code = "EPERM";
+        throw error;
+      }
+      return nodeFs.mkdirSync(directory, options);
+    },
+  };
+  const vscode = createVSCodeMock();
+  vscode.__saveDialogUri = { fsPath: backupPath };
+  const { setupManagedIntegration } = loadTsModule("src/ssh/managedConfig.ts", {
+    vscode,
+    "node:fs": fsMock,
+  });
+
+  const result = await setupManagedIntegration([{
+    id: "h-backup-root",
+    name: "backup-root",
+    hostname: "192.0.2.21",
+    port: 22,
+    username: "root",
+    authMode: "auto",
+    tags: [],
+  }]);
+
+  assert(result, "Expected setup to succeed when the selected backup parent already exists");
+  assert(readFileSync(backupPath, "utf8") === original, "Expected the SSH Config backup to be copied to the selected file");
+}
+
+async function checkInternalSnapshotEmptyState() {
+  const vscode = createVSCodeMock();
+  const { restoreCatalogSnapshot } = loadTsModule("src/commands/ioCommands.ts", { vscode });
+
+  await restoreCatalogSnapshot({
+    getCatalogSnapshots: () => [],
+  }, {
+    refresh() {},
+  });
+
+  const message = vscode.__messages.find((entry) => entry.type === "info");
+  assert(message, "Expected an explicit explanation when no internal snapshots exist");
+  assert(message.message.includes("内部快照") && message.message.includes("自动创建"), "Expected the explanation to describe internal snapshot creation");
+  assert(message.items[0]?.modal === true, "Expected the empty-snapshot explanation to remain visible as a modal dialog");
+}
+
+async function checkRecycleBinAndReplacementRestore() {
+  const home = makeTempHome("recycle-replace");
+  const vscode = createVSCodeMock();
+  const { StorageService } = loadTsModule("src/core/storage.ts", { vscode });
+  const context = createExtensionContext({
+    schemaVersion: 3,
+    groups: [{ id: "g-original", name: "original", order: 0 }],
+    hosts: [{
+      id: "h-original",
+      name: "original-host",
+      hostname: "192.0.2.90",
+      port: 22,
+      username: "root",
+      groupId: "g-original",
+      tags: [],
+    }],
+    groupCollapsedState: {},
+    recentConnections: [],
+  }, { globalStoragePath: join(home, "global-storage") });
+  const storage = new StorageService(context);
+
+  await storage.deleteHost("h-original");
+  assert(storage.getAllHosts().length === 0 && storage.getDeletedHosts().length === 1, "Expected host deletion to be recoverable");
+  await storage.restoreDeletedHost("h-original");
+  assert(storage.getAllHosts().some((host) => host.id === "h-original"), "Expected recycle-bin restore to preserve the host id");
+
+  const replacementBackup = JSON.stringify({
+    schemaVersion: 4,
+    groups: [{ id: "g-replacement", name: "replacement", order: 0 }],
+    hosts: [{
+      id: "h-replacement",
+      name: "replacement-host",
+      hostname: "198.51.100.90",
+      port: 2222,
+      username: "deploy",
+      tags: [],
+    }],
+    groupCollapsedState: {},
+    recentConnections: [],
+    sortPreferences: { hostSort: "addressAsc" },
+  });
+  const preview = storage.previewReplace(replacementBackup);
+  assert(preview.replacedHosts === 1 && preview.importedHosts === 1, "Expected replacement preview to report both sides");
+  await storage.commitReplace(replacementBackup);
+  assert(storage.getAllHosts()[0]?.id === "h-replacement", "Expected replacement restore to reproduce backup hosts");
+  assert(storage.getHostSortMode() === "addressAsc", "Expected replacement restore to reproduce backed-up preferences");
+
+  const preReplaceSnapshot = storage.getCatalogSnapshots()[0];
+  assert(preReplaceSnapshot?.hostCount === 1, "Expected replacement restore to snapshot the previous catalog");
+  context.globalState.update = async () => {
+    throw new Error("simulated compatibility-mirror failure");
+  };
+  await storage.restoreCatalogSnapshot(preReplaceSnapshot.path);
+  assert(storage.getAllHosts().some((host) => host.id === "h-original"), "Expected internal snapshot restore to recover the pre-replacement host");
 }
 
 async function checkHostTreeFiltering() {
@@ -2074,11 +2665,14 @@ async function checkConnectivityTestHostKeyPolicy() {
   assert(!capturedArgs.includes("StrictHostKeyChecking=no"), "Expected connectivity tests not to disable changed-fingerprint protection");
 }
 
-function createExtensionContext(initialData) {
+function createExtensionContext(initialData, options = {}) {
   const values = new Map([["sshKit.data", initialData]]);
   const workspaceValues = new Map();
   return {
     subscriptions: [],
+    ...(options.globalStoragePath
+      ? { globalStorageUri: { fsPath: options.globalStoragePath } }
+      : {}),
     globalState: {
       get(key, defaultValue) {
         return values.has(key) ? values.get(key) : defaultValue;
@@ -2175,6 +2769,7 @@ function createVSCodeMock() {
     __inputBoxHandler: undefined,
     __warningHandler: undefined,
     __warningChoice: undefined,
+    __configuration: {},
     window: {
       terminals: [],
       createStatusBarItem() {
@@ -2235,12 +2830,23 @@ function createVSCodeMock() {
     workspace: {
       workspaceFolders: undefined,
       workspaceFile: undefined,
+      getConfiguration(section) {
+        return {
+          get(key, defaultValue) {
+            const composite = `${section}.${key}`;
+            return Object.prototype.hasOwnProperty.call(mock.__configuration, composite)
+              ? mock.__configuration[composite]
+              : defaultValue;
+          },
+        };
+      },
       onDidChangeWorkspaceFolders() {
         return { dispose() {} };
       },
     },
     env: {
       remoteName: undefined,
+      shell: process.platform === "win32" ? "powershell.exe" : "/bin/sh",
     },
     l10n: {
       t(message, ...args) {

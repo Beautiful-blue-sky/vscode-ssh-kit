@@ -7,9 +7,33 @@ import { KeyTreeDataProvider, KeyItem, KeyDetailItem } from "./views/keyTreeView
 import { listKeys, populateFingerprints } from "./keys/keyManager";
 import { ConnectionStatusController } from "./core/connectionStatus";
 import { connectHostInCurrentWindow, connectHostInNewWindow, promptTerminalConnect, testConnection, searchHosts, cleanupRemoteSshAliases } from "./commands/connectCommands";
-import { addHost, editHost, deleteHost, copyHostName, copyHostDetail, deduplicateHosts, batchDeleteHosts, batchChangeHostKey, changeHostKey } from "./commands/hostCommands";
+import {
+  addHost,
+  batchChangeHostKey,
+  batchDeleteHosts,
+  changeHostKey,
+  copyHostDetail,
+  copyHostName,
+  deduplicateHosts,
+  deleteHost,
+  editHost,
+  emptyRecycleBin,
+  manageRecycleBin,
+} from "./commands/hostCommands";
 import { addGroup, renameGroup, deleteGroup, moveGroup, sortGroupsByName } from "./commands/groupCommands";
-import { importConfig, exportConfig, openSshConfig, backupKitData, restoreKitData } from "./commands/ioCommands";
+import {
+  backupKitData,
+  exportConfig,
+  importConfig,
+  openManagedSshConfig,
+  openSshConfig,
+  removeRemoteSshIntegration,
+  repairRemoteSshIntegration,
+  restoreCatalogSnapshot,
+  restoreKitData,
+  setupRemoteSshIntegration,
+  showRemoteSshIntegrationStatus,
+} from "./commands/ioCommands";
 import {
   copyPublicKeyToClipboard,
   generateKey,
@@ -21,6 +45,7 @@ import {
 import { registerAIHostTools } from "./ai/hostTool";
 import { promptEditHost, promptNewHost } from "./commands/hostPrompts";
 import { sortHosts } from "./commands/sortCommands";
+import { inspectManagedIntegration, regenerateManagedConfig } from "./ssh/managedConfig";
 
 // ─── Utility functions ────────────────────────────────────────────────────
 
@@ -81,6 +106,26 @@ export function activate(context: vscode.ExtensionContext) {
   registerIOCommands(context, storage, treeDataProvider, keyTreeDataProvider);
   registerKeyCommands(context, storage, treeDataProvider, keyTreeDataProvider);
   registerAIHostTools(context, storage);
+
+  context.subscriptions.push(
+    storage.onDidChange(() => {
+      refreshManagedConfigIfEnabled(storage);
+    })
+  );
+  refreshManagedConfigIfEnabled(storage);
+}
+
+function refreshManagedConfigIfEnabled(storage: StorageService): void {
+  try {
+    if (inspectManagedIntegration().installed) {
+      regenerateManagedConfig(storage.getAllHosts());
+    }
+  } catch (error) {
+    vscode.window.showErrorMessage(vscode.l10n.t(
+      "Failed to refresh the SSH Kit managed config: {error}",
+      { error: error instanceof Error ? error.message : String(error) }
+    ));
+  }
 }
 
 /** Core command: refresh */
@@ -143,6 +188,12 @@ function registerHostCommands(
     ),
     vscode.commands.registerCommand("sshKit.batchChangeHostKey", () =>
       batchChangeHostKey(storage, tree)
+    ),
+    vscode.commands.registerCommand("sshKit.manageRecycleBin", () =>
+      manageRecycleBin(storage, tree)
+    ),
+    vscode.commands.registerCommand("sshKit.emptyRecycleBin", () =>
+      emptyRecycleBin(storage, tree)
     ),
     vscode.commands.registerCommand("sshKit.filterHosts", async () => {
       const query = await vscode.window.showInputBox({
@@ -292,11 +343,29 @@ function registerIOCommands(
     vscode.commands.registerCommand("sshKit.openSshConfig", () =>
       openSshConfig()
     ),
+    vscode.commands.registerCommand("sshKit.openManagedSshConfig", () =>
+      openManagedSshConfig()
+    ),
+    vscode.commands.registerCommand("sshKit.setupRemoteSshIntegration", () =>
+      setupRemoteSshIntegration(storage)
+    ),
+    vscode.commands.registerCommand("sshKit.repairRemoteSshIntegration", () =>
+      repairRemoteSshIntegration(storage)
+    ),
+    vscode.commands.registerCommand("sshKit.removeRemoteSshIntegration", () =>
+      removeRemoteSshIntegration()
+    ),
+    vscode.commands.registerCommand("sshKit.showRemoteSshIntegrationStatus", () =>
+      showRemoteSshIntegrationStatus()
+    ),
     vscode.commands.registerCommand("sshKit.backupData", () =>
       backupKitData(storage)
     ),
     vscode.commands.registerCommand("sshKit.restoreData", () =>
       restoreKitData(storage, tree, keyTree)
+    ),
+    vscode.commands.registerCommand("sshKit.restoreCatalogSnapshot", () =>
+      restoreCatalogSnapshot(storage, tree)
     ),
     vscode.commands.registerCommand("sshKit.cleanupAliases", () =>
       cleanupRemoteSshAliases(storage)
