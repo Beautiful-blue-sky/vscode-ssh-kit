@@ -392,21 +392,6 @@ export async function batchChangeHostKey(
   await applyHostKeyChange(storage, tree, targets);
 }
 
-/** Change one host to a new associated identity file. */
-export async function changeHostKey(
-  host: SSHHost,
-  storage: StorageService,
-  tree: HostTreeDataProvider
-): Promise<void> {
-  const target = storage.getAllHosts().find((item) => item.id === host.id);
-  if (!target) {
-    vscode.window.showInformationMessage(vscode.l10n.t("This host does not exist or has been deleted."));
-    return;
-  }
-
-  await applyHostKeyChange(storage, tree, [target]);
-}
-
 async function applyHostKeyChange(
   storage: StorageService,
   tree: HostTreeDataProvider,

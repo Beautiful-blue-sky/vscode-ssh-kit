@@ -2,7 +2,7 @@
   "name": "ssh-kit",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "lixiaoyu",
   "license": "MIT",
   "icon": "icon.png",
@@ -334,12 +334,6 @@
         "icon": "$(key)"
       },
       {
-        "command": "sshKit.changeHostKey",
-        "title": "%commands.changeHostKey%",
-        "category": "%commands.category%",
-        "icon": "$(key)"
-      },
-      {
         "command": "sshKit.backupData",
         "title": "%commands.backupData%",
         "category": "%commands.category%",
@@ -553,14 +547,9 @@
           "group": "1_modify@1"
         },
         {
-          "command": "sshKit.changeHostKey",
-          "when": "view == sshKit.hosts && viewItem == host",
-          "group": "1_modify@2"
-        },
-        {
           "command": "sshKit.deleteHost",
           "when": "view == sshKit.hosts && viewItem == host",
-          "group": "1_modify@3"
+          "group": "1_modify@2"
         },
         {
           "command": "sshKit.copyHostName",
@@ -679,10 +668,6 @@
         },
         {
           "command": "sshKit.deleteHost",
-          "when": "false"
-        },
-        {
-          "command": "sshKit.changeHostKey",
           "when": "false"
         },
         {

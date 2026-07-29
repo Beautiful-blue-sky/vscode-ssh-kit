@@ -56,7 +56,6 @@
   "commands.manageRecycleBin": "Open Recycle Bin",
   "commands.emptyRecycleBin": "Empty Recycle Bin",
   "commands.batchChangeHostKey": "Batch Change Host Key",
-  "commands.changeHostKey": "Change This Host Key",
   "commands.backupData": "Backup Data",
   "commands.restoreData": "Restore Data",
   "commands.restoreCatalogSnapshot": "Restore Internal Snapshot",

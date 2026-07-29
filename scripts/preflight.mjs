@@ -45,6 +45,8 @@ const nlsEn = readJson("package.nls.json");
 const nlsZh = readJson("package.nls.zh-cn.json");
 const readmeEn = readFileSync(join(root, "README.md"), "utf8");
 const readmeZh = readFileSync(join(root, "README.zh-CN.md"), "utf8");
+const changelog = readFileSync(join(root, "CHANGELOG.md"), "utf8");
+const changelogZh = readFileSync(join(root, "CHANGELOG.zh-CN.md"), "utf8");
 const extensionSource = readFileSync(join(root, "src", "extension.ts"), "utf8");
 const packageFiles = getVscePackageFiles();
 const checks = [];
@@ -59,6 +61,36 @@ addCheck("Marketplace identity", "homepage", "https://github.com/Beautiful-blue-
 addCheck("Marketplace identity", "bugs", "https://github.com/Beautiful-blue-sky/vscode-ssh-kit/issues", manifest.bugs?.url ?? "");
 addCheck("Marketplace identity", "extension kind", "ui", (manifest.extensionKind ?? []).join(", "), (manifest.extensionKind ?? []).includes("ui"));
 addCheck("Marketplace identity", "startup activation", "*", (manifest.activationEvents ?? []).join(", "), (manifest.activationEvents ?? []).includes("*"));
+
+const currentChangelog = changelogVersionSection(changelog, manifest.version);
+const chineseSection = markdownSubsection(currentChangelog, "### 中文");
+const englishSection = markdownSubsection(currentChangelog, "### English");
+const chineseHeadingIndex = currentChangelog.indexOf("### 中文");
+const englishHeadingIndex = currentChangelog.indexOf("### English");
+const releasePlaceholder = /^##\s+(?:Unreleased|未发布)\s*$/gim.test(`${changelog}\n${changelogZh}`);
+addCheck(
+  "Marketplace changelog",
+  "release placeholder",
+  "absent",
+  releasePlaceholder ? "present" : "absent",
+  !releasePlaceholder,
+);
+addCheck(
+  "Marketplace changelog",
+  `version ${manifest.version}`,
+  "present",
+  currentChangelog ? "present" : "missing",
+  Boolean(currentChangelog),
+);
+addCheck(
+  "Marketplace changelog",
+  "latest languages",
+  "non-empty 中文 then English",
+  chineseSection && englishSection && englishHeadingIndex > chineseHeadingIndex
+    ? "non-empty 中文 then English"
+    : "missing, empty, or out of order",
+  Boolean(chineseSection && englishSection && englishHeadingIndex > chineseHeadingIndex),
+);
 
 addCheck("Localized manifest", "displayName placeholder", "%displayName%", manifest.displayName);
 addCheck("Localized manifest", "description placeholder", "%description%", manifest.description);
@@ -324,6 +356,32 @@ function commandLabelsFromReadme(content) {
     labels.add(match[1]);
   }
   return labels;
+}
+
+function changelogVersionSection(content, version) {
+  const headings = [...content.matchAll(/^##\s+(.+)$/gm)];
+  const headingIndex = headings.findIndex((match) => {
+    const title = match[1].trim();
+    return title === version || title.startsWith(`${version} `);
+  });
+  if (headingIndex < 0) {
+    return "";
+  }
+
+  const start = headings[headingIndex].index + headings[headingIndex][0].length;
+  const end = headings[headingIndex + 1]?.index ?? content.length;
+  return content.slice(start, end);
+}
+
+function markdownSubsection(content, heading) {
+  const start = content.indexOf(heading);
+  if (start < 0) {
+    return "";
+  }
+
+  const bodyStart = start + heading.length;
+  const nextHeading = content.indexOf("\n### ", bodyStart);
+  return content.slice(bodyStart, nextHeading < 0 ? content.length : nextHeading).trim();
 }
 
 function commandLabel(command, nls) {

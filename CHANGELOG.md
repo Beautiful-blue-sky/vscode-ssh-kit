@@ -1,12 +1,68 @@
-# Changelog
+# 更新日志 / Changelog
 
-[![zh-CN](https://img.shields.io/badge/CHANGELOG-中文-red)](CHANGELOG.zh-CN.md)
+最新版本在本页提供中文和 English。更早版本的完整中文记录请查看
+[中文更新日志](CHANGELOG.zh-CN.md)。
 
-## Unreleased
+## 0.1.1 — 2026-07-29
+
+### 中文
+
+#### 调整
+- Marketplace 主更新日志改为最新版本中文在前、英文在后，并移除正式包中的空“未发布”章节。
+- 单主机认证设置统一到“编辑主机 → 认证方式”，移除功能重叠且不支持“仅密码”的“修改此主机关联密钥”右键入口；批量修改关联密钥保持不变。
+
+#### 验证
+- 发布前检查会拒绝空的“未发布 / Unreleased”章节，并要求当前版本包含有正文的中文和 English 区块。
+- 命令声明、菜单引用、运行时注册、中英文文案和批量密钥回归检查保持一致。
+
+### English
+
+#### Changed
+- Make the latest Marketplace changelog entry bilingual with Chinese first and English second, and remove empty Unreleased headings from release packages.
+- Consolidate single-host authentication under **Edit Host → Authentication**. Remove the overlapping **Change This Host Key** context action, which did not support password-only mode, while retaining batch key changes.
+
+#### Validation
+- Make preflight reject empty Unreleased headings and require non-empty Chinese and English sections for the packaged version.
+- Keep command declarations, menu references, runtime registrations, localized strings, and batch key regression coverage aligned.
 
 ## 0.1.0 — 2026-07-29
 
-### Added
+### 中文
+
+#### 新增
+- 每台主机可明确选择 OpenSSH 自动、指定一个认证文件或仅密码三种认证方式。
+- 主机展开详情、当前连接详情、备份数据和只读语言模型主机元数据会显示认证方式。
+- 将主机、分组和回收站迁移到带修订号、进程间写锁、原子写入及损坏回退的独立 Catalog；旧版 `globalState` 数据首次启动时自动迁移并保留回滚副本。
+- 新增主机回收站、最近 10 份无私钥内部快照，以及内部快照恢复命令。
+- 新增 Remote-SSH 托管配置的启用、状态检查、修复、移除和打开命令。
+- 数据恢复可明确选择合并或替换；替换前自动创建内部快照。
+
+#### 调整
+- 指定密钥时使用 `IdentitiesOnly=yes`；仅密码连接会在 Remote-SSH 和各类终端入口中明确禁用公钥认证。
+- SSH Kit 以独立 Catalog 为主数据源，日常主机变更只重建 `~/.ssh/ssh-kit/hosts.conf`；主配置只在显式备份后加入一条受标记的 Include。
+- 原“写入到 SSH Config”改为导出到用户选择的独立文件，并拒绝覆盖当前生效配置。
+- SSH Config 导入会跳过 SSH Kit 自己生成的托管文件，并警告可执行命令的高风险指令。
+- 旧版连接别名仅在用户查看数量、确认并选择备份位置后清理，不会在升级时静默删除。
+- 旧版本会拒绝恢复由更新数据格式创建的备份，避免未知字段被静默丢弃。
+- 用户确认 SSH Config 导入后，所有主机改动通过一次 Catalog 事务提交，不再逐台重复写存储和托管配置。
+- 主机视图不再展示 Remote-SSH 连接配置维护菜单；连接时按需准备或修复，高级维护命令仅保留在命令面板。
+- 首次准备托管连接配置时明确解释备份原因，并准确说明哪些目录操作会创建内部快照。
+
+#### 修复
+- 主机使用持久化且唯一的 Remote-SSH Host alias；修改地址、端口、用户、密钥或认证方式后仍更新同一托管 Host 块。
+- Windows 上生成托管配置时不再套用 Unix `0600` 模式，避免 OpenSSH 因 ACL/所有者检查拒绝读取。
+- Catalog 主文件损坏时从上一份有效文件恢复，并避免损坏文件覆盖回退副本。
+- Catalog 目录不可用或迁移失败时继续使用旧数据，并保护更高版本 Catalog 不被降级覆盖。
+- 连接配置状态会识别位置过晚、可能被其他 SSH 指令覆盖的 Include；修复时在备份后将其规范到生效位置。
+- 支持标准 `关键字=值` 语法和行尾注释；单值指令按 OpenSSH 规则使用第一项。
+- 另一个 VS Code 窗口已修改 Catalog 时，拒绝使用过期数据执行替换恢复或内部快照恢复。
+- SSH Config 备份可直接保存到已存在的磁盘根目录，不再尝试重新创建盘符目录；误选文件夹或复制失败时会明确提示。
+- 没有内部快照时，恢复命令会显示原因说明，不再表现为点击后无反应。
+- 在本机终端连接时按实际的 PowerShell、cmd.exe 或 POSIX shell 转义 SSH 参数，并拒绝 cmd.exe 无法安全表达的字段值。
+
+### English
+
+#### Added
 - Add explicit per-host authentication modes for OpenSSH automatic behavior, one specified identity file, or password-only login.
 - Include the authentication mode in expanded host details, current-connection details, backups, and read-only language model host metadata.
 - Move hosts, groups, and deleted items into an independent revisioned catalog with a cross-process write lock, atomic writes, and corruption fallback. Legacy `globalState` data migrates automatically with a rollback copy.
@@ -14,7 +70,7 @@
 - Add commands to enable, inspect, repair, remove, and open the managed Remote-SSH integration.
 - Let backup restore explicitly merge or replace data, with an internal snapshot before replacement.
 
-### Changed
+#### Changed
 - Use `IdentitiesOnly=yes` for specified keys and disable public-key authentication for password-only connections across Remote-SSH and terminal launchers.
 - Treat the independent catalog as the source of truth. Everyday host changes rebuild only `~/.ssh/ssh-kit/hosts.conf`; the main config receives one marked Include only after an explicit backup.
 - Change the former SSH Config write command into a standalone export that refuses to overwrite the active config.
@@ -25,7 +81,7 @@
 - Remove Remote-SSH integration maintenance actions from the host view menu. Connection attempts prepare or repair the managed configuration when needed; advanced maintenance remains available in the Command Palette.
 - Explain why the active SSH Config needs a one-time backup before managed setup, and clarify exactly which catalog operations create internal snapshots.
 
-### Fixed
+#### Fixed
 - Persist one stable, unique Remote-SSH Host alias per host, updating the same managed Host block after connection details change.
 - Avoid applying Unix `0600` mode to generated config files on Windows, which could make OpenSSH reject their ACL or owner.
 - Recover a corrupt primary catalog from the previous valid copy without overwriting that fallback with corrupt data.

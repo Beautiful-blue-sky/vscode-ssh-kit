@@ -56,7 +56,6 @@
   "commands.manageRecycleBin": "打开主机回收站",
   "commands.emptyRecycleBin": "清空主机回收站",
   "commands.batchChangeHostKey": "批量修改主机关联密钥",
-  "commands.changeHostKey": "修改此主机关联密钥",
   "commands.backupData": "备份数据",
   "commands.restoreData": "恢复数据",
   "commands.restoreCatalogSnapshot": "恢复内部快照",

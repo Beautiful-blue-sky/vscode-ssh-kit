@@ -43,7 +43,6 @@ SSH Kit is a focused SSH host manager for VS Code. It gives you one place to org
 - Filter the host tree in place by Host alias, IP / HostName, user, port, group, or tags. Space-separated terms are combined, and the adjacent clear action restores the full tree. Group reordering is paused while a filter hides part of the list.
 - Batch delete and endpoint-based duplicate cleanup; deleted hosts first enter the recycle bin.
 - Batch change the associated key path for selected hosts, including clearing the key or entering a custom path.
-- Right-click a host to change only that host's associated key.
 - Choose an explicit authentication mode per host: OpenSSH automatic, one specified identity file, or password only. Clearing an associated key returns the host to automatic mode; it does not force password authentication.
 - Accept IPv4, IPv6, and domain names, plus common enterprise login forms such as `DOMAIN\\user` and `user@example.com`.
 

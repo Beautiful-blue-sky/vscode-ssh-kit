@@ -11,7 +11,6 @@ import {
   addHost,
   batchChangeHostKey,
   batchDeleteHosts,
-  changeHostKey,
   copyHostDetail,
   copyHostName,
   deduplicateHosts,
@@ -210,16 +209,6 @@ function registerHostCommands(
     ),
     vscode.commands.registerCommand("sshKit.sortHosts", () =>
       sortHosts(storage, tree)
-    ),
-    vscode.commands.registerCommand(
-      "sshKit.changeHostKey",
-      (arg?: HostItem | SSHHost) => {
-        if (!arg) {
-          vscode.window.showInformationMessage(vscode.l10n.t("Run this command on a host, or use the batch identity-file command."));
-          return;
-        }
-        return changeHostKey(unwrapHost(arg), storage, tree);
-      }
     )
   );
 }

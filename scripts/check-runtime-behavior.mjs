@@ -1162,7 +1162,7 @@ async function checkBatchHostKeyChange() {
 
   const vscode = createVSCodeMock();
   const { StorageService } = loadTsModule("src/core/storage.ts", { vscode });
-  const { batchChangeHostKey, changeHostKey } = loadTsModule("src/commands/hostCommands.ts", { vscode });
+  const { batchChangeHostKey } = loadTsModule("src/commands/hostCommands.ts", { vscode });
   const context = createExtensionContext({
     groups: [{ id: "g-prod", name: "prod", order: 0 }],
     hosts: [
@@ -1243,10 +1243,12 @@ async function checkBatchHostKeyChange() {
   assert(saved.hosts.find((host) => host.id === "h-batch-2")?.identityFile === keyPath, "Expected other selected host key to remain unchanged after accidental argument");
   assert(saved.hosts.find((host) => host.id === "h-batch-3")?.identityFile === undefined, "Expected explicitly selected host to be the only host affected by accidental-argument batch flow");
 
-  vscode.__quickPickHandler = (items) => items.find((item) => item.action === "clear");
-  await changeHostKey(saved.hosts.find((host) => host.id === "h-batch-1"), storage, tree);
+  vscode.__quickPickHandler = (items, options) => options?.canPickMany
+    ? items.filter((item) => item._hostId === "h-batch-1")
+    : items.find((item) => item.action === "clear");
+  await batchChangeHostKey(storage, tree);
   saved = context.globalState.get("sshKit.data");
-  assert(saved.hosts.find((host) => host.id === "h-batch-1")?.identityFile === undefined, "Expected single-host key change to clear identity file");
+  assert(saved.hosts.find((host) => host.id === "h-batch-1")?.identityFile === undefined, "Expected a one-host batch selection to clear the identity file");
   assert(saved.hosts.find((host) => host.id === "h-batch-1")?.authMode === "auto", "Expected clearing a key to restore OpenSSH automatic authentication");
   assert(saved.hosts.find((host) => host.id === "h-batch-2")?.identityFile === keyPath, "Expected other selected host key to remain unchanged");
 }
