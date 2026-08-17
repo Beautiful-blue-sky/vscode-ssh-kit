@@ -53,7 +53,10 @@ SSH Kit is a focused SSH host manager for VS Code. It gives you one place to org
 - Show the active SSH Kit connection per VS Code window in the host tree and status bar; hover to view name, endpoint, user, group, key, and tag details, or click the status item to copy the full details.
 - Restore each window's SSH Kit status and connected-host marker when VS Code restarts, reopens Remote-SSH windows, or switches a remote window from empty state to an opened folder.
 - Keep new-window connection context separate from the source window, so opening several Remote-SSH windows does not overwrite the current window marker.
-- Persist one stable, unique Remote-SSH Host alias per host. Editing display or connection fields does not create a second host identity.
+- Refresh host and key views from the shared Catalog when a VS Code window regains focus, so edits made in another window appear without a manual refresh.
+- Before editing, deleting, copying a host name, testing, or connecting, resolve the latest Catalog record by ID so a tree item left open in another VS Code window cannot reuse outdated host data.
+- Persist one unique Remote-SSH Host alias per host. Renaming the display name renames the managed Host alias in place, while connection-field edits keep it stable; neither action creates a second host record.
+- After upgrading, SSH Kit detects Host aliases left behind by nickname edits in older versions and offers a review instead of changing them silently. The confirmation shows each old and suggested alias, creates an internal snapshot, and then updates the catalog and managed config together. A dismissed review remains available under **Manage Remote-SSH Integration**.
 - Rebuild SSH Kit's managed `~/.ssh/ssh-kit/hosts.conf` before connecting so Remote-SSH receives current connection settings.
 - In password-only mode, disable public-key authentication explicitly. In specified-key mode, use `IdentitiesOnly=yes` so unrelated default or ssh-agent keys are not attempted.
 - Open a regular SSH shell in the VS Code terminal or a native external terminal. In Remote-SSH windows, SSH Kit can open a local VS Code terminal so local SSH config and local key files still work.
@@ -71,10 +74,10 @@ SSH Kit is a focused SSH host manager for VS Code. It gives you one place to org
 - Preserve quoted values and identity-file paths containing spaces; imported invalid ports fall back to the SSH default port `22`. A confirmed import is committed as one catalog transaction.
 - The SSH Kit catalog is the source of truth and deterministically generates `~/.ssh/ssh-kit/hosts.conf`.
 - Enabling integration adds only a marked `Include ssh-kit/hosts.conf` block at the top of the effective config. You must save a one-time backup file first; canceling leaves the config unchanged.
-- Everyday add, edit, delete, and restore operations rebuild only the managed file. User Hosts, comments, `Include` / `Match` rules, global directives, and other tools' content remain untouched.
+- Everyday add, edit, delete, and restore operations rebuild only the managed file, and identical generated content is not written again. User Hosts, comments, `Include` / `Match` rules, global directives, and other tools' content remain untouched.
 - **Export Hosts as SSH Config** writes only to a separate file selected by the user and refuses to replace the active SSH Config.
-- Inspect, repair, or remove integration explicitly. Status checks verify that the Include appears before other SSH directives; repair backs up the config and normalizes the Include to an effective position. Removal deletes only the marked Include while retaining SSH Kit data and the generated file.
-- Legacy alias blocks can be counted, backed up, and cleaned explicitly; upgrades never remove them silently.
+- **Manage Remote-SSH Integration** shows the current state and only the actions that apply, including setup or repair, opening both config files, reviewing nickname-alias upgrades, removal, and legacy connection-alias cleanup. Any operation that changes the effective SSH Config requires a user-selected backup first.
+- Legacy alias blocks are counted and offered for explicit cleanup only when they exist; upgrades never remove them silently.
 - Connectivity tests use OpenSSH `StrictHostKeyChecking=accept-new`: first-seen fingerprints can be accepted automatically, while changed fingerprints still stop the connection. Password-only hosts must be verified by connecting directly because the connectivity test is non-interactive.
 
 ### Key Management
@@ -92,12 +95,12 @@ SSH Kit is a focused SSH host manager for VS Code. It gives you one place to org
 
 - Data stored by older versions in VS Code `globalState` migrates automatically into the independent catalog on upgrade, while retaining the original value as a rollback copy. If the catalog directory is temporarily unavailable or migration fails, SSH Kit keeps using the old data instead of showing an empty list and retries on a later activation.
 - Host deletion moves items to a recycle bin. Restore individual hosts, delete them permanently, or empty the bin; host deletion never removes key files.
-- Deleting a group, moving hosts to or from the recycle bin, permanently deleting or emptying recycle-bin items, restoring JSON data, and restoring another snapshot create key-free internal snapshots. SSH Kit retains the latest 10, which can be restored from the host view menu or Command Palette.
+- Deleting a group, moving hosts to or from the recycle bin, permanently deleting or emptying recycle-bin items, restoring JSON data, repairing aliases left by older nickname edits, and restoring another snapshot create key-free internal snapshots. SSH Kit retains the latest 10, which can be restored from the host view menu or Command Palette.
 - Choose between a host-data-only JSON backup and a complete backup containing associated key files.
 - Complete backups contain private key contents. SSH Kit requires an explicit warning confirmation, and applies owner-only `0600` permissions on POSIX systems.
 - Preview restore targets before writing key files back to `~/.ssh/`.
 - Reuse matching SSH keys by public-key identity even when the local file has a different name, and prompt before handling same-name key conflicts.
-- Rewrite restored host key paths to the local key that was written, renamed, or reused; skipped or failed keys leave the imported host without a key association instead of keeping source-machine paths.
+- Rewrite restored host key paths to the local key that was written, renamed, or reused; skipped or failed keys leave the imported host without a key association or stale key-only authentication directives instead of keeping source-machine settings.
 - Show failed key restore details when a backup contains invalid key data.
 - Choose **merge** or **replace** during restore. Merge skips existing items; replace snapshots the current catalog before reproducing the selected backup.
 - Older versions refuse backups created by a newer data format to avoid dropping unknown fields; update SSH Kit before restoring such a backup.
@@ -166,11 +169,7 @@ Available from `Ctrl+Shift+P`:
 | `SSH Kit: Export Hosts as SSH Config` | Write current hosts to a separate selected file without replacing the active config |
 | `SSH Kit: Open SSH Config` | Open the SSH Config file |
 | `SSH Kit: Open Managed SSH Config` | Open the generated `hosts.conf` |
-| `SSH Kit: Show Remote-SSH Integration Status` | Show whether the Include is effective, plus config paths and the legacy alias count |
-| `SSH Kit: Enable Remote-SSH Integration` | Back up and add the managed Include to the effective config |
-| `SSH Kit: Repair Remote-SSH Integration` | Back up and normalize the Include before other SSH directives |
-| `SSH Kit: Remove Remote-SSH Integration` | Back up and remove the Include while retaining SSH Kit data |
-| `SSH Kit: Clean Legacy SSH Kit Connection Aliases` | Preview, back up, and remove legacy marked alias blocks |
+| `SSH Kit: Manage Remote-SSH Integration` | Show integration status and offer only the relevant setup, repair, renamed-alias review, removal, file, and legacy-cleanup actions |
 | `SSH Kit: List SSH Keys` | Browse scanned SSH keys |
 | `SSH Kit: Generate SSH Key` | Generate a new key pair |
 | `SSH Kit: Regenerate Public Key` | Recreate a `.pub` file from a private key |
@@ -197,7 +196,7 @@ SSH Kit stores hosts, groups, and deleted items in a versioned catalog under VS 
 SSH Kit has three distinct protection layers:
 
 - **SSH Config integration backup:** enabling, repairing, or removing the Include, and cleaning legacy aliases, requires saving a backup file for that operation. This does not configure a permanent backup directory; everyday host changes do not touch the main config.
-- **Internal catalog snapshots:** destructive catalog operations create key-free snapshots and retain the latest 10.
+- **Internal catalog snapshots:** destructive catalog operations and confirmed legacy nickname-alias repairs create key-free snapshots and retain the latest 10.
 - **SSH Kit JSON backup:** **Backup Data** can export host data only or include associated keys. A complete backup contains private key material; keep it encrypted or access-controlled and delete temporary copies after migration.
 
 Runtime prompts and tree labels are localized for English and Simplified Chinese. Stored data carries a schema version and is validated/migrated when older extension data is loaded; malformed records, duplicate identifiers, and unsafe SSH Config values are rejected before restore.

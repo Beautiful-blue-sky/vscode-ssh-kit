@@ -2,6 +2,13 @@ import type { SSHHost } from "./types";
 
 const MAX_ALIAS_LENGTH = 120;
 
+export interface SSHHostAliasRepair {
+  hostId: string;
+  name: string;
+  currentAlias: string;
+  suggestedAlias: string;
+}
+
 /**
  * Keep Remote-SSH aliases readable while avoiding whitespace, URI delimiters,
  * and SSH config pattern characters that are unreliable as literal host names.
@@ -25,12 +32,12 @@ export function ensureUniqueSSHHostAlias(
   const base = sanitizeSSHHostAlias(preferred) || sanitizeEndpoint(host) || "host";
   const candidates = [
     base,
-    truncateAlias(`${base}__${sanitizeEndpoint(host)}`),
-    truncateAlias(`${base}__${host.id.slice(-6)}`),
-    truncateAlias(`${base}__${host.id}`),
+    truncateAlias(`${base}_${sanitizeEndpoint(host)}`),
+    truncateAlias(`${base}_${host.id.slice(-6)}`),
+    truncateAlias(`${base}_${host.id}`),
   ];
   return candidates.find((candidate) => !used.has(normalizeAlias(candidate)))
-    ?? truncateAlias(`ssh-kit__${host.id}`);
+    ?? truncateAlias(`ssh-kit_${host.id}`);
 }
 
 export function normalizeStoredSSHAliases(hosts: SSHHost[]): SSHHost[] {
@@ -40,6 +47,69 @@ export function normalizeStoredSSHAliases(hosts: SSHHost[]): SSHHost[] {
     used.push(alias);
     return host.sshAlias === alias ? host : { ...host, sshAlias: alias };
   });
+}
+
+/**
+ * Find aliases left behind by versions that did not rename the SSH Host when
+ * the display name changed. Generated collision suffixes remain valid.
+ */
+export function planLegacySSHHostAliasRepairs(
+  hosts: readonly SSHHost[]
+): SSHHostAliasRepair[] {
+  const preservedAliases: string[] = [];
+  const repairIds = new Set<string>();
+
+  for (const host of hosts) {
+    const currentAlias = host.sshAlias?.trim() ?? "";
+    const normalizedCurrent = sanitizeSSHHostAlias(currentAlias);
+    const alreadyUsed = preservedAliases.some(
+      (alias) => normalizeAlias(alias) === normalizeAlias(normalizedCurrent)
+    );
+    if (
+      !currentAlias ||
+      normalizedCurrent !== currentAlias ||
+      alreadyUsed ||
+      !isAliasDerivedFromCurrentName(normalizedCurrent, host)
+    ) {
+      repairIds.add(host.id);
+      continue;
+    }
+    preservedAliases.push(currentAlias);
+  }
+
+  const usedAliases = [...preservedAliases];
+  const repairs: SSHHostAliasRepair[] = [];
+  for (const host of hosts) {
+    if (!repairIds.has(host.id)) {continue;}
+    const suggestedAlias = ensureUniqueSSHHostAlias(host.name, host, usedAliases);
+    usedAliases.push(suggestedAlias);
+    repairs.push({
+      hostId: host.id,
+      name: host.name,
+      currentAlias: host.sshAlias ?? "",
+      suggestedAlias,
+    });
+  }
+  return repairs;
+}
+
+function isAliasDerivedFromCurrentName(
+  alias: string,
+  host: Pick<SSHHost, "id" | "name" | "hostname" | "port">
+): boolean {
+  const base = sanitizeSSHHostAlias(host.name) || sanitizeEndpoint(host) || "host";
+  const normalizedAlias = normalizeAlias(alias);
+  // A collision suffix may contain an earlier endpoint. Connection edits keep
+  // aliases stable, so any current-name prefix is intentionally ambiguous and
+  // must not be treated as a legacy nickname mismatch.
+  if (normalizedAlias.startsWith(normalizeAlias(`${base}_`))) {return true;}
+  return [
+    base,
+    truncateAlias(`${base}_${sanitizeEndpoint(host)}`),
+    truncateAlias(`${base}_${host.id.slice(-6)}`),
+    truncateAlias(`${base}_${host.id}`),
+    truncateAlias(`ssh-kit_${host.id}`),
+  ].some((candidate) => normalizeAlias(candidate) === normalizedAlias);
 }
 
 function sanitizeEndpoint(host: Pick<SSHHost, "hostname" | "port">): string {

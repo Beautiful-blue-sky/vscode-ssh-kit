@@ -70,6 +70,9 @@ export function regenerateManagedConfig(
     stringifyHosts(projected).trimEnd(),
     "",
   ].join("\n");
+  if (fs.existsSync(managedPath) && fs.readFileSync(managedPath, "utf8") === content) {
+    return managedPath;
+  }
   atomicWriteText(managedPath, content, "\n");
   return managedPath;
 }

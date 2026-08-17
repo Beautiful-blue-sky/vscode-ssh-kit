@@ -38,7 +38,11 @@ import {
   CatalogSnapshotInfo,
   mergeCatalogWithLegacyState,
 } from "./catalogRepository";
-import { ensureUniqueSSHHostAlias } from "./sshAlias";
+import {
+  ensureUniqueSSHHostAlias,
+  planLegacySSHHostAliasRepairs,
+  SSHHostAliasRepair,
+} from "./sshAlias";
 
 /** Key used in globalState storage */
 const DATA_KEY = "sshKit.data";
@@ -254,6 +258,35 @@ export class StorageService {
     return [...this.getData().hosts];
   }
 
+  /** Preview aliases left stale by older nickname edits without changing data. */
+  getLegacyHostAliasRepairs(): SSHHostAliasRepair[] {
+    return planLegacySSHHostAliasRepairs(this.getData().hosts);
+  }
+
+  /** Repair all confirmed legacy aliases in one revision and keep a rollback snapshot. */
+  async repairLegacyHostAliases(
+    expectedRepairs?: readonly SSHHostAliasRepair[]
+  ): Promise<SSHHostAliasRepair[]> {
+    const data = this.getData();
+    const repairs = planLegacySSHHostAliasRepairs(data.hosts);
+    if (repairs.length === 0) {return [];}
+    if (expectedRepairs && !areAliasRepairPlansEqual(expectedRepairs, repairs)) {
+      throw new Error(vscode.l10n.t(
+        "SSH Kit data changed in another window. Reload and try again."
+      ));
+    }
+
+    const aliasesByHostId = new Map(
+      repairs.map((repair) => [repair.hostId, repair.suggestedAlias])
+    );
+    for (const host of data.hosts) {
+      const alias = aliasesByHostId.get(host.id);
+      if (alias) {host.sshAlias = alias;}
+    }
+    await this.saveData(data, { snapshot: true });
+    return repairs;
+  }
+
   getHostSortMode(): HostSortMode {
     return this.getData().sortPreferences.hostSort;
   }
@@ -417,8 +450,10 @@ export class StorageService {
         ? data.groups.find((group) => group.name === deleted.groupName)?.id
         : undefined;
     }
+    const preferredAlias = planLegacySSHHostAliasRepairs([restored])[0]
+      ?.suggestedAlias ?? restored.sshAlias ?? restored.name;
     restored.sshAlias = ensureUniqueSSHHostAlias(
-      restored.sshAlias || restored.name,
+      preferredAlias,
       restored,
       data.hosts.map((host) => host.sshAlias || host.name)
     );
@@ -794,18 +829,14 @@ export class StorageService {
         continue;
       }
 
-      const rewrittenIdentityFile = rewriteImportedIdentityFile(
-        h.identityFile,
-        identityRewriteTargets
-      );
       const host: SSHHost = {
         ...h,
         id: generateId(),
         groupId: h.groupId ? groupIdMap.get(h.groupId) : undefined,
-        identityFile: rewrittenIdentityFile,
+        identityFile: h.identityFile,
         tags: h.tags ?? [],
       };
-      normalizeHostAuthentication(host);
+      applyImportedIdentityRewrite(host, identityRewriteTargets);
       data.hosts.push(host);
       touchedHostIds.add(host.id);
       importedHosts++;
@@ -816,10 +847,6 @@ export class StorageService {
       ...(data.deletedHosts ?? []).map((entry) => entry.host.id),
     ]);
     for (const entry of source.deletedHosts ?? []) {
-      const rewrittenIdentityFile = rewriteImportedIdentityFile(
-        entry.host.identityFile,
-        identityRewriteTargets
-      );
       let id = entry.host.id;
       while (usedHostIds.has(id)) {id = generateId();}
       usedHostIds.add(id);
@@ -829,10 +856,10 @@ export class StorageService {
         groupId: entry.host.groupId
           ? groupIdMap.get(entry.host.groupId)
           : undefined,
-        identityFile: rewrittenIdentityFile,
+        identityFile: entry.host.identityFile,
         tags: entry.host.tags ?? [],
       };
-      normalizeHostAuthentication(host);
+      applyImportedIdentityRewrite(host, identityRewriteTargets);
       data.deletedHosts = [
         ...(data.deletedHosts ?? []),
         {
@@ -929,11 +956,7 @@ export class StorageService {
       ...(replacement.deletedHosts ?? []).map((entry) => entry.host),
     ];
     for (const host of replacementHosts) {
-      host.identityFile = rewriteImportedIdentityFile(
-        host.identityFile,
-        identityRewriteTargets
-      );
-      normalizeHostAuthentication(host);
+      applyImportedIdentityRewrite(host, identityRewriteTargets);
     }
 
     try {
@@ -1000,6 +1023,20 @@ function normalizeGroupOrder(groups: SSHGroup[]): SSHGroup[] {
   return groups.map((group, index) => ({ ...group, order: index }));
 }
 
+function areAliasRepairPlansEqual(
+  expected: readonly SSHHostAliasRepair[],
+  actual: readonly SSHHostAliasRepair[]
+): boolean {
+  if (expected.length !== actual.length) {return false;}
+  const actualByHostId = new Map(actual.map((repair) => [repair.hostId, repair]));
+  return expected.every((repair) => {
+    const current = actualByHostId.get(repair.hostId);
+    return current?.name === repair.name
+      && current.currentAlias === repair.currentAlias
+      && current.suggestedAlias === repair.suggestedAlias;
+  });
+}
+
 function createStoredHost(
   data: SSHKitData,
   host: Omit<SSHHost, "id">
@@ -1024,24 +1061,30 @@ function applyStoredHostUpdates(
   updates: Partial<Omit<SSHHost, "id">>
 ): void {
   const stableAlias = host.sshAlias;
+  const previousName = host.name;
   const previousAuthMode = resolveHostAuthMode(host);
   Object.assign(host, updates);
-  if (
-    updates.authMode !== undefined &&
-    resolveHostAuthMode(host) !== previousAuthMode
-  ) {
+  normalizeHostAuthentication(host);
+  if (resolveHostAuthMode(host) !== previousAuthMode) {
     host.extraConfig = stripManagedAuthenticationConfig(host.extraConfig);
   }
-  host.sshAlias = updates.sshAlias
-    ? ensureUniqueSSHHostAlias(
-        updates.sshAlias,
-        host,
-        data.hosts
-          .filter((candidate) => candidate.id !== host.id)
-          .map((candidate) => candidate.sshAlias || candidate.name)
-      )
-    : stableAlias;
-  normalizeHostAuthentication(host);
+  const shouldRenameAlias = updates.name !== undefined && host.name !== previousName;
+  if (updates.sshAlias !== undefined || shouldRenameAlias || !stableAlias) {
+    const preferredAlias = updates.sshAlias !== undefined
+      ? updates.sshAlias
+      : shouldRenameAlias
+        ? host.name
+        : stableAlias || host.name;
+    host.sshAlias = ensureUniqueSSHHostAlias(
+      preferredAlias,
+      host,
+      data.hosts
+        .filter((candidate) => candidate.id !== host.id)
+        .map((candidate) => candidate.sshAlias || candidate.name)
+    );
+  } else {
+    host.sshAlias = stableAlias;
+  }
 }
 
 function parseBackupData(
@@ -1085,6 +1128,18 @@ function rewriteImportedIdentityFile(
   );
   if (matched?.clear) {return undefined;}
   return matched?.targetPath ?? identityFile;
+}
+
+function applyImportedIdentityRewrite(
+  host: SSHHost,
+  targets: Array<{ sourceName: string; targetPath?: string; clear?: boolean }>
+): void {
+  const previousAuthMode = resolveHostAuthMode(host);
+  host.identityFile = rewriteImportedIdentityFile(host.identityFile, targets);
+  normalizeHostAuthentication(host);
+  if (resolveHostAuthMode(host) !== previousAuthMode) {
+    host.extraConfig = stripManagedAuthenticationConfig(host.extraConfig);
+  }
 }
 
 function isIdentityFileForImportedKey(identityFile: string, keyName: string): boolean {

@@ -3,6 +3,48 @@
 最新版本在本页提供中文和 English。更早版本的完整中文记录请查看
 [中文更新日志](CHANGELOG.zh-CN.md)。
 
+## 0.1.2 — 2026-08-17
+
+### 中文
+
+#### 新增
+- 升级后会检测旧版本修改昵称时遗留的 SSH Host alias，逐项预览旧值与建议值；用户确认后先创建内部快照，再一次性更新 Catalog 和托管配置。暂不处理时可从“管理 Remote-SSH 连接配置”重新进入。
+
+#### 调整
+- 修改主机昵称会同步重命名托管 Host alias；地址、端口、用户、认证方式等连接字段变化时保持 alias 稳定。编辑、删除、复制、测试和连接前均按主机 ID 读取最新 Catalog 记录。
+- 窗口重新获得焦点时刷新共享主机与密钥数据；Catalog 变化会同步刷新主机树、当前连接状态和已启用的托管配置。
+- Remote-SSH 连接配置改为单一管理入口，仅展示当前适用的准备、修复、配置文件、旧昵称检查、移除和旧版连接别名清理操作。
+- 主机视图标题栏保留高频操作，重复主机、批量删除、回收站、批量密钥和备份恢复收进“主机数据维护”菜单。
+- 托管 `hosts.conf` 内容未变化时跳过重复写盘；同名主机 alias 的自动后缀改为更简洁的单下划线形式。
+
+#### 修复
+- 主机新增、编辑、SSH Config 导入、密钥关联、删除/恢复、备份恢复和内部快照恢复后，托管配置会同步最新的 HostName、端口、用户、认证方式、密钥路径及自定义指令。
+- 切换认证方式，以及恢复时跳过或无法写入密钥后，会移除 `IdentityFile`、`IdentitiesOnly`、`PreferredAuthentications` 等过期认证指令，同时保留无关 SSH 设置。
+- 避免其他窗口中未刷新的树节点继续使用旧主机信息；旧昵称 alias 修复会保护合法的标准化名称、同名后缀、历史地址后缀和 ID 兜底 alias，并拒绝应用未经重新预览的并发变化。
+
+#### 验证
+- 通过类型检查、ESLint、生产构建、38 项运行时行为检查、479 条中英文运行时文案检查，以及 50 个命令和 13 个 VSIX 文件的发布清单校验。
+
+### English
+
+#### Added
+- Detect SSH Host aliases left behind by nickname edits in older versions and show an old-to-suggested preview. After confirmation, create an internal snapshot and update the catalog and managed config in one transaction. Dismissed reviews remain available under **Manage Remote-SSH Integration**.
+
+#### Changed
+- Rename the managed Host alias when a host nickname changes, while keeping it stable for address, port, user, and authentication edits. Resolve the latest catalog record by host ID before edit, delete, copy, test, or connection actions.
+- Refresh shared host and key data when a window regains focus. Catalog changes also refresh the host tree, current connection state, and enabled managed config.
+- Consolidate Remote-SSH configuration into one manager that only shows applicable setup, repair, file, renamed-alias review, removal, and legacy connection-alias cleanup actions.
+- Keep frequent actions in the host view title and move deduplication, batch deletion, recycle-bin, batch-key, backup, and restore operations into **Host Data Maintenance**.
+- Skip rewriting managed `hosts.conf` when its generated content is unchanged, and use cleaner single-underscore suffixes for generated duplicate-name aliases.
+
+#### Fixed
+- Keep HostName, port, user, authentication mode, identity path, and custom directives synchronized after host creation and edits, SSH Config import, key association, deletion or restore, backup restore, and internal snapshot restore.
+- Remove stale `IdentityFile`, `IdentitiesOnly`, and `PreferredAuthentications` directives after authentication changes or skipped/failed key restoration while preserving unrelated SSH settings.
+- Prevent stale tree items in other windows from reusing outdated host data. Legacy nickname-alias repair preserves valid sanitized names, duplicate suffixes, historical endpoint suffixes, and ID fallbacks, and rejects concurrent changes that were not previewed.
+
+#### Validation
+- Pass type checking, ESLint, production build, 38 runtime behavior checks, 479 English/Chinese runtime message checks, and release-surface validation for 50 commands and 13 VSIX files.
+
 ## 0.1.1 — 2026-07-29
 
 ### 中文

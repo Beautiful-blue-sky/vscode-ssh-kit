@@ -7,7 +7,7 @@ export type SSHAuthMode = (typeof SSH_AUTH_MODES)[number];
 export interface SSHHost {
   id: string;
   name: string;            // Display name
-  sshAlias?: string;       // Stable OpenSSH / Remote-SSH Host alias
+  sshAlias?: string;       // Unique OpenSSH alias; stable across connection edits, renamed with the display name
   hostname: string;        // IP address or hostname
   port: number;            // SSH port, default 22
   username: string;        // Login username

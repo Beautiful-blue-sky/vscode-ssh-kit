@@ -38,7 +38,7 @@
   "commands.setupRemoteSshIntegration": "启用 Remote-SSH 连接配置",
   "commands.repairRemoteSshIntegration": "修复 Remote-SSH 连接配置",
   "commands.removeRemoteSshIntegration": "移除 Remote-SSH 连接配置",
-  "commands.showRemoteSshIntegrationStatus": "查看 Remote-SSH 连接配置状态",
+  "commands.showRemoteSshIntegrationStatus": "管理 Remote-SSH 连接配置",
   "commands.cleanupAliases": "清理旧版 SSH Kit 连接别名",
   "commands.listKeys": "查看密钥列表",
   "commands.generateKey": "生成 SSH 密钥",
@@ -60,6 +60,7 @@
   "commands.restoreData": "恢复数据",
   "commands.restoreCatalogSnapshot": "恢复内部快照",
   "menus.groupOrder": "调整分组顺序",
+  "menus.hostData": "主机数据与维护",
   "viewsWelcome.hosts": "还没有 SSH 主机。\n\n[添加主机](command:sshKit.addHost)  |  [从 SSH Config 导入](command:sshKit.importConfig)\n[打开 SSH Config 文件](command:sshKit.openSshConfig)",
   "viewsWelcome.keys": "没有找到 SSH 密钥。\n\n[生成 SSH 密钥](command:sshKit.generateKey)"
 }

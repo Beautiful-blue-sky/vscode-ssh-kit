@@ -168,7 +168,9 @@ export async function promptEditHost(
         value: host.name,
         validate: validateRequiredName,
       });
-      return value === undefined ? undefined : { name: value.trim() };
+      if (value === undefined) {return undefined;}
+      const name = value.trim();
+      return { name, sshAlias: name };
     }
     case "hostname": {
       const value = await promptInput({

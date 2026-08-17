@@ -394,15 +394,14 @@ function resolveNls(value, nls) {
 }
 
 function getVscePackageFiles() {
-  const vsceBin = join(root, "node_modules", ".bin", process.platform === "win32" ? "vsce.cmd" : "vsce");
-  if (!existsSync(vsceBin)) {
-    throw new Error("Missing local vsce binary. Run pnpm install first.");
+  const vsceEntry = join(root, "node_modules", "@vscode", "vsce", "vsce");
+  if (!existsSync(vsceEntry)) {
+    throw new Error("Missing local vsce entry point. Run pnpm install first.");
   }
 
-  const result = spawnSync(vsceBin, ["ls", "--no-dependencies"], {
+  const result = spawnSync(process.execPath, [vsceEntry, "ls", "--no-dependencies"], {
     cwd: root,
     encoding: "utf8",
-    shell: process.platform === "win32",
     stdio: ["ignore", "pipe", "pipe"],
   });
 

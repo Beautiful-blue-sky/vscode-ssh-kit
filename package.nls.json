@@ -38,7 +38,7 @@
   "commands.setupRemoteSshIntegration": "Enable Remote-SSH Integration",
   "commands.repairRemoteSshIntegration": "Repair Remote-SSH Integration",
   "commands.removeRemoteSshIntegration": "Remove Remote-SSH Integration",
-  "commands.showRemoteSshIntegrationStatus": "Show Remote-SSH Integration Status",
+  "commands.showRemoteSshIntegrationStatus": "Manage Remote-SSH Integration",
   "commands.cleanupAliases": "Clean Legacy SSH Kit Connection Aliases",
   "commands.listKeys": "List SSH Keys",
   "commands.generateKey": "Generate SSH Key",
@@ -60,6 +60,7 @@
   "commands.restoreData": "Restore Data",
   "commands.restoreCatalogSnapshot": "Restore Internal Snapshot",
   "menus.groupOrder": "Group Order",
+  "menus.hostData": "Host Data and Maintenance",
   "viewsWelcome.hosts": "No SSH hosts yet.\n\n[Add Host](command:sshKit.addHost)  |  [Import from SSH Config](command:sshKit.importConfig)\n[Open SSH Config](command:sshKit.openSshConfig)",
   "viewsWelcome.keys": "No SSH keys found.\n\n[Generate SSH Key](command:sshKit.generateKey)"
 }

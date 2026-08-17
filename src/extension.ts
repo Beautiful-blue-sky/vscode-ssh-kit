@@ -6,7 +6,7 @@ import { GroupItem, HostDetailItem, HostItem, HostTreeDataProvider, HostDragAndD
 import { KeyTreeDataProvider, KeyItem, KeyDetailItem } from "./views/keyTreeView";
 import { listKeys, populateFingerprints } from "./keys/keyManager";
 import { ConnectionStatusController } from "./core/connectionStatus";
-import { connectHostInCurrentWindow, connectHostInNewWindow, promptTerminalConnect, testConnection, searchHosts, cleanupRemoteSshAliases } from "./commands/connectCommands";
+import { connectHostInCurrentWindow, connectHostInNewWindow, promptTerminalConnect, testConnection, searchHosts } from "./commands/connectCommands";
 import {
   addHost,
   batchChangeHostKey,
@@ -22,8 +22,10 @@ import {
 import { addGroup, renameGroup, deleteGroup, moveGroup, sortGroupsByName } from "./commands/groupCommands";
 import {
   backupKitData,
+  cleanupRemoteSshAliases,
   exportConfig,
   importConfig,
+  manageRemoteSshIntegration,
   openManagedSshConfig,
   openSshConfig,
   removeRemoteSshIntegration,
@@ -31,7 +33,6 @@ import {
   restoreCatalogSnapshot,
   restoreKitData,
   setupRemoteSshIntegration,
-  showRemoteSshIntegrationStatus,
 } from "./commands/ioCommands";
 import {
   copyPublicKeyToClipboard,
@@ -44,6 +45,7 @@ import {
 import { registerAIHostTools } from "./ai/hostTool";
 import { promptEditHost, promptNewHost } from "./commands/hostPrompts";
 import { sortHosts } from "./commands/sortCommands";
+import { offerLegacyHostAliasRepair } from "./commands/aliasCommands";
 import { inspectManagedIntegration, regenerateManagedConfig } from "./ssh/managedConfig";
 
 // ─── Utility functions ────────────────────────────────────────────────────
@@ -55,6 +57,14 @@ import { inspectManagedIntegration, regenerateManagedConfig } from "./ssh/manage
  */
 function unwrapHost(arg: HostItem | SSHHost): SSHHost {
   return arg instanceof HostItem ? arg.host : arg;
+}
+
+function unwrapLatestHost(
+  arg: HostItem | SSHHost,
+  storage: StorageService
+): SSHHost {
+  const host = unwrapHost(arg);
+  return storage.getAllHosts().find((candidate) => candidate.id === host.id) ?? host;
 }
 
 // ─── Extension activation ─────────────────────────────────────────────────
@@ -82,6 +92,13 @@ export function activate(context: vscode.ExtensionContext) {
   });
   context.subscriptions.push(keyTreeView);
   context.subscriptions.push(connectionStatus);
+  context.subscriptions.push(
+    vscode.window.onDidChangeWindowState((state) => {
+      if (!state.focused) {return;}
+      treeDataProvider.refresh();
+      keyTreeDataProvider.refresh();
+    })
+  );
 
   // Persist group collapse state
   context.subscriptions.push(
@@ -108,10 +125,13 @@ export function activate(context: vscode.ExtensionContext) {
 
   context.subscriptions.push(
     storage.onDidChange(() => {
+      treeDataProvider.refresh();
+      void connectionStatus.refresh();
       refreshManagedConfigIfEnabled(storage);
     })
   );
   refreshManagedConfigIfEnabled(storage);
+  void offerLegacyHostAliasRepair(context, storage);
 }
 
 function refreshManagedConfigIfEnabled(storage: StorageService): void {
@@ -158,16 +178,16 @@ function registerHostCommands(
     vscode.commands.registerCommand(
       "sshKit.editHost",
       (arg: HostItem | SSHHost) =>
-        editHost(unwrapHost(arg), storage, tree, promptEditHost)
+        editHost(unwrapLatestHost(arg, storage), storage, tree, promptEditHost)
     ),
     vscode.commands.registerCommand(
       "sshKit.deleteHost",
       (arg: HostItem | SSHHost) =>
-        deleteHost(unwrapHost(arg), storage, tree)
+        deleteHost(unwrapLatestHost(arg, storage), storage, tree)
     ),
     vscode.commands.registerCommand(
       "sshKit.copyHostName",
-      (arg: HostItem | SSHHost) => copyHostName(unwrapHost(arg))
+      (arg: HostItem | SSHHost) => copyHostName(unwrapLatestHost(arg, storage))
     ),
     vscode.commands.registerCommand(
       "sshKit.copyHostDetail",
@@ -299,7 +319,7 @@ function registerConnectCommands(
     ),
     vscode.commands.registerCommand(
       "sshKit.testConnection",
-      (arg: HostItem | SSHHost) => testConnection(unwrapHost(arg))
+      (arg: HostItem | SSHHost) => testConnection(unwrapLatestHost(arg, storage))
     ),
     vscode.commands.registerCommand(
       "sshKit.connectInExternalTerminal",
@@ -345,7 +365,7 @@ function registerIOCommands(
       removeRemoteSshIntegration()
     ),
     vscode.commands.registerCommand("sshKit.showRemoteSshIntegrationStatus", () =>
-      showRemoteSshIntegrationStatus()
+      manageRemoteSshIntegration(storage)
     ),
     vscode.commands.registerCommand("sshKit.backupData", () =>
       backupKitData(storage)
@@ -357,7 +377,7 @@ function registerIOCommands(
       restoreCatalogSnapshot(storage, tree)
     ),
     vscode.commands.registerCommand("sshKit.cleanupAliases", () =>
-      cleanupRemoteSshAliases(storage)
+      cleanupRemoteSshAliases()
     )
   );
 }

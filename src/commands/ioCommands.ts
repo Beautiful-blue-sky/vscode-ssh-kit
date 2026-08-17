@@ -10,6 +10,7 @@ import { StorageService } from "../core/storage";
 import { getErrorMessage } from "../core/utils";
 import { importFromSSHConfig, exportToSSHConfig } from "../ssh/sshConfig";
 import {
+  cleanupLegacyAliasBlocks,
   getEffectiveSSHConfigPath,
   getManagedConfigPath,
   inspectManagedIntegration,
@@ -18,6 +19,7 @@ import {
   uninstallManagedIntegration,
 } from "../ssh/managedConfig";
 import { HostTreeDataProvider } from "../views/treeView";
+import { reviewLegacyHostAliasRepairs } from "./aliasCommands";
 import {
   KeyFileEntry,
   KeyFileImportPlan,
@@ -327,23 +329,147 @@ export async function removeRemoteSshIntegration(): Promise<void> {
   }
 }
 
-export async function showRemoteSshIntegrationStatus(): Promise<void> {
+type RemoteSshIntegrationAction =
+  | "setup"
+  | "repair"
+  | "repairHostAliases"
+  | "openConfig"
+  | "openManagedConfig"
+  | "remove"
+  | "cleanupAliases";
+
+interface RemoteSshIntegrationItem extends vscode.QuickPickItem {
+  action: RemoteSshIntegrationAction;
+}
+
+/** Present the integration state and only the actions that currently apply. */
+export async function manageRemoteSshIntegration(storage: StorageService): Promise<void> {
   try {
     const state = inspectManagedIntegration();
-    vscode.window.showInformationMessage([
-      state.installed && state.effective
-        ? vscode.l10n.t("SSH Kit Remote-SSH integration is enabled.")
-        : state.installed
-          ? vscode.l10n.t("SSH Kit Remote-SSH integration needs repair because its Include appears after other directives.")
-        : vscode.l10n.t("SSH Kit Remote-SSH integration is not enabled."),
-      vscode.l10n.t("SSH Config: {path}", { path: state.configPath }),
-      vscode.l10n.t("Managed hosts: {path}", { path: state.managedConfigPath }),
-      state.legacyAliasCount > 0
-        ? vscode.l10n.t("Legacy connection aliases remaining: {count}", { count: state.legacyAliasCount })
-        : "",
-    ].filter(Boolean).join("\n"));
+    const aliasRepairs = storage.getLegacyHostAliasRepairs();
+    const status = state.installed && state.effective
+      ? vscode.l10n.t("SSH Kit Remote-SSH integration is enabled.")
+      : state.installed
+        ? vscode.l10n.t("SSH Kit Remote-SSH integration needs repair because its Include appears after other directives.")
+        : vscode.l10n.t("SSH Kit Remote-SSH integration is not enabled.");
+    const items: RemoteSshIntegrationItem[] = [];
+
+    if (!state.installed) {
+      items.push({
+        label: `$(plug) ${vscode.l10n.t("Set up integration")}`,
+        description: state.configPath,
+        action: "setup",
+      });
+    } else if (!state.effective) {
+      items.push({
+        label: `$(tools) ${vscode.l10n.t("Repair integration")}`,
+        description: state.configPath,
+        action: "repair",
+      });
+    }
+
+    items.push(
+      {
+        label: `$(go-to-file) ${vscode.l10n.t("Open SSH Config")}`,
+        description: state.configPath,
+        action: "openConfig",
+      },
+      {
+        label: `$(file-code) ${vscode.l10n.t("Open SSH Kit managed config")}`,
+        description: state.managedConfigPath,
+        action: "openManagedConfig",
+      }
+    );
+
+    if (aliasRepairs.length > 0) {
+      items.push({
+        label: `$(replace-all) ${vscode.l10n.t("Review {count} renamed SSH Host aliases", {
+          count: aliasRepairs.length,
+        })}`,
+        description: vscode.l10n.t("Create an internal snapshot before updating managed Host names"),
+        action: "repairHostAliases",
+      });
+    }
+
+    if (state.managed) {
+      items.push({
+        label: `$(debug-disconnect) ${vscode.l10n.t("Remove integration")}`,
+        description: state.configPath,
+        action: "remove",
+      });
+    }
+    if (state.legacyAliasCount > 0) {
+      items.push({
+        label: `$(clear-all) ${vscode.l10n.t("Clean {count} legacy aliases", { count: state.legacyAliasCount })}`,
+        description: state.configPath,
+        action: "cleanupAliases",
+      });
+    }
+
+    const picked = await vscode.window.showQuickPick(items, {
+      title: vscode.l10n.t("Manage Remote-SSH Integration"),
+      placeHolder: status,
+      matchOnDescription: true,
+    });
+    if (!picked) {return;}
+
+    switch (picked.action) {
+      case "setup":
+        await setupRemoteSshIntegration(storage);
+        break;
+      case "repair":
+        await repairRemoteSshIntegration(storage);
+        break;
+      case "repairHostAliases":
+        await reviewLegacyHostAliasRepairs(storage);
+        break;
+      case "openConfig":
+        await openSshConfig();
+        break;
+      case "openManagedConfig":
+        await openManagedSshConfig();
+        break;
+      case "remove":
+        await removeRemoteSshIntegration();
+        break;
+      case "cleanupAliases":
+        await cleanupRemoteSshAliases();
+        break;
+    }
   } catch (error) {
     showIntegrationError(error);
+  }
+}
+
+/** Remove connection alias blocks written before managed Include integration. */
+export async function cleanupRemoteSshAliases(): Promise<void> {
+  try {
+    const state = inspectManagedIntegration();
+    if (state.legacyAliasCount === 0) {
+      vscode.window.showInformationMessage(vscode.l10n.t("No legacy SSH Kit connection aliases were found."));
+      return;
+    }
+    const cleanupAction = vscode.l10n.t("Back Up and Clean");
+    const confirmed = await vscode.window.showWarningMessage(
+      vscode.l10n.t(
+        "Found {count} legacy SSH Kit connection aliases in {path}. SSH Kit will ask where to save a backup before removing only those marked blocks.",
+        { count: state.legacyAliasCount, path: state.configPath }
+      ),
+      { modal: true },
+      cleanupAction
+    );
+    if (confirmed !== cleanupAction) {return;}
+
+    const count = await cleanupLegacyAliasBlocks();
+    if (count === undefined) {return;}
+    vscode.window.showInformationMessage(count > 0
+      ? vscode.l10n.t("Removed {count} legacy SSH Kit connection aliases.", { count })
+      : vscode.l10n.t("No legacy SSH Kit connection aliases were found."));
+  } catch (error) {
+    vscode.window.showErrorMessage(vscode.l10n.t(
+      "Failed to clean legacy SSH Kit connection aliases: {error}",
+      { error: getErrorMessage(error) }
+    ));
   }
 }
 
@@ -564,7 +690,7 @@ export async function restoreCatalogSnapshot(
   const snapshots = storage.getCatalogSnapshots();
   if (snapshots.length === 0) {
     await vscode.window.showInformationMessage(
-      vscode.l10n.t("No internal snapshots are available. SSH Kit creates them before deleting a group, moving hosts to or from the recycle bin, permanently deleting recycle-bin items, restoring data, or restoring another snapshot."),
+      vscode.l10n.t("No internal snapshots are available. SSH Kit creates them before deleting a group, moving hosts to or from the recycle bin, permanently deleting recycle-bin items, restoring data, repairing aliases left by older nickname edits, or restoring another snapshot."),
       { modal: true }
     );
     return;

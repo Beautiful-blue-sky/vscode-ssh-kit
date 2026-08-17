@@ -9,11 +9,7 @@ import { resolveHostAuthMode, SSHHost } from "../core/types";
 import { StorageService } from "../core/storage";
 import { getErrorMessage } from "../core/utils";
 import { ensureUniqueSSHHostAlias } from "../core/sshAlias";
-import {
-  cleanupLegacyAliasBlocks,
-  ensureManagedIntegration,
-  inspectManagedIntegration,
-} from "../ssh/managedConfig";
+import { ensureManagedIntegration } from "../ssh/managedConfig";
 
 // ─── VS Code Remote-SSH connection ────────────────────────────────────────
 
@@ -39,6 +35,7 @@ async function doConnect(
   storage: StorageService,
   forceNewWindow: boolean
 ): Promise<void> {
+  host = getLatestStoredHost(host, storage);
   const windowTarget = await resolveWindowTarget(forceNewWindow);
   if (!windowTarget) {return;}
 
@@ -333,6 +330,7 @@ export async function connectInExternalTerminal(
   host: SSHHost,
   storage: StorageService
 ): Promise<void> {
+  host = getLatestStoredHost(host, storage);
   const missingIdentity = getMissingIdentityFile(host);
   const skipMissingIdentityFile = Boolean(missingIdentity);
   if (missingIdentity) {
@@ -439,39 +437,6 @@ function formatDisplayEndpoint(host: SSHHost): string {
   return formatHostEndpoint(host, false);
 }
 
-/** Remove connection alias blocks written by SSH Kit versions before managed Include integration. */
-export async function cleanupRemoteSshAliases(storage: StorageService): Promise<void> {
-  void storage;
-  try {
-    const state = inspectManagedIntegration();
-    if (state.legacyAliasCount === 0) {
-      vscode.window.showInformationMessage(vscode.l10n.t("No legacy SSH Kit connection aliases were found."));
-      return;
-    }
-    const cleanupAction = vscode.l10n.t("Back Up and Clean");
-    const confirmed = await vscode.window.showWarningMessage(
-      vscode.l10n.t(
-        "Found {count} legacy SSH Kit connection aliases in {path}. SSH Kit will ask where to save a backup before removing only those marked blocks.",
-        { count: state.legacyAliasCount, path: state.configPath }
-      ),
-      { modal: true },
-      cleanupAction
-    );
-    if (confirmed !== cleanupAction) {return;}
-
-    const count = await cleanupLegacyAliasBlocks();
-    if (count === undefined) {return;}
-    vscode.window.showInformationMessage(count > 0
-      ? vscode.l10n.t("Removed {count} legacy SSH Kit connection aliases.", { count })
-      : vscode.l10n.t("No legacy SSH Kit connection aliases were found."));
-  } catch (error) {
-    vscode.window.showErrorMessage(vscode.l10n.t(
-      "Failed to clean legacy SSH Kit connection aliases: {error}",
-      { error: getErrorMessage(error) }
-    ));
-  }
-}
-
 // ─── VS Code built-in terminal connection ──────────────────────────────────
 
 /**
@@ -482,6 +447,7 @@ export async function connectInVSCodeTerminal(
   host: SSHHost,
   storage: StorageService
 ): Promise<void> {
+  host = getLatestStoredHost(host, storage);
   const remoteTerminalMode = await resolveRemoteWindowTerminalMode(host, storage);
   if (remoteTerminalMode === "localVSCodeTerminal") {
     await connectInLocalVSCodeTerminal(host, storage);
@@ -571,6 +537,7 @@ export async function promptTerminalConnect(
   host: SSHHost,
   storage: StorageService
 ): Promise<void> {
+  host = getLatestStoredHost(host, storage);
   const isRemoteWindow = Boolean(vscode.env.remoteName);
   const picked = await vscode.window.showQuickPick(
     isRemoteWindow ? [
@@ -708,6 +675,10 @@ function buildSSHCommandLine(host: SSHHost, options: BuildSSHArgsOptions = {}): 
   return ["ssh", ...buildSSHArgs(host, options)]
     .map((arg, index) => index === 0 ? arg : quoteForLocalShellArg(arg))
     .join(" ");
+}
+
+function getLatestStoredHost(host: SSHHost, storage: StorageService): SSHHost {
+  return storage.getAllHosts().find((candidate) => candidate.id === host.id) ?? host;
 }
 
 async function confirmMissingIdentityFile(

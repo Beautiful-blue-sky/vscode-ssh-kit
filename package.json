@@ -2,7 +2,7 @@
   "name": "ssh-kit",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "publisher": "lixiaoyu",
   "license": "MIT",
   "icon": "icon.png",
@@ -283,7 +283,7 @@
         "command": "sshKit.showRemoteSshIntegrationStatus",
         "title": "%commands.showRemoteSshIntegrationStatus%",
         "category": "%commands.category%",
-        "icon": "$(info)"
+        "icon": "$(settings-gear)"
       },
       {
         "command": "sshKit.cleanupAliases",
@@ -420,6 +420,10 @@
       {
         "id": "sshKit.groupOrder",
         "label": "%menus.groupOrder%"
+      },
+      {
+        "id": "sshKit.hostData",
+        "label": "%menus.hostData%"
       }
     ],
     "menus": {
@@ -435,84 +439,49 @@
           "group": "navigation@2"
         },
         {
-          "command": "sshKit.importConfig",
+          "command": "sshKit.filterHosts",
           "when": "view == sshKit.hosts",
           "group": "navigation@3"
         },
         {
-          "command": "sshKit.exportConfig",
-          "when": "view == sshKit.hosts",
+          "command": "sshKit.clearHostFilter",
+          "when": "view == sshKit.hosts && sshKit.hostFilterActive",
           "group": "navigation@4"
         },
         {
-          "command": "sshKit.openSshConfig",
+          "command": "sshKit.refresh",
           "when": "view == sshKit.hosts",
           "group": "navigation@5"
         },
         {
           "command": "sshKit.sortHosts",
           "when": "view == sshKit.hosts",
-          "group": "navigation@6"
-        },
-        {
-          "command": "sshKit.filterHosts",
-          "when": "view == sshKit.hosts",
-          "group": "navigation@7"
-        },
-        {
-          "command": "sshKit.clearHostFilter",
-          "when": "view == sshKit.hosts && sshKit.hostFilterActive",
-          "group": "navigation@8"
-        },
-        {
-          "command": "sshKit.refresh",
-          "when": "view == sshKit.hosts",
-          "group": "navigation@9"
+          "group": "1_sort@1"
         },
         {
           "command": "sshKit.sortGroupsByName",
           "when": "view == sshKit.hosts && !sshKit.hostFilterActive",
-          "group": "1_sort@1"
+          "group": "1_sort@2"
         },
         {
-          "command": "sshKit.deduplicateHosts",
+          "command": "sshKit.importConfig",
           "when": "view == sshKit.hosts",
-          "group": "2_io@1"
+          "group": "2_config@1"
         },
         {
-          "command": "sshKit.batchDeleteHosts",
+          "command": "sshKit.exportConfig",
           "when": "view == sshKit.hosts",
-          "group": "2_io@2"
+          "group": "2_config@2"
         },
         {
-          "command": "sshKit.manageRecycleBin",
+          "command": "sshKit.openSshConfig",
           "when": "view == sshKit.hosts",
-          "group": "2_io@2.1"
+          "group": "2_config@3"
         },
         {
-          "command": "sshKit.emptyRecycleBin",
+          "submenu": "sshKit.hostData",
           "when": "view == sshKit.hosts",
-          "group": "2_io@2.2"
-        },
-        {
-          "command": "sshKit.batchChangeHostKey",
-          "when": "view == sshKit.hosts",
-          "group": "2_io@3"
-        },
-        {
-          "command": "sshKit.backupData",
-          "when": "view == sshKit.hosts",
-          "group": "2_io@4"
-        },
-        {
-          "command": "sshKit.restoreData",
-          "when": "view == sshKit.hosts",
-          "group": "2_io@5"
-        },
-        {
-          "command": "sshKit.restoreCatalogSnapshot",
-          "when": "view == sshKit.hosts",
-          "group": "2_io@5.1"
+          "group": "3_data@1"
         },
         {
           "command": "sshKit.generateKey",
@@ -649,6 +618,40 @@
           "group": "sort@1"
         }
       ],
+      "sshKit.hostData": [
+        {
+          "command": "sshKit.deduplicateHosts",
+          "group": "1_hosts@1"
+        },
+        {
+          "command": "sshKit.batchDeleteHosts",
+          "group": "1_hosts@2"
+        },
+        {
+          "command": "sshKit.manageRecycleBin",
+          "group": "2_recycle@1"
+        },
+        {
+          "command": "sshKit.emptyRecycleBin",
+          "group": "2_recycle@2"
+        },
+        {
+          "command": "sshKit.batchChangeHostKey",
+          "group": "3_keys@1"
+        },
+        {
+          "command": "sshKit.backupData",
+          "group": "4_backup@1"
+        },
+        {
+          "command": "sshKit.restoreData",
+          "group": "4_backup@2"
+        },
+        {
+          "command": "sshKit.restoreCatalogSnapshot",
+          "group": "4_backup@3"
+        }
+      ],
       "commandPalette": [
         {
           "command": "sshKit.connectHostInCurrentWindow",
@@ -737,6 +740,22 @@
         {
           "command": "sshKit.showCurrentConnection",
           "when": "false"
+        },
+        {
+          "command": "sshKit.setupRemoteSshIntegration",
+          "when": "false"
+        },
+        {
+          "command": "sshKit.repairRemoteSshIntegration",
+          "when": "false"
+        },
+        {
+          "command": "sshKit.removeRemoteSshIntegration",
+          "when": "false"
+        },
+        {
+          "command": "sshKit.cleanupAliases",
+          "when": "false"
         }
       ]
     }
@@ -768,13 +787,5 @@
     "npm-run-all": "^4.1.5",
     "typescript": "^5.9.2",
     "typescript-eslint": "^8.39.0"
-  },
-  "pnpm": {
-    "overrides": {
-      "brace-expansion@1.1.15": "1.1.16",
-      "brace-expansion@5.0.6": "5.0.7",
-      "js-yaml@4.2.0": "4.3.0",
-      "shell-quote@1.8.4": "1.9.0"
-    }
   }
 }
