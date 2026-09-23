@@ -3,6 +3,34 @@
 最新版本在本页提供中文和 English。更早版本的完整中文记录请查看
 [中文更新日志](CHANGELOG.zh-CN.md)。
 
+## 0.1.3 — 2026-09-23
+
+### 中文
+
+#### 修复
+- 通过自定义快捷键或编程方式无参数调用主机命令（在终端连接、当前/新窗口打开、编辑、删除、复制地址、测试连通性）时，扩展不再报 `Cannot read properties of undefined (reading 'id')`，改为弹出主机选择框继续操作。
+
+#### 调整
+- 常规操作反馈不再在右下角堆积：主机、分组、密钥、导入导出、备份恢复等应用内操作的成功提示改为状态栏短暂显示并自动消失。
+- 外部终端“正在连接”、VS Code 终端“已打开”、连通性测试“可达”等连接反馈保留右下角通知形式，但数秒后自动关闭，不再常驻。
+- 连通性测试成功提示移除多余的“确定”按钮。
+
+#### 验证
+- 通过类型检查、ESLint、生产构建、38 项运行时行为检查、478 条中英文运行时文案检查，以及 50 个命令和 13 个 VSIX 文件的发布清单校验。
+
+### English
+
+#### Fixed
+- Host commands invoked without a host selection — for example from custom keyboard shortcuts or programmatic calls — no longer fail with `Cannot read properties of undefined (reading 'id')`. SSH Kit now shows a host picker so the action can continue.
+
+#### Changed
+- Routine success feedback for in-app operations (host, group, key, import/export, backup, and maintenance actions) now appears as a brief status bar message that disappears on its own instead of piling up as notifications.
+- Connection feedback — connecting in an external terminal, opened terminals, and reachable connectivity test results — still appears as a bottom-right notification, but it now dismisses itself after a few seconds.
+- Remove the redundant OK button from the connectivity test success message.
+
+#### Validation
+- Pass type checking, ESLint, production build, 38 runtime behavior checks, 478 English/Chinese runtime message checks, and release-surface validation for 50 commands and 13 VSIX files.
+
 ## 0.1.2 — 2026-08-17
 
 ### 中文

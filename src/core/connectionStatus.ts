@@ -7,6 +7,7 @@ import { formatHostEndpoint } from "./endpoint";
 import { decodeRemoteSshAuthority } from "./remoteAuthority";
 import { StorageService } from "./storage";
 import { resolveHostAuthMode, SSHHost } from "./types";
+import { showTransientInfo } from "./utils";
 
 interface CurrentConnectionInfo {
   host: SSHHost;
@@ -60,7 +61,7 @@ export class ConnectionStatusController implements vscode.Disposable {
 
   async showDetails(): Promise<void> {
     if (!this.current) {
-      vscode.window.showInformationMessage(vscode.l10n.t("No SSH Kit connection was detected in this window."));
+      showTransientInfo(vscode.l10n.t("No SSH Kit connection was detected in this window."));
       return;
     }
 

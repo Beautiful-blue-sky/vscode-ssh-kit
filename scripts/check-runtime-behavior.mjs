@@ -3206,6 +3206,11 @@ function createVSCodeMock() {
         messages.push({ type: "status", message, timeout });
         return { dispose() {} };
       },
+      withProgress(options) {
+        messages.push({ type: "progress", message: options?.title });
+        // Progress tasks only drive transient notification timers; skip executing them.
+        return Promise.resolve();
+      },
       async showInformationMessage(message, ...items) {
         messages.push({ type: "info", message, items });
         if (typeof mock.__infoHandler === "function") {
@@ -3310,6 +3315,11 @@ function createVSCodeMock() {
     StatusBarAlignment: {
       Left: 1,
       Right: 2,
+    },
+    ProgressLocation: {
+      SourceControl: 1,
+      Window: 10,
+      Notification: 15,
     },
     MarkdownString: class {
       appendMarkdown() {}

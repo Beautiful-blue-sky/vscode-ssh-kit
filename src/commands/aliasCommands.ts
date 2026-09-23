@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 import { SSHHostAliasRepair } from "../core/sshAlias";
 import { StorageService } from "../core/storage";
-import { getErrorMessage } from "../core/utils";
+import { getErrorMessage, showTransientInfo } from "../core/utils";
 
 const DISMISSED_REPAIR_SIGNATURE_KEY = "sshKit.dismissedLegacyAliasRepairSignature";
 const MAX_REPAIR_PREVIEW_ITEMS = 10;
@@ -12,7 +12,7 @@ export async function reviewLegacyHostAliasRepairs(
 ): Promise<number> {
   const repairs = storage.getLegacyHostAliasRepairs();
   if (repairs.length === 0) {
-    vscode.window.showInformationMessage(
+    showTransientInfo(
       vscode.l10n.t("No renamed SSH Host aliases need repair.")
     );
     return 0;
@@ -42,13 +42,13 @@ export async function reviewLegacyHostAliasRepairs(
     return 0;
   }
   if (repaired.length === 0) {
-    vscode.window.showInformationMessage(
+    showTransientInfo(
       vscode.l10n.t("No renamed SSH Host aliases need repair.")
     );
     return 0;
   }
 
-  vscode.window.showInformationMessage(
+  showTransientInfo(
     vscode.l10n.t("Repaired {count} renamed SSH Host aliases.", {
       count: repaired.length,
     })

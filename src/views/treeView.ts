@@ -4,6 +4,7 @@ import { formatHostEndpoint } from "../core/endpoint";
 import { resolveHostAuthMode, SSHHost, SSHGroup } from "../core/types";
 import { StorageService } from "../core/storage";
 import { hostMatchesSearch, splitHostSearchTerms } from "../core/hostSearch";
+import { showTransientInfo } from "../core/utils";
 
 /** Virtual group ID for recent connections. */
 export const RECENT_GROUP_ID = "__recent__";
@@ -372,7 +373,7 @@ export class HostDragAndDropController implements vscode.TreeDragAndDropControll
 
     if (payload.kind === "group") {
       if (this.isGroupReorderBlocked()) {
-        vscode.window.showInformationMessage(vscode.l10n.t("Clear the host filter before reordering groups."));
+        showTransientInfo(vscode.l10n.t("Clear the host filter before reordering groups."));
         return;
       }
       if (target instanceof GroupItem && target.group.id === RECENT_GROUP_ID) {

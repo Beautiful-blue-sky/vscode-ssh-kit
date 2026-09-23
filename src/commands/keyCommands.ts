@@ -5,7 +5,7 @@ import {
   listKeys, populateFingerprints, generateKeyPair, deleteKeyPair, renameKeyPair,
   readPublicKey, regeneratePublicKey, KeyInfo, KeyType, areIdentityPathsEquivalent
 } from "../keys/keyManager";
-import { getErrorMessage } from "../core/utils";
+import { getErrorMessage, showTransientInfo } from "../core/utils";
 import { StorageService } from "../core/storage";
 import { HostTreeDataProvider } from "../views/treeView";
 
@@ -17,7 +17,7 @@ export async function showKeyList(
 ): Promise<void> {
   const keys = listKeys();
   if (keys.length === 0) {
-    vscode.window.showInformationMessage(
+    showTransientInfo(
       vscode.l10n.t("No SSH keys were found. Run “Generate SSH Key” to create one.")
     );
     return;
@@ -104,7 +104,7 @@ export async function copyPublicKeyToClipboard(key: KeyInfo): Promise<void> {
   try {
     const pubKey = readPublicKey(key.publicKeyPath);
     await vscode.env.clipboard.writeText(pubKey);
-    vscode.window.showInformationMessage(vscode.l10n.t("Public key copied to the clipboard."));
+    showTransientInfo(vscode.l10n.t("Public key copied to the clipboard."));
   } catch (err: unknown) {
     vscode.window.showErrorMessage(vscode.l10n.t("Failed to read public key: {error}", { error: getErrorMessage(err) }));
   }
@@ -155,7 +155,7 @@ export async function promptDeleteKey(
     }
     if (associatedHosts.length > 0) {hostTree?.refresh();}
     keyTree?.refresh();
-    vscode.window.showInformationMessage(associatedHosts.length > 0
+    showTransientInfo(associatedHosts.length > 0
       ? vscode.l10n.t("Deleted key: {name}. Cleared associations from {count} hosts.", {
           name: key.name,
           count: associatedHosts.length,
@@ -181,7 +181,7 @@ export async function promptRegeneratePublicKey(key: KeyInfo, keyTree?: { refres
   try {
     const publicKeyPath = regeneratePublicKey(key.privateKeyPath, hasPublicKey);
     keyTree?.refresh();
-    vscode.window.showInformationMessage(vscode.l10n.t("Generated public key: {path}", { path: publicKeyPath }));
+    showTransientInfo(vscode.l10n.t("Generated public key: {path}", { path: publicKeyPath }));
   } catch (err: unknown) {
     vscode.window.showErrorMessage(vscode.l10n.t("Public key generation failed: {error}", { error: getErrorMessage(err) }));
   }
@@ -221,7 +221,7 @@ export async function promptRenameKey(
       hostTree?.refresh();
     }
     keyTree?.refresh();
-    vscode.window.showInformationMessage(
+    showTransientInfo(
       associatedHosts.length > 0
         ? vscode.l10n.t("Renamed: {oldName} → {newName}. Updated {count} host associations.", {
             oldName: key.name,

@@ -6,7 +6,7 @@ import { GroupItem, HostDetailItem, HostItem, HostTreeDataProvider, HostDragAndD
 import { KeyTreeDataProvider, KeyItem, KeyDetailItem } from "./views/keyTreeView";
 import { listKeys, populateFingerprints } from "./keys/keyManager";
 import { ConnectionStatusController } from "./core/connectionStatus";
-import { connectHostInCurrentWindow, connectHostInNewWindow, promptTerminalConnect, testConnection, searchHosts } from "./commands/connectCommands";
+import { connectHostInCurrentWindow, connectHostInNewWindow, pickHost, promptTerminalConnect, testConnection, searchHosts } from "./commands/connectCommands";
 import {
   addHost,
   batchChangeHostKey,
@@ -47,6 +47,7 @@ import { promptEditHost, promptNewHost } from "./commands/hostPrompts";
 import { sortHosts } from "./commands/sortCommands";
 import { offerLegacyHostAliasRepair } from "./commands/aliasCommands";
 import { inspectManagedIntegration, regenerateManagedConfig } from "./ssh/managedConfig";
+import { showTransientInfo } from "./core/utils";
 
 // ─── Utility functions ────────────────────────────────────────────────────
 
@@ -54,17 +55,34 @@ import { inspectManagedIntegration, regenerateManagedConfig } from "./ssh/manage
  * Extract SSHHost from TreeView callback arguments.
  * Context menus / inline buttons pass HostItem (TreeItem);
  * Command Palette may pass SSHHost directly. Unwrap uniformly.
+ * Keyboard shortcuts and programmatic callers pass nothing.
  */
-function unwrapHost(arg: HostItem | SSHHost): SSHHost {
+function unwrapHost(arg: HostItem | SSHHost | undefined): SSHHost | undefined {
+  if (arg === undefined) {return undefined;}
   return arg instanceof HostItem ? arg.host : arg;
 }
 
 function unwrapLatestHost(
-  arg: HostItem | SSHHost,
+  arg: HostItem | SSHHost | undefined,
   storage: StorageService
-): SSHHost {
+): SSHHost | undefined {
   const host = unwrapHost(arg);
+  if (!host) {return undefined;}
   return storage.getAllHosts().find((candidate) => candidate.id === host.id) ?? host;
+}
+
+/**
+ * Resolve the target host for a host-scoped command. When the command was
+ * invoked without an argument (keybinding or programmatic call), fall back
+ * to a host picker instead of crashing on an undefined host.
+ */
+async function resolveCommandHost(
+  arg: HostItem | SSHHost | undefined,
+  storage: StorageService
+): Promise<SSHHost | undefined> {
+  const host = unwrapLatestHost(arg, storage);
+  if (host) {return host;}
+  return pickHost(storage);
 }
 
 // ─── Extension activation ─────────────────────────────────────────────────
@@ -177,23 +195,30 @@ function registerHostCommands(
     ),
     vscode.commands.registerCommand(
       "sshKit.editHost",
-      (arg: HostItem | SSHHost) =>
-        editHost(unwrapLatestHost(arg, storage), storage, tree, promptEditHost)
+      async (arg?: HostItem | SSHHost) => {
+        const host = await resolveCommandHost(arg, storage);
+        if (host) {await editHost(host, storage, tree, promptEditHost);}
+      }
     ),
     vscode.commands.registerCommand(
       "sshKit.deleteHost",
-      (arg: HostItem | SSHHost) =>
-        deleteHost(unwrapLatestHost(arg, storage), storage, tree)
+      async (arg?: HostItem | SSHHost) => {
+        const host = await resolveCommandHost(arg, storage);
+        if (host) {await deleteHost(host, storage, tree);}
+      }
     ),
     vscode.commands.registerCommand(
       "sshKit.copyHostName",
-      (arg: HostItem | SSHHost) => copyHostName(unwrapLatestHost(arg, storage))
+      async (arg?: HostItem | SSHHost) => {
+        const host = await resolveCommandHost(arg, storage);
+        if (host) {await copyHostName(host);}
+      }
     ),
     vscode.commands.registerCommand(
       "sshKit.copyHostDetail",
       (item: HostDetailItem | undefined) => {
         if (!item) {
-          vscode.window.showInformationMessage(vscode.l10n.t("Use Copy on a host detail item."));
+          showTransientInfo(vscode.l10n.t("Use Copy on a host detail item."));
           return;
         }
         return copyHostDetail(item.detailLabel, item.detailValue);
@@ -305,26 +330,35 @@ function registerConnectCommands(
   context.subscriptions.push(
     vscode.commands.registerCommand(
       "sshKit.connectHostInCurrentWindow",
-      async (arg: HostItem | SSHHost) => {
-        await connectHostInCurrentWindow(unwrapHost(arg), storage);
+      async (arg?: HostItem | SSHHost) => {
+        const host = await resolveCommandHost(arg, storage);
+        if (!host) {return;}
+        await connectHostInCurrentWindow(host, storage);
         await connectionStatus.refresh();
       }
     ),
     vscode.commands.registerCommand(
       "sshKit.connectHostInNewWindow",
-      async (arg: HostItem | SSHHost) => {
-        await connectHostInNewWindow(unwrapHost(arg), storage);
+      async (arg?: HostItem | SSHHost) => {
+        const host = await resolveCommandHost(arg, storage);
+        if (!host) {return;}
+        await connectHostInNewWindow(host, storage);
         await connectionStatus.refresh({ claimPending: false });
       }
     ),
     vscode.commands.registerCommand(
       "sshKit.testConnection",
-      (arg: HostItem | SSHHost) => testConnection(unwrapLatestHost(arg, storage))
+      async (arg?: HostItem | SSHHost) => {
+        const host = await resolveCommandHost(arg, storage);
+        if (host) {await testConnection(host);}
+      }
     ),
     vscode.commands.registerCommand(
       "sshKit.connectInExternalTerminal",
-      (arg: HostItem | SSHHost) =>
-        promptTerminalConnect(unwrapHost(arg), storage)
+      async (arg?: HostItem | SSHHost) => {
+        const host = await resolveCommandHost(arg, storage);
+        if (host) {await promptTerminalConnect(host, storage);}
+      }
     ),
     vscode.commands.registerCommand("sshKit.searchHosts", () =>
       searchHosts(storage)
@@ -413,11 +447,11 @@ function registerKeyCommands(
       "sshKit.copyKeyDetail",
       async (item: KeyDetailItem | undefined) => {
         if (!item) {
-          vscode.window.showInformationMessage(vscode.l10n.t("Use Copy on a key detail item."));
+          showTransientInfo(vscode.l10n.t("Use Copy on a key detail item."));
           return;
         }
         await vscode.env.clipboard.writeText(item.detailValue);
-        vscode.window.showInformationMessage(vscode.l10n.t("Copied {label}: {value}", {
+        showTransientInfo(vscode.l10n.t("Copied {label}: {value}", {
           label: item.detailLabel,
           value: item.detailValue,
         }));
@@ -479,7 +513,7 @@ function registerKeyCommands(
 async function pickKeyForPublicRegeneration(): Promise<KeyItem | undefined> {
   const keys = listKeys();
   if (keys.length === 0) {
-    vscode.window.showInformationMessage(vscode.l10n.t("No SSH keys were found. Run “SSH Kit: Generate SSH Key” to create one."));
+    showTransientInfo(vscode.l10n.t("No SSH keys were found. Run “SSH Kit: Generate SSH Key” to create one."));
     return undefined;
   }
 

@@ -7,7 +7,7 @@ import * as vscode from "vscode";
 import { formatHostEndpoint } from "../core/endpoint";
 import { resolveHostAuthMode, SSHHost } from "../core/types";
 import { StorageService } from "../core/storage";
-import { getErrorMessage } from "../core/utils";
+import { getErrorMessage, showTransientInfo, showTransientNotification } from "../core/utils";
 import { ensureUniqueSSHHostAlias } from "../core/sshAlias";
 import { ensureManagedIntegration } from "../ssh/managedConfig";
 
@@ -215,8 +215,9 @@ function showRemoteOpenSuccess(hostName: string, windowLabel: string): void {
  */
 export async function testConnection(host: SSHHost): Promise<void> {
   if (resolveHostAuthMode(host) === "password") {
-    vscode.window.showInformationMessage(
-      vscode.l10n.t("Password-only hosts cannot be authenticated by the non-interactive connectivity test. Connect to the host directly to verify the password.")
+    showTransientNotification(
+      vscode.l10n.t("Password-only hosts cannot be authenticated by the non-interactive connectivity test. Connect to the host directly to verify the password."),
+      6000
     );
     return;
   }
@@ -230,7 +231,7 @@ export async function testConnection(host: SSHHost): Promise<void> {
     "exit",
   ];
 
-  vscode.window.showInformationMessage(
+  showTransientInfo(
     vscode.l10n.t("Testing {name} ({endpoint})…", { name: host.name, endpoint: formatHostEndpoint(host, false) })
   );
 
@@ -254,9 +255,9 @@ function showTestResult(
   elapsed: number
 ): void {
   if (exitCode === 0) {
-    vscode.window.showInformationMessage(
+    showTransientNotification(
       vscode.l10n.t("$(check) {name} is reachable ({elapsed} ms)", { name: host.name, elapsed }),
-      vscode.l10n.t("OK")
+      6000
     );
     return;
   }
@@ -292,12 +293,16 @@ function showTestError(host: SSHHost, message: string): void {
 
 // ─── Host search ──────────────────────────────────────────────────────────
 
-/** Search/filter hosts via QuickPick fuzzy matching */
-export async function searchHosts(storage: StorageService): Promise<void> {
+/**
+ * Pick a host via QuickPick fuzzy matching.
+ * Shared by host search and by commands invoked without a host argument
+ * (keyboard shortcuts or programmatic executeCommand calls).
+ */
+export async function pickHost(storage: StorageService): Promise<SSHHost | undefined> {
   const hosts = storage.getAllHosts();
   if (hosts.length === 0) {
-    vscode.window.showInformationMessage(vscode.l10n.t("No hosts are available. Add a host first."));
-    return;
+    showTransientInfo(vscode.l10n.t("No hosts are available. Add a host first."));
+    return undefined;
   }
 
   const items = hosts.map((h) => ({
@@ -312,9 +317,14 @@ export async function searchHosts(storage: StorageService): Promise<void> {
     matchOnDetail: true,
     placeHolder: vscode.l10n.t("Search hosts by name, address, or tags…"),
   });
+  return picked?.host;
+}
 
-  if (picked) {
-    await connectHostInCurrentWindow(picked.host, storage);
+/** Search/filter hosts via QuickPick fuzzy matching */
+export async function searchHosts(storage: StorageService): Promise<void> {
+  const host = await pickHost(storage);
+  if (host) {
+    await connectHostInCurrentWindow(host, storage);
   }
 }
 
@@ -338,7 +348,7 @@ export async function connectInExternalTerminal(
     if (!shouldContinue) {return;}
   }
 
-  vscode.window.showInformationMessage(
+  showTransientNotification(
     vscode.l10n.t("Connecting to {name} in an external terminal ({target})…", {
       name: host.name,
       target: formatHostEndpoint(host),
@@ -474,7 +484,7 @@ export async function connectInVSCodeTerminal(
   });
   terminal.show();
 
-  vscode.window.showInformationMessage(
+  showTransientNotification(
     vscode.l10n.t("Opened {name} in the terminal ({target})", {
       name: host.name,
       target: formatHostEndpoint(host),
@@ -646,7 +656,7 @@ async function connectInLocalVSCodeTerminal(
     await vscode.commands.executeCommand("workbench.action.terminal.sendSequence", {
       text: `${commandLine}\r`,
     });
-    vscode.window.showInformationMessage(
+    showTransientNotification(
       vscode.l10n.t("Opened {name} in a local VS Code terminal ({target})", {
         name: host.name,
         target: formatHostEndpoint(host),

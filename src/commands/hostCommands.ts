@@ -6,6 +6,7 @@ import { DuplicateHostGroup, findDuplicateEndpointGroups } from "../core/hostMat
 import { StorageService } from "../core/storage";
 import { HostTreeDataProvider } from "../views/treeView";
 import { listKeys } from "../keys/keyManager";
+import { showTransientInfo } from "../core/utils";
 
 type KeepDuplicatePick = vscode.QuickPickItem & {
   host?: SSHHost;
@@ -32,7 +33,7 @@ export async function addHost(
 
   await storage.addHost(host);
   tree.refresh();
-  vscode.window.showInformationMessage(
+  showTransientInfo(
     vscode.l10n.t("Added host: {name} ({endpoint})", { name: host.name, endpoint: formatHostEndpoint(host, false) })
   );
 }
@@ -49,7 +50,7 @@ export async function editHost(
 
   await storage.updateHost(host.id, updates);
   tree.refresh();
-  vscode.window.showInformationMessage(
+  showTransientInfo(
     vscode.l10n.t("Updated host: {name}", { name: updates.name ?? host.name })
   );
 }
@@ -73,7 +74,7 @@ export async function deleteHost(
 
   await storage.deleteHost(host.id);
   tree.refresh();
-  vscode.window.showInformationMessage(
+  showTransientInfo(
     vscode.l10n.t("Moved host to recycle bin: {name} ({endpoint})", {
       name: host.name,
       endpoint: formatHostEndpoint(host, false),
@@ -88,7 +89,7 @@ export async function manageRecycleBin(
 ): Promise<void> {
   const deletedHosts = storage.getDeletedHosts();
   if (deletedHosts.length === 0) {
-    vscode.window.showInformationMessage(vscode.l10n.t("The SSH Kit recycle bin is empty."));
+    showTransientInfo(vscode.l10n.t("The SSH Kit recycle bin is empty."));
     return;
   }
 
@@ -138,7 +139,7 @@ export async function manageRecycleBin(
     const restored = await storage.restoreDeletedHost(picked.entry.host.id);
     if (restored) {
       tree.refresh();
-      vscode.window.showInformationMessage(vscode.l10n.t("Restored host: {name}", {
+      showTransientInfo(vscode.l10n.t("Restored host: {name}", {
         name: restored.name,
       }));
     }
@@ -155,7 +156,7 @@ export async function manageRecycleBin(
   if (confirmed !== permanentAction) {return;}
   if (await storage.permanentlyDeleteHost(picked.entry.host.id)) {
     tree.refresh();
-    vscode.window.showInformationMessage(vscode.l10n.t("Permanently deleted host: {name}", {
+    showTransientInfo(vscode.l10n.t("Permanently deleted host: {name}", {
       name: picked.entry.host.name,
     }));
   }
@@ -167,7 +168,7 @@ export async function emptyRecycleBin(
 ): Promise<void> {
   const count = storage.getDeletedHosts().length;
   if (count === 0) {
-    vscode.window.showInformationMessage(vscode.l10n.t("The SSH Kit recycle bin is empty."));
+    showTransientInfo(vscode.l10n.t("The SSH Kit recycle bin is empty."));
     return;
   }
 
@@ -182,7 +183,7 @@ export async function emptyRecycleBin(
   if (confirmed !== emptyAction) {return;}
   const deleted = await storage.emptyRecycleBin();
   tree.refresh();
-  vscode.window.showInformationMessage(vscode.l10n.t("Permanently deleted {count} hosts.", {
+  showTransientInfo(vscode.l10n.t("Permanently deleted {count} hosts.", {
     count: deleted,
   }));
 }
@@ -190,13 +191,13 @@ export async function emptyRecycleBin(
 /** Copy hostname to clipboard */
 export async function copyHostName(host: SSHHost): Promise<void> {
   await vscode.env.clipboard.writeText(host.hostname);
-  vscode.window.showInformationMessage(vscode.l10n.t("Copied: {value}", { value: host.hostname }));
+  showTransientInfo(vscode.l10n.t("Copied: {value}", { value: host.hostname }));
 }
 
 /** Copy an expanded host detail field to clipboard */
 export async function copyHostDetail(label: string, value: string): Promise<void> {
   await vscode.env.clipboard.writeText(value);
-  vscode.window.showInformationMessage(vscode.l10n.t("Copied {label}: {value}", { label, value }));
+  showTransientInfo(vscode.l10n.t("Copied {label}: {value}", { label, value }));
 }
 
 /** Remove duplicate hosts by actual SSH endpoint after the user chooses which item to keep. */
@@ -207,7 +208,7 @@ export async function deduplicateHosts(
   const hosts = storage.getAllHosts();
   const duplicates = findDuplicateEndpointGroups(hosts);
   if (duplicates.length === 0) {
-    vscode.window.showInformationMessage(vscode.l10n.t("No duplicate hosts share the same address, port, and user."));
+    showTransientInfo(vscode.l10n.t("No duplicate hosts share the same address, port, and user."));
     return;
   }
 
@@ -233,7 +234,7 @@ export async function deduplicateHosts(
   }
 
   if (deleteIds.size === 0) {
-    vscode.window.showInformationMessage(skipped > 0
+    showTransientInfo(skipped > 0
       ? vscode.l10n.t("No duplicate hosts were moved; {count} groups were skipped.", { count: skipped })
       : vscode.l10n.t("No duplicate hosts were moved."));
     return;
@@ -256,7 +257,7 @@ export async function deduplicateHosts(
 
   await storage.deleteHosts(toDelete.map((host) => host.id));
   tree.refresh();
-  vscode.window.showInformationMessage(vscode.l10n.t("Moved {count} duplicate hosts to the recycle bin.", { count: toDelete.length }));
+  showTransientInfo(vscode.l10n.t("Moved {count} duplicate hosts to the recycle bin.", { count: toDelete.length }));
 }
 
 async function promptHostToKeep(
@@ -320,7 +321,7 @@ export async function batchDeleteHosts(
 ): Promise<void> {
   const hosts = storage.getAllHosts();
   if (hosts.length === 0) {
-    vscode.window.showInformationMessage(vscode.l10n.t("No hosts are available."));
+    showTransientInfo(vscode.l10n.t("No hosts are available."));
     return;
   }
 
@@ -370,7 +371,7 @@ export async function batchDeleteHosts(
 
   await storage.deleteHosts(toDelete.map((host) => host.id));
   tree.refresh();
-  vscode.window.showInformationMessage(vscode.l10n.t("Moved {count} hosts to the recycle bin.", {
+  showTransientInfo(vscode.l10n.t("Moved {count} hosts to the recycle bin.", {
     count: toDelete.length,
   }));
 }
@@ -382,7 +383,7 @@ export async function batchChangeHostKey(
 ): Promise<void> {
   const hosts = storage.getAllHosts();
   if (hosts.length === 0) {
-    vscode.window.showInformationMessage(vscode.l10n.t("No hosts are available."));
+    showTransientInfo(vscode.l10n.t("No hosts are available."));
     return;
   }
 
@@ -421,7 +422,7 @@ async function applyHostKeyChange(
     identityFile || undefined
   );
   tree.refresh();
-  vscode.window.showInformationMessage(vscode.l10n.t("Updated the identity file for {count} hosts.", { count: updated }));
+  showTransientInfo(vscode.l10n.t("Updated the identity file for {count} hosts.", { count: updated }));
 }
 
 async function pickHostsForKeyChange(

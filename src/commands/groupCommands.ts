@@ -2,6 +2,7 @@
 import * as vscode from "vscode";
 import { GroupMoveDirection, StorageService } from "../core/storage";
 import { GroupItem, HostTreeDataProvider } from "../views/treeView";
+import { showTransientInfo } from "../core/utils";
 
 /** Add a new group */
 export async function addGroup(
@@ -17,7 +18,7 @@ export async function addGroup(
 
   await storage.addGroup(name.trim());
   tree.refresh();
-  vscode.window.showInformationMessage(vscode.l10n.t("Added group: {name}", { name }));
+  showTransientInfo(vscode.l10n.t("Added group: {name}", { name }));
 }
 
 /** Rename a group */
@@ -72,7 +73,7 @@ export async function moveGroup(
   direction: GroupMoveDirection
 ): Promise<void> {
   if (!groupItem) {
-    vscode.window.showInformationMessage(vscode.l10n.t("Run this command from a host group."));
+    showTransientInfo(vscode.l10n.t("Run this command from a host group."));
     return;
   }
   if (await storage.moveGroup(groupItem.group.id, direction)) {

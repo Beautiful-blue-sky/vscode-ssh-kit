@@ -219,7 +219,6 @@
   "None of the selected hosts has an identity file": "当前所选主机均未关联认证文件",
   "Not associated": "未关联",
   "Not connected": "未连接",
-  "OK": "确定",
   "Open SSH Config": "打开 SSH Config",
   "Open SSH Kit managed config": "打开 SSH Kit 连接配置",
   "Open a local external terminal": "打开本机外部终端",

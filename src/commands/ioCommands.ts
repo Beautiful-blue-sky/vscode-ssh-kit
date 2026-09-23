@@ -7,7 +7,7 @@ import { formatHostEndpoint } from "../core/endpoint";
 import { SSHHost } from "../core/types";
 import { createImportedHostUpdates, findImportMatch } from "../core/hostMatching";
 import { StorageService } from "../core/storage";
-import { getErrorMessage } from "../core/utils";
+import { getErrorMessage, showTransientInfo } from "../core/utils";
 import { importFromSSHConfig, exportToSSHConfig } from "../ssh/sshConfig";
 import {
   cleanupLegacyAliasBlocks,
@@ -38,7 +38,7 @@ export async function importConfig(
   try {
     const { hosts } = importFromSSHConfig(getEffectiveSSHConfigPath());
     if (hosts.length === 0) {
-      vscode.window.showInformationMessage(vscode.l10n.t("No importable hosts were found in SSH Config."));
+      showTransientInfo(vscode.l10n.t("No importable hosts were found in SSH Config."));
       return;
     }
 
@@ -69,7 +69,7 @@ export async function importConfig(
     if (skipped > 0) {parts.push(vscode.l10n.t("Skipped {count} duplicates", { count: skipped }));}
     if (ambiguous > 0) {parts.push(vscode.l10n.t("Skipped {count} ambiguous endpoints that need manual review", { count: ambiguous }));}
     if (parts.length === 0) {parts.push(vscode.l10n.t("No hosts needed to be imported or updated"));}
-    vscode.window.showInformationMessage(`${parts.join(", ")}.`);
+    showTransientInfo(`${parts.join(", ")}.`);
   } catch (err: unknown) {
     vscode.window.showErrorMessage(vscode.l10n.t("Import failed: {error}", { error: getErrorMessage(err) }));
   }
@@ -167,7 +167,7 @@ async function confirmSSHConfigImport(preview: SSHConfigImportPreview): Promise<
     preview.skipped === 0 &&
     preview.ambiguous === 0
   ) {
-    vscode.window.showInformationMessage(vscode.l10n.t("No hosts need to be imported or updated."));
+    showTransientInfo(vscode.l10n.t("No hosts need to be imported or updated."));
     return false;
   }
 
@@ -234,7 +234,7 @@ export async function exportConfig(storage: StorageService): Promise<void> {
   try {
     const hosts = storage.getAllHosts();
     if (hosts.length === 0) {
-      vscode.window.showInformationMessage(vscode.l10n.t("There are no hosts to export."));
+      showTransientInfo(vscode.l10n.t("There are no hosts to export."));
       return;
     }
 
@@ -260,7 +260,7 @@ export async function exportConfig(storage: StorageService): Promise<void> {
     }
 
     const filePath = exportToSSHConfig(hosts, uri.fsPath);
-    vscode.window.showInformationMessage(
+    showTransientInfo(
       vscode.l10n.t("Exported {count} hosts to {path}", { count: hosts.length, path: filePath })
     );
   } catch (err: unknown) {
@@ -283,7 +283,7 @@ function normalizePathForCompare(filePath: string): string {
 export async function openSshConfig(): Promise<void> {
   const configPath = getEffectiveSSHConfigPath();
   if (!fs.existsSync(configPath)) {
-    vscode.window.showInformationMessage(
+    showTransientInfo(
       vscode.l10n.t("SSH Config file does not exist: {path}", { path: configPath })
     );
     return;
@@ -296,7 +296,7 @@ export async function openSshConfig(): Promise<void> {
 export async function openManagedSshConfig(): Promise<void> {
   const configPath = getManagedConfigPath();
   if (!fs.existsSync(configPath)) {
-    vscode.window.showInformationMessage(
+    showTransientInfo(
       vscode.l10n.t("SSH Kit managed config does not exist yet: {path}", { path: configPath })
     );
     return;
@@ -446,7 +446,7 @@ export async function cleanupRemoteSshAliases(): Promise<void> {
   try {
     const state = inspectManagedIntegration();
     if (state.legacyAliasCount === 0) {
-      vscode.window.showInformationMessage(vscode.l10n.t("No legacy SSH Kit connection aliases were found."));
+      showTransientInfo(vscode.l10n.t("No legacy SSH Kit connection aliases were found."));
       return;
     }
     const cleanupAction = vscode.l10n.t("Back Up and Clean");
@@ -462,7 +462,7 @@ export async function cleanupRemoteSshAliases(): Promise<void> {
 
     const count = await cleanupLegacyAliasBlocks();
     if (count === undefined) {return;}
-    vscode.window.showInformationMessage(count > 0
+    showTransientInfo(count > 0
       ? vscode.l10n.t("Removed {count} legacy SSH Kit connection aliases.", { count })
       : vscode.l10n.t("No legacy SSH Kit connection aliases were found."));
   } catch (error) {
@@ -528,10 +528,11 @@ export async function backupKitData(storage: StorageService): Promise<void> {
       mode: process.platform === "win32" ? undefined : 0o600,
     });
     protectSensitiveFile(uri.fsPath);
-    vscode.window.showInformationMessage(
+    showTransientInfo(
       mode.includeKeyFiles
         ? vscode.l10n.t("Complete backup saved to {path}", { path: uri.fsPath })
-        : vscode.l10n.t("Host data backup saved to {path}", { path: uri.fsPath })
+        : vscode.l10n.t("Host data backup saved to {path}", { path: uri.fsPath }),
+      6000
     );
   } catch (err: unknown) {
     vscode.window.showErrorMessage(vscode.l10n.t("Backup failed: {error}", { error: getErrorMessage(err) }));
@@ -728,7 +729,7 @@ export async function restoreCatalogSnapshot(
   try {
     const restored = await storage.restoreCatalogSnapshot(picked.snapshot.path);
     tree.refresh();
-    vscode.window.showInformationMessage(vscode.l10n.t(
+    showTransientInfo(vscode.l10n.t(
       "Restored internal snapshot: {hostCount} hosts and {groupCount} groups.",
       { hostCount: restored.hosts.length, groupCount: restored.groups.length }
     ));
