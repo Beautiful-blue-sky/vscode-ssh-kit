@@ -438,6 +438,7 @@
   "Remote-SSH integration already uses the SSH Kit managed file through an unmarked Include. No changes were made.": "Remote-SSH 已通过未标记的 Include 使用 SSH Kit 连接配置，未做修改。",
   "Remote-SSH integration operation failed: {error}": "Remote-SSH 连接配置操作失败：{error}",
   "Repair integration": "修复连接配置",
+  "Select a host in the SSH Kit view first.": "请先在 SSH Kit 主机列表中选择一台主机。",
   "Set up integration": "准备连接配置",
   "Snapshots contain host catalog data only, never private key contents": "快照只包含主机目录数据，绝不包含私钥内容",
   "SSH Config": "SSH Config",

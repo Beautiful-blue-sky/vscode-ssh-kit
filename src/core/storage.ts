@@ -74,6 +74,15 @@ export class StorageService {
     this.initializeSplitState();
   }
 
+  /**
+   * Current on-disk catalog revision, or undefined when the catalog is not
+   * file-backed (fallback mode cannot detect external changes by revision).
+   * Read-only; lets callers skip redundant tree rebuilds on window focus.
+   */
+  getCatalogRevision(): number | undefined {
+    return this.catalog.isFileBacked ? this.catalog.read().revision : undefined;
+  }
+
   /** Read all data; return default empty data if none exists */
   getData(): SSHKitData {
     const raw = this.context.globalState.get<unknown>(DATA_KEY);

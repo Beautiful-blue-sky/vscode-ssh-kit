@@ -387,6 +387,7 @@
   "SSH Kit will save an internal catalog snapshot before replacing current data.": "SSH Kit will save an internal catalog snapshot before replacing current data.",
   "SSH port": "SSH port",
   "Search hosts by name, address, or tags…": "Search hosts by name, address, or tags…",
+  "Select a host in the SSH Kit view first.": "Select a host in the SSH Kit view first.",
   "Set up integration": "Set up integration",
   "Share SSH key file paths?": "Share SSH key file paths?",
   "Skip Key": "Skip Key",

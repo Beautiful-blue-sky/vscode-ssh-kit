@@ -3,6 +3,32 @@
 最新版本在本页提供中文和 English。更早版本的完整中文记录请查看
 [中文更新日志](CHANGELOG.zh-CN.md)。
 
+## 0.1.4 — 2026-09-23
+
+### 中文
+
+#### 修复
+- 窗口重新获得焦点时不再无条件重建主机树，仅当主机数据确实在别处变化后才刷新。修复第一次连接后快速再次点击连接类按钮时报 `Cannot read properties of undefined (reading 'id')` 的问题：重复点击现在可直接正常响应。
+- 主机命令因树刷新瞬间或快捷键调用而未携带目标主机时，会等待界面稳定并尝试从当前选中项恢复。
+
+#### 调整
+- 无法确定目标主机时改为状态栏提示“请先在 SSH Kit 主机列表中选择一台主机。”，不再弹出容易误解的主机选择框。
+
+#### 验证
+- 通过类型检查、ESLint、生产构建、38 项运行时行为检查、479 条中英文运行时文案检查，以及 50 个命令和 13 个 VSIX 文件的发布清单校验。
+
+### English
+
+#### Fixed
+- Stop rebuilding the host tree on every window focus; the tree now refreshes only when host data actually changed elsewhere. Rapidly clicking a connect action again right after a connection no longer fails with `Cannot read properties of undefined (reading 'id')` — repeat clicks respond normally.
+- When a host command runs without its target host (tree rebuild race or keyboard shortcut), wait for the UI to settle and try to recover it from the current selection.
+
+#### Changed
+- When the target host still cannot be determined, show a brief status bar hint instead of a confusing host picker.
+
+#### Validation
+- Pass type checking, ESLint, production build, 38 runtime behavior checks, 479 English/Chinese runtime message checks, and release-surface validation for 50 commands and 13 VSIX files.
+
 ## 0.1.3 — 2026-09-23
 
 ### 中文

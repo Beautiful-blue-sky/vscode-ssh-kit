@@ -6,7 +6,7 @@ import { GroupItem, HostDetailItem, HostItem, HostTreeDataProvider, HostDragAndD
 import { KeyTreeDataProvider, KeyItem, KeyDetailItem } from "./views/keyTreeView";
 import { listKeys, populateFingerprints } from "./keys/keyManager";
 import { ConnectionStatusController } from "./core/connectionStatus";
-import { connectHostInCurrentWindow, connectHostInNewWindow, pickHost, promptTerminalConnect, testConnection, searchHosts } from "./commands/connectCommands";
+import { connectHostInCurrentWindow, connectHostInNewWindow, promptTerminalConnect, testConnection, searchHosts } from "./commands/connectCommands";
 import {
   addHost,
   batchChangeHostKey,
@@ -73,16 +73,42 @@ function unwrapLatestHost(
 
 /**
  * Resolve the target host for a host-scoped command. When the command was
- * invoked without an argument (keybinding or programmatic call), fall back
- * to a host picker instead of crashing on an undefined host.
+ * invoked without an argument (keybinding, programmatic call, or an inline
+ * click landing during a focus-triggered tree refresh), try to recover the
+ * clicked host from the tree selection. If recovery fails, leave a brief
+ * status bar hint instead of opening an unexpected picker.
  */
 async function resolveCommandHost(
   arg: HostItem | SSHHost | undefined,
-  storage: StorageService
+  storage: StorageService,
+  treeView: vscode.TreeView<vscode.TreeItem>
 ): Promise<SSHHost | undefined> {
   const host = unwrapLatestHost(arg, storage);
   if (host) {return host;}
-  return pickHost(storage);
+  const selected = await resolveSelectedHost(treeView);
+  if (selected) {return selected;}
+  showTransientInfo(vscode.l10n.t("Select a host in the SSH Kit view first."));
+  return undefined;
+}
+
+/**
+ * Inline-action clicks that land while the tree is rebuilding lose their item
+ * argument. VS Code restores the selection by id once the rebuild settles, so
+ * wait briefly for the tree to stabilize before giving up. A stable non-host
+ * selection (group, detail) ends the wait immediately.
+ */
+async function resolveSelectedHost(
+  treeView: vscode.TreeView<vscode.TreeItem>
+): Promise<SSHHost | undefined> {
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const selected = treeView.selection[0];
+    if (selected instanceof HostItem) {return selected.host;}
+    if (selected !== undefined) {return undefined;}
+    if (attempt < 3) {
+      await new Promise((resolve) => globalThis.setTimeout(resolve, 150));
+    }
+  }
+  return undefined;
 }
 
 // ─── Extension activation ─────────────────────────────────────────────────
@@ -110,10 +136,19 @@ export function activate(context: vscode.ExtensionContext) {
   });
   context.subscriptions.push(keyTreeView);
   context.subscriptions.push(connectionStatus);
+
+  // Re-render the host tree on focus only when the catalog actually changed
+  // elsewhere. An unconditional rebuild makes rapid inline-action clicks lose
+  // their item argument while the tree is mid-rebuild.
+  let lastCatalogRevision = storage.getCatalogRevision();
   context.subscriptions.push(
     vscode.window.onDidChangeWindowState((state) => {
       if (!state.focused) {return;}
-      treeDataProvider.refresh();
+      const revision = storage.getCatalogRevision();
+      if (revision === undefined || revision !== lastCatalogRevision) {
+        lastCatalogRevision = revision;
+        treeDataProvider.refresh();
+      }
       keyTreeDataProvider.refresh();
     })
   );
@@ -136,13 +171,14 @@ export function activate(context: vscode.ExtensionContext) {
   registerCoreCommands(context, treeDataProvider, keyTreeDataProvider, connectionStatus);
   registerHostCommands(context, storage, treeDataProvider, treeView);
   registerGroupCommands(context, storage, treeDataProvider);
-  registerConnectCommands(context, storage, connectionStatus);
+  registerConnectCommands(context, storage, connectionStatus, treeView);
   registerIOCommands(context, storage, treeDataProvider, keyTreeDataProvider);
   registerKeyCommands(context, storage, treeDataProvider, keyTreeDataProvider);
   registerAIHostTools(context, storage);
 
   context.subscriptions.push(
     storage.onDidChange(() => {
+      lastCatalogRevision = storage.getCatalogRevision();
       treeDataProvider.refresh();
       void connectionStatus.refresh();
       refreshManagedConfigIfEnabled(storage);
@@ -196,21 +232,21 @@ function registerHostCommands(
     vscode.commands.registerCommand(
       "sshKit.editHost",
       async (arg?: HostItem | SSHHost) => {
-        const host = await resolveCommandHost(arg, storage);
+        const host = await resolveCommandHost(arg, storage, treeView);
         if (host) {await editHost(host, storage, tree, promptEditHost);}
       }
     ),
     vscode.commands.registerCommand(
       "sshKit.deleteHost",
       async (arg?: HostItem | SSHHost) => {
-        const host = await resolveCommandHost(arg, storage);
+        const host = await resolveCommandHost(arg, storage, treeView);
         if (host) {await deleteHost(host, storage, tree);}
       }
     ),
     vscode.commands.registerCommand(
       "sshKit.copyHostName",
       async (arg?: HostItem | SSHHost) => {
-        const host = await resolveCommandHost(arg, storage);
+        const host = await resolveCommandHost(arg, storage, treeView);
         if (host) {await copyHostName(host);}
       }
     ),
@@ -325,13 +361,14 @@ function registerGroupCommands(
 function registerConnectCommands(
   context: vscode.ExtensionContext,
   storage: StorageService,
-  connectionStatus: ConnectionStatusController
+  connectionStatus: ConnectionStatusController,
+  treeView: vscode.TreeView<vscode.TreeItem>
 ): void {
   context.subscriptions.push(
     vscode.commands.registerCommand(
       "sshKit.connectHostInCurrentWindow",
       async (arg?: HostItem | SSHHost) => {
-        const host = await resolveCommandHost(arg, storage);
+        const host = await resolveCommandHost(arg, storage, treeView);
         if (!host) {return;}
         await connectHostInCurrentWindow(host, storage);
         await connectionStatus.refresh();
@@ -340,7 +377,7 @@ function registerConnectCommands(
     vscode.commands.registerCommand(
       "sshKit.connectHostInNewWindow",
       async (arg?: HostItem | SSHHost) => {
-        const host = await resolveCommandHost(arg, storage);
+        const host = await resolveCommandHost(arg, storage, treeView);
         if (!host) {return;}
         await connectHostInNewWindow(host, storage);
         await connectionStatus.refresh({ claimPending: false });
@@ -349,14 +386,14 @@ function registerConnectCommands(
     vscode.commands.registerCommand(
       "sshKit.testConnection",
       async (arg?: HostItem | SSHHost) => {
-        const host = await resolveCommandHost(arg, storage);
+        const host = await resolveCommandHost(arg, storage, treeView);
         if (host) {await testConnection(host);}
       }
     ),
     vscode.commands.registerCommand(
       "sshKit.connectInExternalTerminal",
       async (arg?: HostItem | SSHHost) => {
-        const host = await resolveCommandHost(arg, storage);
+        const host = await resolveCommandHost(arg, storage, treeView);
         if (host) {await promptTerminalConnect(host, storage);}
       }
     ),
